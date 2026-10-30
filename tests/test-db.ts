@@ -86,6 +86,53 @@ export function isLiveTestingEnabled(env: Record<string, string | undefined> = p
   return true;
 }
 
+/** Neon project that owns the isolated automated-test database. */
+export const TEST_PROJECT_ID = "empty-wildflower-93415146";
+/** Marker row proving a connection reached the test project (see table `__thence_test_anchor`). Absent in production. */
+export const TEST_ANCHOR_TABLE = "__thence_test_anchor";
+
+export interface IdentityProof {
+  ok: boolean;
+  /** Project id read from the anchor, or null. Identifiers only — never credentials. */
+  projectId: string | null;
+  /** Static reason string. */
+  reason: string;
+}
+
+/**
+ * Endpoint-agnostic identity proof: connects with the candidate URL and
+ * requires the test-project anchor row. Any endpoint of production lacks
+ * the table, so this refuses regardless of hostname sharing. Error text is
+ * static (pg errors can embed hosts/database names).
+ */
+export async function verifyTestProjectIdentity(url: string): Promise<IdentityProof> {
+  const fail = (reason: string): IdentityProof => ({ ok: false, projectId: null, reason });
+  try {
+    const { Client } = await import("pg");
+    const client = new Client({
+      connectionString: url,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 15000,
+      statement_timeout: 15000,
+    });
+    try {
+      await client.connect();
+      const rows = await client.query(`SELECT project_id FROM ${TEST_ANCHOR_TABLE} LIMIT 1`);
+      const projectId = rows.rows[0]?.project_id;
+      if (projectId === TEST_PROJECT_ID) return { ok: true, projectId, reason: "verified" };
+      return { ok: false, projectId: typeof projectId === "string" ? projectId : null, reason: "unexpected-project" };
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        // Ignore close errors; identity already decided.
+      }
+    }
+  } catch {
+    return fail("unreachable-or-unmarked");
+  }
+}
+
 export interface InstallResult {
   installed: boolean;
   /** Static reason string — never contains a URL or credential. */
