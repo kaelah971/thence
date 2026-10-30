@@ -1,6 +1,7 @@
 import { Icon } from "@/ui/components/Icon";
-import { AssetMark, CardDuo } from "@/ui/components/PaymentCard";
-import { Avatar, IllustrationTag } from "@/ui/components/primitives";
+import { HeroCards, MicroNote } from "@/ui/components/HeroCards";
+import { AssetMark } from "@/ui/components/PaymentCard";
+import { Avatar } from "@/ui/components/primitives";
 import styles from "./onboarding.module.css";
 
 interface ArtProps {
@@ -10,40 +11,20 @@ interface ArtProps {
 /** Concept art only: no balances, rates or real payments. */
 export function MoneyArt({ active }: ArtProps): React.JSX.Element {
   return (
-    <div className={styles.art} data-active={active}>
-      <span className={styles.halo} aria-hidden="true" />
-      <svg className={styles.orbits} viewBox="0 0 360 360" aria-hidden="true">
-        <ellipse cx="180" cy="190" rx="168" ry="92" transform="rotate(-16 180 190)" />
-        <ellipse cx="180" cy="190" rx="120" ry="150" transform="rotate(28 180 190)" />
-      </svg>
-      <div className={styles.moneyStack}>
-        <CardDuo
-          key={active ? "on" : "off"}
-          size="hero"
-          label="Illustration: your NIM card in front of a USDT card. Note: you approve every payment; your NIM stays in Nimiq Pay until you do."
-          note={
-            <span className={styles.infoNote}>
-              <span className={styles.infoIcon}>
-                <Icon name="shield" size={16} strokeWidth={2.2} />
-              </span>
-              <span className={styles.infoText}>
-                <strong>You approve every payment</strong>
-                <span>Your NIM stays in Nimiq Pay until you do.</span>
-              </span>
-            </span>
-          }
-        />
-      </div>
-      <div className={styles.artTag}>
-        <IllustrationTag />
-      </div>
+    <div className={styles.art} data-kind="hero" data-active={active}>
+      <HeroCards
+        key={active ? "on" : "off"}
+        variant="hero"
+        label="Your NIM card in front of a USDT card, with a note: you're in control, approve payments in Nimiq Pay."
+        note={<MicroNote title="You're in control" body="Approve payments in Nimiq Pay" />}
+      />
     </div>
   );
 }
 
 export function PeopleArt({ active }: ArtProps): React.JSX.Element {
   return (
-    <div className={styles.art} data-active={active} role="img" aria-label="Illustration: three people. Example: Alex receives 25 USDC on Polygon.">
+    <div className={styles.art} data-active={active} role="img" aria-label="Three people. Example: Alex receives 25 USDC on Polygon.">
       <span className={styles.halo} aria-hidden="true" />
       <div className={styles.people} aria-hidden="true">
         <span className={styles.person} style={{ ["--i" as string]: 0 }}>
@@ -81,7 +62,7 @@ const TRUST_STEPS = ["Approved", "On its way", "Delivered"] as const;
 
 export function TrustArt({ active }: ArtProps): React.JSX.Element {
   return (
-    <div className={styles.art} data-active={active} role="img" aria-label="Illustration: a payment moving from Approved, to On its way, to Delivered, with a receipt.">
+    <div className={styles.art} data-active={active} role="img" aria-label="A payment moving from Approved, to On its way, to Delivered, with a receipt.">
       <span className={`${styles.halo} ${styles.haloGreen}`} aria-hidden="true" />
       <div className={styles.trust} aria-hidden="true">
         <ol className={styles.path}>
@@ -118,9 +99,6 @@ export function TrustArt({ active }: ArtProps): React.JSX.Element {
             </div>
           </dl>
         </div>
-      </div>
-      <div className={styles.artTag}>
-        <IllustrationTag />
       </div>
     </div>
   );

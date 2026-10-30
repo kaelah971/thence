@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { IconButton } from "@/ui/components/Button";
-import { CardDuo } from "@/ui/components/PaymentCard";
+import { HeroCards } from "@/ui/components/HeroCards";
 import { useSetupName } from "@/ui/lib/stores";
 import { ConnectWallet } from "./ConnectWallet";
 import { useRedirectWhenSignedIn } from "./useRedirectWhenSignedIn";
@@ -20,7 +20,7 @@ export function WalletSetup(): React.JSX.Element {
         <span className={styles.topSpacer} aria-hidden="true" />
       </header>
       <div className={styles.walletArt}>
-        <CardDuo size="compact" label="Illustration: your NIM card in front of a USDT card" />
+        <HeroCards variant="setup" label="Your NIM card in front of a USDT card" />
       </div>
       <section className={`${styles.setupSheet} ${styles.setupSheetShort} th-light`}>
         <div className={styles.setupIntro}>

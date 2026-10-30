@@ -166,6 +166,16 @@ export function Onboarding(): React.JSX.Element {
             </div>
           </div>
 
+          <div className={styles.copyViewport}>
+            <div ref={copyTrack} className={styles.track}>
+              {SLIDES.map((slide, i) => (
+                <div key={slide.id} className={styles.copySlide} data-active={i === index} aria-hidden={i !== index}>
+                  <h1 className={styles.headline}>{slide.title}</h1>
+                  <p className={styles.body}>{slide.body}</p>
+                </div>
+              ))}
+            </div>
+          </div>
           <div className={styles.dots}>
             {SLIDES.map((slide, i) => (
               <button
@@ -180,17 +190,6 @@ export function Onboarding(): React.JSX.Element {
                 <span />
               </button>
             ))}
-          </div>
-
-          <div className={styles.copyViewport}>
-            <div ref={copyTrack} className={styles.track}>
-              {SLIDES.map((slide, i) => (
-                <div key={slide.id} className={styles.copySlide} data-active={i === index} aria-hidden={i !== index}>
-                  <h1 className={styles.headline}>{slide.title}</h1>
-                  <p className={styles.body}>{slide.body}</p>
-                </div>
-              ))}
-            </div>
           </div>
         </div>
         <p className="sr-only" aria-live="polite">
