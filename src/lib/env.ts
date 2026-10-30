@@ -188,6 +188,17 @@ const envSchema = z.object({
   THENCE_EVM_RPCS_JSON: evmRpcMapSchema,
   /** Per-chain finality policy overrides (B4.4). Empty = documented defaults. */
   THENCE_SETTLEMENT_FINALITY_JSON: finalityMapSchema,
+  /**
+   * Trusted Nimiq JSON-RPC endpoint for read-only balance display (F6).
+   * Empty = server balance read unavailable (fail-closed; the host read
+   * through Nimiq Pay still works where the host supports it).
+   */
+  THENCE_NIMIQ_RPC_URL: z
+    .string()
+    .default("")
+    .refine((v) => v === "" || /^https:\/\/[^\s]+$/i.test(v), { message: "must be empty or an https URL" }),
+  /** Nimiq network the RPC above serves. Used to refuse cross-network balances. */
+  THENCE_NIMIQ_NETWORK: z.enum(["mainnet", "testnet"]).default("mainnet"),
   /** Trusted application origin for absolute share links, e.g. https://pay.thence.example. Empty = relative links only. */
   THENCE_APP_ORIGIN: z
     .string()
@@ -284,6 +295,8 @@ export function validateEnv(source: Record<string, string | undefined> = process
     THENCE_SATORA_BASE_URL: source["THENCE_SATORA_BASE_URL"],
     THENCE_EVM_RPCS_JSON: source["THENCE_EVM_RPCS_JSON"],
     THENCE_SETTLEMENT_FINALITY_JSON: source["THENCE_SETTLEMENT_FINALITY_JSON"],
+    THENCE_NIMIQ_RPC_URL: source["THENCE_NIMIQ_RPC_URL"],
+    THENCE_NIMIQ_NETWORK: source["THENCE_NIMIQ_NETWORK"],
     THENCE_REQUEST_DEFAULT_TTL_SECONDS: source["THENCE_REQUEST_DEFAULT_TTL_SECONDS"],
     THENCE_REQUEST_MAX_TTL_SECONDS: source["THENCE_REQUEST_MAX_TTL_SECONDS"],
     THENCE_REQUESTS_READ_RATE_PER_MINUTE: source["THENCE_REQUESTS_READ_RATE_PER_MINUTE"],

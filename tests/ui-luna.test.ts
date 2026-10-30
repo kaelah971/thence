@@ -42,11 +42,11 @@ describe("NIM balance via the provider", () => {
     let asked = "";
     const state = await readNimBalance(async () => ({ sign, getBalance: async (a: string) => ((asked = a), 250_000) }), ADDRESS);
     expect(asked).toBe(ADDRESS);
-    expect(state).toEqual({ status: "loaded", luna: 250_000n });
+    expect(state).toEqual({ status: "loaded", luna: 250_000n, source: "host", network: null });
   });
 
   it("distinguishes zero from unavailable", async () => {
-    expect(await readNimBalance(async () => ({ sign, getBalance: async () => 0 }), ADDRESS)).toEqual({ status: "loaded", luna: 0n });
+    expect(await readNimBalance(async () => ({ sign, getBalance: async () => 0 }), ADDRESS)).toEqual({ status: "loaded", luna: 0n, source: "host", network: null });
     expect(await readNimBalance(async () => ({ sign }), ADDRESS)).toEqual({ status: "unavailable", reason: "host-outdated" });
     expect(
       await readNimBalance(async () => {

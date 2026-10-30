@@ -14,6 +14,7 @@ no live money movement. Statuses: **VERIFIED**, **CONFIGURATION_REQUIRED**,
 | Enabled routes + token map | any verified subset | Only routes proven end-to-end (CONFIGURATION_REQUIRED) |
 | `THENCE_EVM_RPCS_JSON` | empty (fail-closed) or trusted | Trusted HTTPS RPCs per chain (CONFIGURATION_REQUIRED) |
 | Finality policy | defaults | Reviewed per chain (CONFIGURATION_REQUIRED) |
+| `THENCE_NIMIQ_RPC_URL` (F6) | empty, or a trusted Nimiq JSON-RPC | Trusted HTTPS Nimiq node for the read-only Home balance when the installed Nimiq Pay can't answer `getBalance`. Empty = honest "unavailable" (CONFIGURATION_REQUIRED) |
 | Edge rate limiting / WAF | not needed | Required (HOST_INTEGRATION_PENDING, §3) |
 | Nimiq Pay host | stubbed/absent | Real host integration (HOST_INTEGRATION_PENDING) |
 | Funded settlement proof | mocks only | Real mainnet claim verification (E2E_PENDING) |

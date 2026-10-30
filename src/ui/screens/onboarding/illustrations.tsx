@@ -1,5 +1,5 @@
 import { Icon } from "@/ui/components/Icon";
-import { AssetMark, CardStack } from "@/ui/components/PaymentCard";
+import { AssetMark, CardDuo } from "@/ui/components/PaymentCard";
 import { Avatar, IllustrationTag } from "@/ui/components/primitives";
 import styles from "./onboarding.module.css";
 
@@ -17,12 +17,22 @@ export function MoneyArt({ active }: ArtProps): React.JSX.Element {
         <ellipse cx="180" cy="190" rx="120" ry="150" transform="rotate(28 180 190)" />
       </svg>
       <div className={styles.moneyStack}>
-        <CardStack key={active ? "on" : "off"} size="hero" routeId="usdc-polygon" label="Illustration: a NIM card with a USDC on Polygon card emerging behind it" />
-      </div>
-      <div className={styles.flowChip} aria-hidden="true">
-        <span>NIM</span>
-        <Icon name="arrow-right" size={14} strokeWidth={2.4} />
-        <span>USDC · Polygon</span>
+        <CardDuo
+          key={active ? "on" : "off"}
+          size="hero"
+          label="Illustration: your NIM card in front of a USDT card. Note: you approve every payment; your NIM stays in Nimiq Pay until you do."
+          note={
+            <span className={styles.infoNote}>
+              <span className={styles.infoIcon}>
+                <Icon name="shield" size={16} strokeWidth={2.2} />
+              </span>
+              <span className={styles.infoText}>
+                <strong>You approve every payment</strong>
+                <span>Your NIM stays in Nimiq Pay until you do.</span>
+              </span>
+            </span>
+          }
+        />
       </div>
       <div className={styles.artTag}>
         <IllustrationTag />

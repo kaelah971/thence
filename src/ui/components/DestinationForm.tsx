@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import type { RouteId } from "@/domain/routes";
 import { DEFAULT_DESTINATION, destinationAddressIssue, destinationFor } from "@/ui/lib/assets";
+import { canSaveNetwork } from "@/ui/lib/recipients-api";
 import { Button } from "./Button";
 import { DestinationPicker } from "./DestinationPicker";
 import { Notice, TextField } from "./primitives";
@@ -13,6 +14,8 @@ export interface DestinationDraft {
   routeId: RouteId;
   address: string;
   makePreferred: boolean;
+  /** Only when `offerSave` is on: the person asked to keep this recipient. */
+  save: boolean;
 }
 
 export interface FormError {
@@ -32,6 +35,10 @@ interface DestinationFormProps {
   initial?: Partial<Omit<DestinationDraft, "makePreferred">>;
   /** When set, the form validates but cannot submit, and explains why. */
   blockedReason?: string | undefined;
+  /** One-off payments: the name is optional and asked for after the address. */
+  nameOptional?: boolean;
+  /** Offer an opt-in "Save this recipient" toggle (off by default). */
+  offerSave?: boolean;
 }
 
 export function DestinationForm({
@@ -43,22 +50,27 @@ export function DestinationForm({
   offerPreferred = false,
   initial,
   blockedReason,
+  nameOptional = false,
+  offerSave = false,
 }: DestinationFormProps): React.JSX.Element {
   const [name, setName] = useState(initial?.name ?? "");
   const [routeId, setRouteId] = useState<RouteId>(initial?.routeId ?? DEFAULT_DESTINATION);
   const [address, setAddress] = useState(initial?.address ?? "");
   const [makePreferred, setMakePreferred] = useState(true);
+  const [save, setSave] = useState(false);
   const [touched, setTouched] = useState({ name: false, address: false });
   const [serverError, setServerError] = useState<FormError | null>(null);
   const [saving, setSaving] = useState(false);
   const destination = destinationFor(routeId);
   const saveMode = mode === "save";
 
-  const nameIssue = withName && !name.trim() ? "Add a name so you know who this is." : null;
+  const lightning = destination.network === "Lightning";
+  const wantsSave = offerSave && save && canSaveNetwork(destination.network);
+  const nameRequired = withName && (!nameOptional || wantsSave);
+  const nameIssue = nameRequired && !name.trim() ? (wantsSave ? "Add a name to save this recipient." : "Add a name so you know who this is.") : null;
   const addressIssue = withAddress ? destinationAddressIssue(destination.network, address) : null;
   const nameError = (touched.name ? nameIssue : null) ?? (serverError?.field === "name" ? serverError.message : null);
   const addressError = (touched.address ? addressIssue : null) ?? (serverError?.field === "address" ? serverError.message : null);
-  const lightning = destination.network === "Lightning";
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -67,31 +79,33 @@ export function DestinationForm({
     setSaving(true);
     setServerError(null);
     try {
-      const error = await onSubmit({ name: name.trim(), routeId, address: address.trim(), makePreferred });
+      const error = await onSubmit({ name: name.trim(), routeId, address: address.trim(), makePreferred, save: wantsSave });
       if (error) setServerError(error);
     } finally {
       setSaving(false);
     }
   };
 
+  const nameField = (
+    <TextField
+      label={nameRequired ? "Their name" : "Their name (optional)"}
+      value={name}
+      onChange={(event) => {
+        setName(event.target.value.slice(0, 120));
+        setServerError(null);
+      }}
+      onBlur={() => setTouched((t) => ({ ...t, name: true }))}
+      placeholder="e.g. Alex Moreno"
+      autoComplete="off"
+      autoCapitalize="words"
+      error={nameError}
+      hint={nameRequired ? "So you recognise them next time." : "Shown on your receipt. Leave it empty if you like."}
+    />
+  );
+
   return (
     <form className={styles.form} onSubmit={(event) => void submit(event)} noValidate>
-      {withName && (
-        <TextField
-          label="Their name"
-          value={name}
-          onChange={(event) => {
-            setName(event.target.value.slice(0, 120));
-            setServerError(null);
-          }}
-          onBlur={() => setTouched((t) => ({ ...t, name: true }))}
-          placeholder="e.g. Alex Moreno"
-          autoComplete="off"
-          autoCapitalize="words"
-          error={nameError}
-          hint="So you recognise them next time."
-        />
-      )}
+      {withName && !nameOptional && nameField}
       {withAddress && (
         <>
           <DestinationPicker
@@ -124,6 +138,26 @@ export function DestinationForm({
           />
         </>
       )}
+      {withName && nameOptional && nameField}
+      {offerSave && (
+        <label className={styles.checkRow} data-disabled={!canSaveNetwork(destination.network) || undefined}>
+          <input
+            type="checkbox"
+            checked={wantsSave}
+            disabled={!canSaveNetwork(destination.network)}
+            onChange={(event) => {
+              setSave(event.target.checked);
+              setServerError(null);
+            }}
+          />
+          <span className={styles.checkText}>
+            <span>Save this recipient</span>
+            <span className={styles.checkHint}>
+              {canSaveNetwork(destination.network) ? "Optional. Find them in Recipients next time." : "Lightning wallets can't be saved yet. You can still pay."}
+            </span>
+          </span>
+        </label>
+      )}
       {offerPreferred && (
         <label className={styles.checkRow}>
           <input type="checkbox" checked={makePreferred} onChange={(event) => setMakePreferred(event.target.checked)} />
@@ -148,7 +182,7 @@ export function DestinationForm({
         aria-busy={saving}
         trailingIcon={blockedReason || saving ? undefined : "arrow-right"}
       >
-        {saving ? "Saving…" : submitLabel}
+        {saving ? (wantsSave ? "Saving…" : "Checking…") : wantsSave ? "Save and continue" : submitLabel}
       </Button>
     </form>
   );

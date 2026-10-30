@@ -8,15 +8,15 @@ import { AddressDisplay } from "@/ui/components/AddressDisplay";
 import { Button, ButtonLink } from "@/ui/components/Button";
 import { DestinationPicker } from "@/ui/components/DestinationPicker";
 import { Icon } from "@/ui/components/Icon";
-import { AssetMark, CardStack } from "@/ui/components/PaymentCard";
+import { AssetMark } from "@/ui/components/PaymentCard";
 import { Avatar, EmptyState, PreviewTag } from "@/ui/components/primitives";
 import { ActivityRow, RowSkeletons } from "@/ui/components/rows";
 import { Sheet } from "@/ui/components/Sheet";
+import { WalletCards } from "@/ui/components/WalletCards";
 import shell from "@/ui/components/shell.module.css";
 import { DEFAULT_DESTINATION, destinationFor } from "@/ui/lib/assets";
 import { useNimBalance, type BalanceState } from "@/ui/lib/balance";
 import { useActivityData } from "@/ui/lib/data";
-import { formatLuna, shortNimiqAddress } from "@/ui/lib/luna";
 import { signOutEverywhere, useSession } from "@/ui/lib/session";
 import { usePreviewMode, useSetupName } from "@/ui/lib/stores";
 import { useWallet } from "@/ui/lib/wallet";
@@ -50,52 +50,22 @@ export function Home(): React.JSX.Element {
       <section className={shell.darkTop}>
         <span className={shell.glow} aria-hidden="true" />
         <header className={styles.header}>
-          <span className={styles.hello}>
-            <Avatar name={name || "Thence"} tone="ink" size={40} />
-            <span className={styles.helloText}>
-              <span className={styles.helloSmall}>{name ? "Hello" : "Welcome to"}</span>
-              <span className={styles.helloName}>{name || "Thence"}</span>
-            </span>
-          </span>
-          {wallet.status === "connected" ? (
-            <button type="button" className={styles.connection} onClick={() => setAccountOpen(true)} aria-haspopup="dialog">
-              <span className={styles.connectionDot} data-state="connected" aria-hidden="true" />
-              Connected
+          {address ? (
+            <button type="button" className={styles.hello} onClick={() => setAccountOpen(true)} aria-haspopup="dialog" aria-label={`${name ? `Hello ${name}. ` : ""}Show wallet details`}>
+              <Avatar name={name || "Thence"} tone="ink" size={44} />
+              <HelloText name={name} />
             </button>
-          ) : wallet.status === "checking" ? (
-            <span className={styles.connection} aria-live="polite">
-              <span className={styles.connectionDot} aria-hidden="true" />
-              Checking…
-            </span>
           ) : (
-            <Link href={wallet.status === "expired" ? "/app/reconnect" : "/app/setup/wallet"} className={styles.connection}>
-              <span className={styles.connectionDot} aria-hidden="true" />
-              {wallet.status === "expired" ? "Reconnect" : "Not connected"}
-            </Link>
+            <span className={styles.hello}>
+              <Avatar name={name || "Thence"} tone="ink" size={44} />
+              <HelloText name={name} />
+            </span>
           )}
         </header>
 
-        <BalanceBlock state={balance.state} onRetry={balance.retry} />
-
-        <CardStack
-          size="home"
-          routeId={routeId}
-          label={`Your NIM card, sending value as ${destination.sentence}`}
-          className={styles.stack}
-          nimFooter={
-            <span className={styles.cardStatus}>
-              {address ? (
-                shortNimiqAddress(address)
-              ) : (
-                <>
-                  Wallet
-                  <br />
-                  not connected
-                </>
-              )}
-            </span>
-          }
-        />
+        <div className={styles.stack}>
+          <WalletCards wallet={wallet} balance={balance.state} onRetryBalance={balance.retry} onOpenAccount={() => setAccountOpen(true)} />
+        </div>
 
         <nav className={styles.actions} aria-label="Quick actions">
           <ButtonLink href="/app/send" variant="light" size="md" icon="arrow-up-right">
@@ -183,11 +153,15 @@ export function Home(): React.JSX.Element {
       <Sheet open={accountOpen} onClose={() => setAccountOpen(false)} title="Your wallet">
         {address && (
           <div className={styles.account}>
-            <p className={styles.accountLabel}>Signed in with Nimiq Pay</p>
+            <p className={styles.accountStatus}>
+              <span className={styles.connectionDot} aria-hidden="true" />
+              Connected with Nimiq Pay
+            </p>
             <AddressDisplay address={address} />
             <p className={styles.accountNote}>
               This is the address you signed in with. Nimiq Pay chooses which wallet signs and pays.
             </p>
+            <p className={styles.accountNote}>{balanceSourceNote(balance.state)}</p>
             <Button variant="soft" block icon="close" onClick={() => void signOut()} disabled={signingOut} aria-busy={signingOut}>
               {signingOut ? "Signing out…" : "Sign out of Thence"}
             </Button>
@@ -198,51 +172,32 @@ export function Home(): React.JSX.Element {
   );
 }
 
-function BalanceBlock({ state, onRetry }: { state: BalanceState; onRetry: () => void }): React.JSX.Element {
-  const formatted = state.status === "loaded" ? formatLuna(state.luna) : null;
-  const hint = (() => {
-    switch (state.status) {
-      case "loaded":
-        return formatted?.isZero ? "This wallet has no NIM yet." : "Balance of the wallet you signed in with.";
-      case "loading":
-        return "Loading your balance…";
-      case "unavailable":
-        return state.reason === "host-outdated"
-          ? "Update Nimiq Pay to see your balance here."
-          : "Open Thence in Nimiq Pay to see your balance.";
-      case "error":
-        return state.reason === "network" ? "Couldn't reach the Nimiq network." : "Couldn't load your balance.";
-      case "disconnected":
-        return "Connect your wallet to see your NIM balance.";
-    }
-  })();
-
+function HelloText({ name }: { name: string | null | undefined }): React.JSX.Element {
   return (
-    <div className={styles.balance} aria-busy={state.status === "loading"}>
-      <p className={styles.balanceLabel}>Available</p>
-      <p className={styles.balanceValue} data-state={formatted ? "loaded" : undefined}>
-        {formatted ? (
-          <span className="tabular">
-            {formatted.whole}
-            <span className={styles.balanceFraction}>.{formatted.fraction}</span>
-          </span>
-        ) : (
-          <span aria-hidden="true">—</span>
-        )}
-        <span className={styles.balanceUnit}>NIM</span>
-        {!formatted && <span className="sr-only">Balance unavailable</span>}
-      </p>
-      <p className={styles.balanceHint} aria-live="polite">
-        {hint}
-        {state.status === "error" && (
-          <>
-            {" "}
-            <button type="button" className={styles.balanceRetry} onClick={onRetry}>
-              Try again
-            </button>
-          </>
-        )}
-      </p>
-    </div>
+    <span className={styles.helloText}>
+      <span className={styles.helloSmall}>{name ? "Hello," : "Welcome to"}</span>
+      <span className={styles.helloName}>{name || "Thence"}</span>
+    </span>
   );
+}
+
+function balanceSourceNote(state: BalanceState): string {
+  switch (state.status) {
+    case "loaded":
+      return state.source === "host"
+        ? "Your balance comes straight from Nimiq Pay."
+        : "Your balance is the confirmed amount on the Nimiq network. Payments still waiting to confirm may not show yet.";
+    case "loading":
+      return "Loading your balance…";
+    case "unavailable":
+      return state.reason === "host-outdated"
+        ? "This version of Nimiq Pay can't share your balance, and Thence couldn't read it from the Nimiq network."
+        : state.reason === "network-mismatch"
+          ? "Nimiq Pay is on a different Nimiq network than Thence, so no balance is shown."
+          : "Open Thence inside Nimiq Pay to see your balance.";
+    case "error":
+      return "Thence couldn't load your balance right now. Your funds aren't affected.";
+    case "disconnected":
+      return "";
+  }
 }

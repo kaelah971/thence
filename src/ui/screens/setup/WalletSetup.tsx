@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { IconButton } from "@/ui/components/Button";
-import { CardStack } from "@/ui/components/PaymentCard";
+import { CardDuo } from "@/ui/components/PaymentCard";
 import { useSetupName } from "@/ui/lib/stores";
 import { ConnectWallet } from "./ConnectWallet";
 import { useRedirectWhenSignedIn } from "./useRedirectWhenSignedIn";
@@ -20,7 +20,7 @@ export function WalletSetup(): React.JSX.Element {
         <span className={styles.topSpacer} aria-hidden="true" />
       </header>
       <div className={styles.walletArt}>
-        <CardStack size="compact" routeId="usdc-polygon" label="Illustration: your NIM card" />
+        <CardDuo size="compact" label="Illustration: your NIM card in front of a USDT card" />
       </div>
       <section className={`${styles.setupSheet} ${styles.setupSheetShort} th-light`}>
         <div className={styles.setupIntro}>
