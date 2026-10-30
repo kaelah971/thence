@@ -1,0 +1,27 @@
+name: staging-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Dummy values for build-time env validation only.
+      # Real staging secrets live in Vercel / Neon dashboards, never here.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/thence
+      THENCE_APP_ORIGIN: https://thence-staging.example
+      THENCE_ENABLED_ROUTES: ""
+      THENCE_ROUTE_TOKENS_JSON: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
