@@ -8,8 +8,14 @@
 import { randomBytes } from "node:crypto";
 import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
 import { buildSignPayload, deriveNimiqAddress, sha256 } from "@/lib/nimiq";
+import { isLiveTestingEnabled } from "./test-db";
 
-export const LIVE = Boolean(process.env["DATABASE_URL"]);
+/**
+ * Live integration tests run ONLY with an explicit, production-safe
+ * THENCE_TEST_DATABASE_URL (installed by vitest.setup.ts). A generic
+ * DATABASE_URL never authorizes them — see tests/test-db.ts.
+ */
+export const LIVE = isLiveTestingEnabled(process.env);
 export const RUN = randomBytes(4).toString("hex");
 
 /* Fixture wallet: fresh Ed25519 keypair signing the official payload. */
