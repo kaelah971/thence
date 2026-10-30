@@ -1,0 +1,2 @@
+DROP INDEX "recipient_verifications_address_network_uidx";--> statement-breakpoint
+CREATE UNIQUE INDEX "recipient_verifications_destination_active_uidx" ON "recipient_verifications" USING btree ("destination_id") WHERE "recipient_verifications"."consumed_at" IS NULL;

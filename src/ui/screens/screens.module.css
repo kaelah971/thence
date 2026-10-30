@@ -1,0 +1,341 @@
+/* ---------- Splash ---------- */
+.splash {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 24px;
+  min-height: 100dvh;
+  padding: 0 var(--gutter);
+  animation: th-fade 400ms ease both;
+}
+
+.splashError {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  color: var(--on-ink-2);
+  text-align: center;
+}
+
+/* ---------- Setup (dark strip + white sheet) ---------- */
+.setup {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background:
+    radial-gradient(90% 40% at 50% 0%, rgba(18, 147, 106, 0.26), transparent 70%),
+    var(--ink-900);
+  color: var(--on-ink);
+}
+
+.setupTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(var(--safe-top) + 12px) var(--gutter) 16px;
+}
+
+.stepLabel {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--on-ink-2);
+}
+
+.topSpacer {
+  width: 44px;
+  height: 44px;
+}
+
+.setupSheet {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  margin-top: 8px;
+  padding: 32px var(--gutter) calc(var(--safe-bottom) + 20px);
+  border-radius: var(--r-2xl) var(--r-2xl) 0 0;
+  background: var(--paper);
+  color: var(--text);
+  box-shadow: var(--shadow-sheet);
+  animation: th-rise var(--dur-sheet) var(--ease-spring) both;
+}
+
+.setupSheetShort {
+  flex: none;
+  margin-top: auto;
+}
+
+.setupForm {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.setupIntro {
+  display: grid;
+  gap: 10px;
+}
+
+.setupTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: 700;
+  line-height: 1.08;
+}
+
+.setupBody {
+  color: var(--text-2);
+  font-size: var(--text-body-lg);
+}
+
+.nameField {
+  display: grid;
+  gap: 10px;
+  margin-top: 36px;
+}
+
+.nameLabel {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.nameInput {
+  width: 100%;
+  min-height: 64px;
+  padding: 0 18px;
+  border: 2px solid transparent;
+  border-radius: var(--r-lg);
+  background: var(--mist-100);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 1.625rem;
+  font-weight: 600;
+  outline: none;
+  transition:
+    border-color var(--dur-fast) ease,
+    background-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
+}
+
+.nameInput::placeholder {
+  color: var(--text-4);
+}
+
+.nameInput:focus {
+  border-color: var(--ink-900);
+  background: var(--paper);
+  box-shadow: 0 0 0 5px rgba(91, 227, 176, 0.25);
+}
+
+.nameHint {
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.nameError {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--status-attn);
+}
+
+.setupActions {
+  margin-top: auto;
+  padding-top: 28px;
+}
+
+/* ---------- Wallet ---------- */
+.walletArt {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 180px;
+  padding: 12px var(--gutter) 24px;
+}
+
+.connect {
+  display: grid;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.connectStatus:empty {
+  display: none;
+}
+
+.nimiqButton {
+  min-height: 60px;
+}
+
+.nimiqButtonInner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.trust,
+.trustDark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.trust {
+  color: var(--text-2);
+}
+
+.trust svg {
+  color: var(--emerald-500);
+}
+
+.trustDark {
+  color: var(--on-ink-2);
+}
+
+.trustDark svg {
+  color: var(--mint-400);
+}
+
+.devTools,
+.devToolsDark {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 14px;
+  border: 1.5px dashed var(--mist-300);
+  border-radius: var(--r-lg);
+}
+
+.devToolsDark {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.devLabel {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  color: #9a6a10;
+}
+
+.devToolsDark .devLabel {
+  color: #f6cf7d;
+}
+
+.devSegmented {
+  width: 100%;
+}
+
+.devSegmented button {
+  padding: 0 6px;
+  font-size: 0.8125rem;
+}
+
+.devLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+/* ---------- Reconnect ---------- */
+.reconnect {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: var(--ink-900);
+  color: var(--on-ink);
+}
+
+.reconnectGlow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(80% 45% at 50% 25%, rgba(18, 147, 106, 0.3), transparent 70%);
+  pointer-events: none;
+}
+
+.reconnectTop {
+  position: relative;
+  padding: calc(var(--safe-top) + 16px) var(--gutter) 0;
+}
+
+.reconnectArt {
+  position: relative;
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 200px;
+  padding: 24px var(--gutter);
+}
+
+.reconnectBody {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding: 0 var(--gutter) calc(var(--safe-bottom) + 24px);
+  animation: th-enter var(--dur-push) var(--ease-out) both;
+}
+
+.reconnectTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: 700;
+  line-height: 1.08;
+}
+
+.reconnectCopy {
+  color: var(--on-ink-2);
+  font-size: var(--text-body-lg);
+}
+
+.reconnectAlt {
+  display: inline-flex;
+  justify-content: center;
+  min-height: 44px;
+  align-items: center;
+  color: var(--on-ink-2);
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ---------- Dev preview ---------- */
+.devPreview {
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  min-height: 100dvh;
+  padding: calc(var(--safe-top) + 20px) var(--gutter) calc(var(--safe-bottom) + 24px);
+  background: radial-gradient(80% 40% at 50% 0%, rgba(18, 147, 106, 0.22), transparent 70%), var(--ink-900);
+}
+
+.devHead {
+  display: grid;
+  gap: 10px;
+}
+
+.devEyebrow {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #f6cf7d;
+}
+
+.devActions {
+  display: grid;
+  gap: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setupSheet {
+    animation-name: th-fade;
+  }
+}

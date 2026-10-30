@@ -1,0 +1,234 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hello {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.helloText {
+  display: grid;
+  min-width: 0;
+}
+
+.helloSmall {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--on-ink-3);
+}
+
+.helloName {
+  overflow: hidden;
+  font-size: 1rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px 0 12px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--line-ink);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--on-ink-2);
+}
+
+.connectionDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--on-ink-3);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+.connectionDot[data-state="connected"] {
+  background: var(--mint-400);
+  box-shadow: 0 0 0 3px rgba(91, 227, 176, 0.18);
+}
+
+.balance {
+  margin-top: 28px;
+}
+
+.balanceValue[data-state="loaded"] {
+  color: var(--on-ink);
+}
+
+.balanceFraction {
+  font-size: 0.6em;
+  opacity: 0.6;
+}
+
+.balanceRetry {
+  min-height: 32px;
+  font-weight: 700;
+  color: var(--mint-300);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.account {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.accountLabel {
+  font-size: var(--text-caption);
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.accountAddress {
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--mist-50);
+  box-shadow: inset 0 0 0 1px var(--mist-100);
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  font-size: 0.875rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.accountNote {
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.balanceLabel {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--on-ink-2);
+}
+
+.balanceValue {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 2px;
+  font-family: var(--font-display);
+  font-size: clamp(2.75rem, 13vw, 3.25rem);
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--on-ink-3);
+}
+
+.balanceUnit {
+  font-family: var(--font-body);
+  font-size: 1.125rem;
+  font-weight: 800;
+  color: var(--on-ink-2);
+}
+
+.balanceHint {
+  margin-top: 4px;
+  font-size: 0.875rem;
+  color: var(--on-ink-3);
+}
+
+.stack {
+  margin: 22px 0 0;
+}
+
+.cardStatus {
+  display: block;
+  color: var(--on-ink-2);
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.actions > a {
+  padding: 0 10px;
+}
+
+.sendAs {
+  padding: 4px 0 12px;
+  border-bottom: 0.5px solid var(--mist-200);
+}
+
+.sendAsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sendAsLabel {
+  font-size: var(--text-caption);
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.sendAsButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-top: 4px;
+  padding: 0 12px 0 8px;
+  border-radius: var(--r-full);
+  background: var(--mist-100);
+  font-size: 0.9375rem;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  transition: transform var(--dur-press) var(--ease-press);
+}
+
+.sendAsButton:active {
+  transform: scale(0.97);
+}
+
+.estimate {
+  text-align: right;
+}
+
+.estimateValue {
+  font-size: 0.9375rem;
+  font-weight: 800;
+  color: var(--text-3);
+}
+
+.estimateHint {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 0.8125rem;
+  color: var(--text-3);
+}
+
+.estimateHint svg {
+  margin-top: 2px;
+}
+
+@media (max-width: 400px) {
+  .actions svg {
+    display: none;
+  }
+}
+
+@media (max-width: 359px) {
+  .actions > a {
+    font-size: 0.8125rem;
+  }
+}

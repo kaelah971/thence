@@ -1,0 +1,189 @@
+"use client";
+
+import { useEffect } from "react";
+import { Button } from "@/ui/components/Button";
+import { Icon } from "@/ui/components/Icon";
+import { AssetMark } from "@/ui/components/PaymentCard";
+import { Notice, Skeleton } from "@/ui/components/primitives";
+import { Timeline } from "@/ui/components/Timeline";
+import { destinationFor, maskAddress } from "@/ui/lib/assets";
+import { humanAmount } from "@/ui/lib/transfers-api";
+import { progressCopy } from "@/ui/lib/settlement-client";
+import { timelineFor } from "@/ui/lib/status";
+import type { RouteId } from "@/domain/routes";
+import { useSettlement } from "./useSettlement";
+import styles from "./send.module.css";
+
+/**
+ * F4.3 — honest payment progress for a prepared transfer.
+ *
+ * Read-only tracking starts on mount (bounded, visibility-aware, cleaned
+ * up on unmount). "Delivered" renders only with the backend-confirmed
+ * immutable receipt — never from invoice, funding, claim or broadcast.
+ * The claim control stays behind the claim gate (OFF in this milestone).
+ */
+export function SettlementProgress({
+  transferId,
+  ownerUserId,
+  requestPublicId,
+  sessionValid,
+  previewMode,
+  routeId,
+  asset,
+}: {
+  transferId: string;
+  ownerUserId: string | null;
+  requestPublicId: string | null;
+  sessionValid: boolean;
+  previewMode: boolean;
+  routeId: RouteId;
+  asset: string;
+}): React.JSX.Element {
+  const settlement = useSettlement();
+  const state = settlement.state;
+
+  useEffect(() => {
+    if (transferId && ownerUserId) {
+      void settlement.track({ transferId, ownerUserId, sessionValid, previewMode });
+    }
+    return () => settlement.stop();
+    // Track once per transfer; manual refresh via Check again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transferId, ownerUserId]);
+
+  const destination = destinationFor(routeId);
+  const phase = state.phase === "idle" ? ("checking" as const) : state.phase;
+  const title = state.phase === "idle" ? "Checking your payment" : progressCopy(phase).title;
+  const message =
+    state.phase === "idle" ? "Checking your payment — do not resend." : state.message || progressCopy(phase).body;
+
+  const showClaim =
+    (state.phase === "on-its-way" || state.phase === "finishing") && state.claimReady && ownerUserId && !previewMode;
+  const showCheckAgain = state.phase === "checking" || state.phase === "attention";
+
+  return (
+    <div className={styles.quoteBox}>
+      <p className={styles.quoteLine} role="status" aria-live="polite">
+        {state.phase === "checking" || state.phase === "idle" ? (
+          <span className={styles.quoteSpinner} aria-hidden="true" />
+        ) : (
+          <Icon name={state.phase === "delivered" ? "check" : state.phase === "attention" ? "alert" : "clock"} size={14} strokeWidth={2.6} />
+        )}{" "}
+        {title}
+      </p>
+      <Notice
+        tone={state.phase === "attention" ? "warn" : state.phase === "delivered" ? "info" : "info"}
+        icon={state.phase === "delivered" ? "check" : state.phase === "attention" ? "alert" : "clock"}
+        title={title}
+        live
+      >
+        {message}
+      </Notice>
+
+      {requestPublicId && (
+        <p className={styles.ctaNote}>
+          <Icon name="lock" size={14} /> Pays request {requestPublicId.slice(0, 8)}… — the amount stays locked to the request. It counts as paid only
+          once delivery below is confirmed.
+        </p>
+      )}
+
+      {state.transferStatus && (
+        <div className={styles.next}>
+          <Timeline steps={timelineFor(state.transferStatus as never)} />
+        </div>
+      )}
+
+      {showClaim && (
+        <>
+          <Button
+            variant="soft"
+            size="md"
+            icon="arrow-right"
+            block
+            onClick={() => {
+              if (!ownerUserId) return;
+              void settlement.attemptClaim({ transferId, ownerUserId, sessionValid, previewMode });
+            }}
+          >
+            Finish delivery
+          </Button>
+          <p className={styles.ctaNote}>
+            <Icon name="lock" size={14} /> Finishing delivery is paused in this preview. If a payment is on its way, follow it in Activity \u2014 don\u2019t try again.
+          </p>
+        </>
+      )}
+
+      {showCheckAgain && ownerUserId && (
+        <Button
+          variant="soft"
+          size="md"
+          icon="refresh"
+          block
+          onClick={() => {
+            void settlement.checkAgain({ transferId, ownerUserId, sessionValid, previewMode });
+          }}
+        >
+          Check again
+        </Button>
+      )}
+
+      {state.phase === "delivered" && state.receipt && (
+        <div className={styles.receipt}>
+          <div className={styles.receiptHead}>
+            <Icon name="receipt" size={18} />
+            <p>Receipt</p>
+          </div>
+          <dl className={styles.receiptRows}>
+            <div>
+              <dt>Recipient</dt>
+              <dd>{state.receipt.recipientName?.trim() || "Someone new"}</dd>
+            </div>
+            <div>
+              <dt>They received</dt>
+              <dd className="tabular">
+                {(() => {
+                  const received = humanAmount(state.receipt?.verifiedAmountAtomic ?? "", state.receipt?.asset ?? asset);
+                  return received ? `${received} ${state.receipt?.asset}` : "—";
+                })()}
+              </dd>
+            </div>
+            <div>
+              <dt>Network</dt>
+              <dd>{state.receipt.network}</dd>
+            </div>
+            <div>
+              <dt>Wallet</dt>
+              <dd className={styles.mono}>{maskAddress(state.receipt.destination)}</dd>
+            </div>
+            <div>
+              <dt>Confirmed</dt>
+              <dd>{new Date(state.receipt.verifiedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</dd>
+            </div>
+            <div>
+              <dt>Payment proof</dt>
+              <dd>
+                <a href={state.receipt.explorerTxUrl} target="_blank" rel="noopener noreferrer" className={styles.proofLink}>
+                  View on {state.receipt.network}
+                </a>
+              </dd>
+            </div>
+          </dl>
+          {state.receipt.actualFundingProven === false && (
+            <p className={styles.ctaNote}>The receipt proves what they received. The exact amount debited from you isn&apos;t shown here.</p>
+          )}
+        </div>
+      )}
+      {state.phase === "delivered" && !state.receipt && (
+        <div className={styles.receipt} aria-busy="true">
+          <Skeleton width="40%" height={14} />
+          <Skeleton width="100%" height={60} />
+        </div>
+      )}
+      {state.phase !== "idle" && state.phase !== "delivered" && (
+        <p className={styles.ctaNote}>
+          <AssetMark asset={destination.asset} size={14} /> {destination.network} · Checking payment — do not resend.
+        </p>
+      )}
+    </div>
+  );
+}

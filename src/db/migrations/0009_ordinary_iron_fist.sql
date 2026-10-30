@@ -1,0 +1,2 @@
+ALTER TABLE "transfers" ADD COLUMN "recipient_destination_id" uuid;--> statement-breakpoint
+ALTER TABLE "transfers" ADD CONSTRAINT "transfers_recipient_destination_id_recipient_destinations_id_fk" FOREIGN KEY ("recipient_destination_id") REFERENCES "public"."recipient_destinations"("id") ON DELETE set null ON UPDATE no action;

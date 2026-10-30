@@ -1,0 +1,1 @@
+ALTER TABLE "recipient_verifications" ADD COLUMN "asset" varchar(16);

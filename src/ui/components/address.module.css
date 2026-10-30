@@ -1,0 +1,65 @@
+/* Slice 1 C2 — consistent truncated address display. Truncated value never
+   wraps (middle-truncation via maskAddress); the full value appears only in
+   the user-initiated expanded state, where wrapping is acceptable. */
+.wrap {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.wrap[data-align="end"] {
+  justify-items: end;
+  text-align: right;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wrap[data-align="end"] .row {
+  justify-content: flex-end;
+}
+
+.truncated {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.fullRow {
+  display: grid;
+  gap: 4px;
+  justify-items: inherit;
+  max-width: 100%;
+}
+
+.full {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.toggle {
+  min-height: 44px;
+  padding: 0 4px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  justify-self: start;
+}
+
+.wrap[data-align="end"] .toggle {
+  justify-self: end;
+}

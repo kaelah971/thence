@@ -1,0 +1,2 @@
+ALTER TABLE "recipient_destinations" ADD COLUMN "label" varchar(120);--> statement-breakpoint
+CREATE UNIQUE INDEX "recipient_destinations_single_default_uidx" ON "recipient_destinations" USING btree ("recipient_id") WHERE "recipient_destinations"."is_default" = TRUE;

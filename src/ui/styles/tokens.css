@@ -1,0 +1,288 @@
+/*
+ * Thence design tokens (F1).
+ * Dark charcoal + emerald/mint for brand and illustration surfaces;
+ * calm off-white for entry, calculator, lists and detail.
+ * Saturated colour lives in cards/objects, never in chrome.
+ */
+
+.th-root {
+  /* Dark brand surfaces */
+  --ink-950: #0b0f0e;
+  --ink-900: #101413;
+  --ink-850: #141a18;
+  --ink-800: #19201e;
+  --ink-700: #232c29;
+  --ink-600: #2f3a37;
+  --on-ink: #f4f7f6;
+  --on-ink-2: rgba(244, 247, 246, 0.66);
+  --on-ink-3: rgba(244, 247, 246, 0.42);
+  --line-ink: rgba(255, 255, 255, 0.08);
+
+  /* Brand */
+  --emerald-900: #06281d;
+  --emerald-700: #0b5a40;
+  --emerald-500: #12936a;
+  --mint-400: #5be3b0;
+  --mint-300: #8cefc9;
+  --mint-100: #dcfaee;
+  --glow: rgba(47, 212, 149, 0.28);
+
+  /* Light surfaces */
+  --paper: #ffffff;
+  --mist-50: #f6f8f7;
+  --mist-100: #eff3f1;
+  --mist-200: #e4e9e7;
+  --mist-300: #d3dad7;
+  --text: #111614;
+  --text-2: #5a6562;
+  --text-3: #8b9592;
+  --text-4: #b4bcb9;
+
+  /* Object colours (cards, avatars, marks only) */
+  --nim-gold: #f2b33d;
+  --usdc-blue: #2775ca;
+  --usdt-teal: #26a17b;
+  --btc-orange: #f7931a;
+  --sky-200: #cfe6ff;
+  --sun-200: #fdf0c4;
+  --coral-200: #ffd9cf;
+  --sand-200: #efe6d8;
+  --mint-200: #c9f4e2;
+
+  /* Status (functional only) */
+  --status-neutral: #5a6562;
+  --status-wait: #a8690c;
+  --status-wait-bg: #fff3dc;
+  --status-move: #0b7a56;
+  --status-move-bg: #ddf7ec;
+  --status-check: #1f62b8;
+  --status-check-bg: #e2eefc;
+  --status-attn: #b5402a;
+  --status-attn-bg: #fde7e1;
+  --status-done: #13a35b;
+  --status-done-bg: #dcf6e7;
+  --status-off-bg: #eff3f1;
+
+  /* Type */
+  --font-display: var(--font-bricolage), "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-manrope), "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --text-hero: clamp(2rem, 8.6vw, 2.5rem);
+  --text-title: clamp(1.75rem, 7.4vw, 2.125rem);
+  --text-h3: 1.25rem;
+  --text-body-lg: 1.0625rem;
+  --text-body: 0.9375rem;
+  --text-caption: 0.8125rem;
+  --text-micro: 0.6875rem;
+
+  /* Spacing (4pt grid) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-14: 56px;
+  --gutter: clamp(16px, 5.2vw, 24px);
+
+  /* Radii */
+  --r-xs: 4px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 24px;
+  --r-2xl: 32px;
+  --r-full: 999px;
+
+  /* Elevation */
+  --shadow-subtle: 0 1px 2px rgba(16, 20, 19, 0.05);
+  --shadow-sheet: 0 -10px 30px rgba(0, 0, 0, 0.12);
+  --shadow-card: 0 18px 40px -12px rgba(0, 0, 0, 0.45);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.32);
+  --shadow-soft: 0 10px 30px -10px rgba(16, 20, 19, 0.18);
+
+  /* Motion */
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-press: cubic-bezier(0.2, 0, 0, 1);
+  --dur-press: 120ms;
+  --dur-fast: 180ms;
+  --dur-base: 320ms;
+  --dur-sheet: 520ms;
+  --dur-push: 480ms;
+
+  /* Layout */
+  --app-max: 460px;
+  --nav-h: 64px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* z-index scale */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-nav: 40;
+  --z-banner: 50;
+  --z-sheet: 60;
+}
+
+body:has(.th-root) {
+  margin: 0;
+  background: var(--ink-950, #0b0f0e);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+.th-root {
+  position: relative;
+  min-height: 100dvh;
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: 1.45;
+  color: var(--on-ink);
+  background:
+    radial-gradient(120% 60% at 85% -10%, rgba(18, 147, 106, 0.22), transparent 60%),
+    radial-gradient(80% 50% at 0% 110%, rgba(18, 147, 106, 0.12), transparent 60%),
+    var(--ink-950);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.th-root *,
+.th-root *::before,
+.th-root *::after {
+  box-sizing: border-box;
+}
+
+.th-root :where(h1, h2, h3, h4, p, figure, ul, ol, dl, dd) {
+  margin: 0;
+  padding: 0;
+}
+
+.th-root :where(ul, ol) {
+  list-style: none;
+}
+
+.th-root :where(h1, h2, h3) {
+  text-wrap: balance;
+}
+
+.th-root :where(p) {
+  text-wrap: pretty;
+}
+
+.th-root :where(button, input, textarea, select) {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+.th-root :where(button) {
+  cursor: pointer;
+  border: 0;
+  background: none;
+  padding: 0;
+  touch-action: manipulation;
+}
+
+.th-root :where(a) {
+  color: inherit;
+  text-decoration: none;
+}
+
+.th-root :where(svg) {
+  display: block;
+  flex-shrink: 0;
+}
+
+.th-root :where(:focus-visible) {
+  outline: 2px solid var(--mint-400);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.th-root .th-light :where(:focus-visible),
+.th-root :where(.th-light :focus-visible) {
+  outline-color: var(--emerald-500);
+}
+
+.th-root .tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.th-root .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Screen entrance: a short push used by template.tsx */
+@keyframes th-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes th-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes th-rise {
+  from {
+    transform: translate3d(0, 100%, 0);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes th-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .th-root {
+    --dur-press: 0ms;
+    --dur-base: 200ms;
+    --dur-sheet: 200ms;
+    --dur-push: 200ms;
+  }
+
+  .th-root *,
+  .th-root *::before,
+  .th-root *::after {
+    animation-duration: 200ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+
+  .th-root [data-motion="transform"] {
+    animation-name: th-fade !important;
+    transform: none !important;
+  }
+}
