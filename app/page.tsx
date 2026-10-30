@@ -1,12 +1,9 @@
+import { redirect } from "next/navigation";
+
 /**
- * B0 placeholder. No frontend UI in this milestone — see /api/health.
- * This bare route exists only so the Next.js App Router builds.
+ * Root route: server-side redirect to the real Thence application at /app.
+ * Replaces the old B0 backend placeholder (see app/app/page.tsx EntryGate).
  */
-export default function Home(): React.JSX.Element {
-  return (
-    <main>
-      <h1>Thence</h1>
-      <p>Backend foundation (B0). See /api/health for service status.</p>
-    </main>
-  );
+export default function Home(): never {
+  redirect("/app");
 }
