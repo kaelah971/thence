@@ -29,11 +29,13 @@
 }
 
 .skip {
-  min-height: 44px;
-  padding: 0 14px;
-  margin-right: -10px;
+  min-height: 40px;
+  padding: 0 18px;
   border-radius: var(--r-full);
-  color: var(--on-ink-2);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: var(--on-ink);
+  font-size: 0.875rem;
   font-weight: 700;
 }
 
@@ -100,7 +102,8 @@
 
 .copySlide {
   flex: 0 0 100%;
-  padding: 6px var(--gutter) 0;
+  padding: 4px var(--gutter) 0;
+  text-align: center;
   opacity: 0.15;
   transition: opacity var(--dur-push) ease;
 }
@@ -111,6 +114,7 @@
 
 .headline {
   max-width: 15ch;
+  margin-inline: auto;
   font-family: var(--font-display);
   font-size: var(--text-hero);
   font-weight: 700;
@@ -118,8 +122,8 @@
 }
 
 .body {
-  max-width: 34ch;
-  margin-top: 12px;
+  max-width: 32ch;
+  margin: 12px auto 0;
   color: var(--on-ink-2);
   font-size: var(--text-body-lg);
   line-height: 1.5;
@@ -130,7 +134,7 @@
   display: flex;
   justify-content: center;
   gap: 2px;
-  padding: 6px 0 10px;
+  padding: 14px 0 0;
 }
 
 .dot {
@@ -204,65 +208,12 @@
   background: radial-gradient(circle, rgba(32, 196, 107, 0.4), transparent 66%);
 }
 
-.orbits {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  fill: none;
-  stroke: rgba(140, 239, 201, 0.16);
-  stroke-width: 1;
-}
 
-.artTag {
-  position: absolute;
-  top: 0;
-  right: 0;
-}
 
-/* Money */
-.moneyStack {
-  position: relative;
-  width: 90%;
-}
-
-.flowChip {
-  position: absolute;
-  left: 50%;
-  bottom: 2%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: var(--r-full);
-  background: rgba(16, 20, 19, 0.78);
-  box-shadow: inset 0 0 0 1px var(--line-ink);
-  color: var(--on-ink);
-  font-size: 0.75rem;
-  font-weight: 700;
-  white-space: nowrap;
-  transform: translateX(-50%);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-.flowChip svg {
-  color: var(--mint-400);
-}
-
-.art[data-active="true"] .flowChip {
-  animation: chipIn 520ms 420ms var(--ease-out) both;
-}
-
-@keyframes chipIn {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 10px);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
+/* Money: the hero card object gets the full slide width. */
+.art[data-kind="hero"] {
+  width: min(100%, 420px, 98cqh);
+  aspect-ratio: 1;
 }
 
 /* People */
@@ -594,16 +545,11 @@
     transition-duration: 200ms;
   }
 
-  .art[data-active="true"] .flowChip,
   .art[data-active="true"] .person,
   .art[data-active="true"] .receiveCard,
   .art[data-active="true"] .receipt {
     animation-name: th-fade;
     animation-delay: 0ms;
-  }
-
-  .art[data-active="true"] .flowChip {
-    transform: translateX(-50%);
   }
 
   .art[data-active="true"] .receipt {

@@ -25,3 +25,41 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  # F6.2.1/F6.3: live integration tests run ONLY against the isolated test
+  # database. The gate refuses production targets (anchor proof, not just
+  # URL comparison) and fails closed. No credentials ever appear in logs.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_ENV: development
+      APP_VERSION: 0.1.0-b0
+      # Dummy: the setup installer replaces it with the verified test URL.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/thence
+      THENCE_ENABLED_ROUTES: usdc-polygon
+      THENCE_ROUTE_TOKENS_JSON: '{"usdc-polygon":"0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"}'
+      THENCE_QUOTE_TTL_SECONDS: 300
+      THENCE_NIMIQ_RPC_URL: https://rpc.nimiqwatch.com
+      THENCE_NIMIQ_NETWORK: mainnet
+      THENCE_TEST_DATABASE_URL: ${{ secrets.THENCE_TEST_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx tsx ./tests/ci-verify-test-db.ts
+      - run: npx vitest run --maxWorkers=2
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint

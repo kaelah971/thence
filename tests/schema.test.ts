@@ -12,8 +12,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
-
-const LIVE = Boolean(process.env["DATABASE_URL"]);
+import { LIVE } from "./helpers";
 
 describe("schema definitions (static, no DB required)", () => {
   it("exposes all nine PRD §12 tables", () => {
@@ -79,7 +78,7 @@ describe("schema definitions (static, no DB required)", () => {
 
 describe("live constraint checks (requires DATABASE_URL)", () => {
   it.skipIf(!LIVE)("rejects non-atomic transfer amounts at the database", async () => {
-    if (!process.env["DATABASE_URL"]) return;
+    if (!LIVE) return; // DATABASE_URL here is the installed isolated test URL (see vitest.setup.ts).
     const { Pool } = await import("pg");
     const pool = new Pool({ connectionString: process.env["DATABASE_URL"] });
     try {
@@ -96,7 +95,7 @@ describe("live constraint checks (requires DATABASE_URL)", () => {
   });
 
   it.skipIf(!LIVE)("migrations apply cleanly in order", async () => {
-    if (!process.env["DATABASE_URL"]) return;
+    if (!LIVE) return; // DATABASE_URL here is the installed isolated test URL (see vitest.setup.ts).
     // Repeatability is owned by the journaled migrator (drizzle tracks
     // applied entries in drizzle.__drizzle_migrations), not by re-running
     // raw DDL. This test verifies the journal state + resulting schema.

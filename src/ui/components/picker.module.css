@@ -140,9 +140,26 @@
 }
 
 .checkRow input {
+  flex-shrink: 0;
   width: 20px;
   height: 20px;
   accent-color: var(--ink-900);
+}
+
+.checkRow[data-disabled] {
+  cursor: default;
+}
+
+.checkText {
+  display: grid;
+  gap: 1px;
+  padding: 6px 0;
+}
+
+.checkHint {
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--text-3);
 }
 
 .mono {

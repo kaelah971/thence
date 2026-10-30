@@ -30,7 +30,7 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px 8px;
-  margin-top: 24px;
+  margin-top: 8px;
 }
 
 .face {
@@ -67,51 +67,77 @@
   white-space: nowrap;
 }
 
-.newPerson {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  width: 100%;
-  min-height: 76px;
-  margin-top: 24px;
-  padding: 12px 16px 12px 14px;
+.choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.choice {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 4px;
+  min-height: 138px;
+  padding: 14px 14px 16px;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.06);
   box-shadow: inset 0 0 0 1px var(--line-ink);
   color: var(--on-ink);
   text-align: left;
-  transition: transform var(--dur-press) var(--ease-press), background-color var(--dur-fast) ease;
+  transition:
+    transform var(--dur-press) var(--ease-press),
+    background-color var(--dur-fast) ease;
 }
 
-.newPerson:active {
-  transform: scale(0.98);
+.choice:active {
+  transform: scale(0.97);
   background: rgba(255, 255, 255, 0.09);
 }
 
-.newIcon {
+.choice[data-primary="true"] {
+  background:
+    radial-gradient(120% 120% at 100% 100%, rgba(91, 227, 176, 0.28), transparent 60%),
+    linear-gradient(160deg, #13573f 0%, #0b3a2a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(140, 239, 201, 0.18);
+}
+
+.choiceIcon {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--on-ink);
+}
+
+.choice[data-primary="true"] .choiceIcon {
   background: var(--mint-400);
   color: var(--emerald-900);
 }
 
-.newText {
-  display: grid;
-  flex: 1;
-  gap: 2px;
-}
-
-.newTitle {
+.choiceTitle {
   font-size: 1rem;
   font-weight: 800;
+  line-height: 1.2;
 }
 
-.newSub {
+.choiceSub {
   font-size: 0.8125rem;
+  line-height: 1.35;
   color: var(--on-ink-2);
+}
+
+.facesLabel {
+  margin-top: 22px;
+  font-size: var(--text-caption);
+  font-weight: 700;
+  color: var(--on-ink-3);
 }
 
 .list {
@@ -614,7 +640,7 @@ button.walletLine:active {
   }
 
   .face:active,
-  .newPerson:active {
+  .choice:active {
     transform: none;
   }
 

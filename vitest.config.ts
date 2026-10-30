@@ -15,9 +15,10 @@ export default defineConfig({
     // Live Neon integration tests issue many sequential round-trips; the
     // default 5s budget flakes under normal cloud latency.
     testTimeout: 60_000,
-    // Bound parallel workers: 14 integration files share one Neon database
-    // and the live Satora API. Unbounded parallelism exhausts connections
-    // and trips provider throttling, producing load flakes.
+    // Bound parallel workers: integration files share the isolated test
+    // database (THENCE_TEST_DATABASE_URL — never production) and the live
+    // Satora API. Unbounded parallelism exhausts connections and trips
+    // provider throttling, producing load flakes. Prefer --maxWorkers=2.
     minWorkers: 1,
     maxWorkers: 4,
   },

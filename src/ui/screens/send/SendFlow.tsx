@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ROUTE_IDS, type RouteId } from "@/domain/routes";
 import { TRANSFER_STATUSES, isTerminal, type TransferStatus } from "@/domain/transfers";
@@ -22,6 +22,8 @@ import { ASSET_META, DEFAULT_DESTINATION, destinationFor, isEvmNetwork, maskAddr
 import { amountIssue, evaluate, formatFixed, keyFromKeyboard, type CalcKey } from "@/ui/lib/calculator";
 import { cn } from "@/ui/lib/cn";
 import { useRecipientData } from "@/ui/lib/data";
+import { addPerson } from "@/ui/lib/recipient-actions";
+import { toneFor } from "@/ui/lib/recipients-api";
 import { checkSendAmount, quoteRows, quoteWarnings, type AmountBlock, type QuoteInput } from "@/ui/lib/quotes-api";
 import { canPayRequest, getPublicRequest, isPublicId, requestRouteId, type ApiOwnerRequest, type ApiPublicRequest } from "@/ui/lib/requests-api";
 import { useApiResource } from "@/ui/lib/resource";
@@ -99,6 +101,11 @@ function firstName(name: string): string {
   return name.split(/\s+/)[0] ?? name;
 }
 
+/** One-off recipients may be unnamed: show a neutral label instead of an empty name. */
+function labelFor(payee: Payee): string {
+  return payee.name || "New recipient";
+}
+
 /** Requests can't use Lightning wallets yet (the backend rejects them). */
 const requestableRoute = (id: RouteId) => isEvmNetwork(destinationFor(id).network);
 
@@ -127,6 +134,9 @@ export function SendFlow(): React.JSX.Element {
   const [fixed, setFixed] = useState<FixedTerms | null>(null);
   const [requestRoute, setRequestRoute] = useState<RouteId>(DEFAULT_DESTINATION);
   const [newOpen, setNewOpen] = useState(false);
+  // A recipient created by "Save this recipient" whose wallet step failed: retry the wallet only.
+  const [savedDraftId, setSavedDraftId] = useState<string | null>(null);
+  const savedRef = useRef<HTMLDivElement>(null);
   const [routeSheetOpen, setRouteSheetOpen] = useState(false);
   const [walletSheet, setWalletSheet] = useState<{ recipientId: string; name: string; thenAmount: boolean } | null>(null);
   const [query, setQuery] = useState("");
@@ -243,7 +253,7 @@ export function SendFlow(): React.JSX.Element {
   }, [step, onKey, toNext]);
 
   const caption = (() => {
-    const who = mode === "request" ? "What you'll receive" : payee ? `What ${firstName(payee.name)} receives` : "What they receive";
+    const who = mode === "request" ? "What you'll receive" : payee?.name ? `What ${firstName(payee.name)} receives` : "What they receive";
     switch (calc.rejection) {
       case "precision":
         return { text: `${destination.asset} amounts use up to ${decimals} decimal places.`, tone: "error" as const };
@@ -270,6 +280,23 @@ export function SendFlow(): React.JSX.Element {
     }
     return { text: who, tone: "muted" as const };
   })();
+
+  const canSaveRecipients = session.status === "valid" && !preview;
+  const savedSummary =
+    recipients.status === "ready"
+      ? recipients.items.length === 0
+        ? "No one saved yet"
+        : `${recipients.items.length}${recipients.hasMore ? "+" : ""} saved`
+      : recipients.status === "loading"
+        ? "Loading your people…"
+        : recipients.status === "error"
+          ? "Couldn't load them"
+          : "Connect your wallet to see them";
+  const showSaved = () => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    savedRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    document.getElementById("saved-recipients")?.focus({ preventScroll: true });
+  };
 
   const filtered =
     recipients.status === "ready"
@@ -329,7 +356,7 @@ export function SendFlow(): React.JSX.Element {
         destinationId: payee.destinationId,
         routeId: payee.routeId,
         address: payee.address,
-        name: payee.name,
+        name: payee.name || null,
       },
       fixed: fixed ? { publicId: fixed.publicId, amountAtomic: fixed.amountAtomic } : null,
       targetAmountAtomic: targetAmountAtomicForHandoff,
@@ -399,8 +426,8 @@ export function SendFlow(): React.JSX.Element {
       <main className={cn(shell.screen, styles.who)} aria-hidden={sheetUp} inert={sheetUp}>
         <section className={shell.darkTop}>
           <span className={shell.glow} aria-hidden="true" />
-          <h1 className={shell.title}>Who are you paying?</h1>
-          <p className={styles.lede}>Choose someone, then set exactly what they receive.</p>
+          <h1 className={shell.title}>Send money</h1>
+          <p className={styles.lede}>Pay a wallet address directly, or pick someone you&apos;ve saved.</p>
 
           {requestId && requestResource.status === "loading" && (
             <p className={styles.requestOpening} role="status">
@@ -442,37 +469,46 @@ export function SendFlow(): React.JSX.Element {
             </div>
           )}
 
-          {recipients.status === "ready" && recipients.items.length > 0 && (
-            <ul className={styles.faces} aria-label="Recent people">
-              {recipients.items.slice(0, 6).map((r) => (
-                <li key={r.id}>
-                  <button type="button" className={styles.face} onClick={() => choosePayee(payeeFrom(r))}>
-                    <Avatar name={r.name} tone={r.tone} size={60} verified={r.walletVerified} />
-                    <span className={styles.faceName}>{firstName(r.name)}</span>
-                    <span className={styles.faceRoute}>{destinationFor(r.routeId).label}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className={styles.choices} role="group" aria-label="Who are you paying?">
+            <button type="button" className={styles.choice} data-primary="true" onClick={() => setNewOpen(true)} aria-haspopup="dialog">
+              <span className={styles.choiceIcon}>
+                <Icon name="plus" size={22} strokeWidth={2.2} />
+              </span>
+              <span className={styles.choiceTitle}>New recipient</span>
+              <span className={styles.choiceSub}>Enter or paste their wallet address</span>
+            </button>
+            <button type="button" className={styles.choice} onClick={showSaved}>
+              <span className={styles.choiceIcon}>
+                <Icon name="users" size={22} strokeWidth={2} />
+              </span>
+              <span className={styles.choiceTitle}>Saved recipient</span>
+              <span className={styles.choiceSub}>{savedSummary}</span>
+            </button>
+          </div>
 
-          <button type="button" className={styles.newPerson} onClick={() => setNewOpen(true)} aria-haspopup="dialog">
-            <span className={styles.newIcon}>
-              <Icon name="plus" size={22} strokeWidth={2.2} />
-            </span>
-            <span className={styles.newText}>
-              <span className={styles.newTitle}>Someone new</span>
-              <span className={styles.newSub}>Pay a wallet address</span>
-            </span>
-            <Icon name="chevron-right" size={20} />
-          </button>
+          {recipients.status === "ready" && recipients.items.length > 0 && (
+            <>
+              <p className={styles.facesLabel}>Recent</p>
+              <ul className={styles.faces} aria-label="Recent people">
+                {recipients.items.slice(0, 3).map((r) => (
+                  <li key={r.id}>
+                    <button type="button" className={styles.face} onClick={() => choosePayee(payeeFrom(r))}>
+                      <Avatar name={r.name} tone={r.tone} size={56} verified={r.walletVerified} />
+                      <span className={styles.faceName}>{firstName(r.name)}</span>
+                      <span className={styles.faceRoute}>{destinationFor(r.routeId).label}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </section>
 
         <section className={`${shell.paper} th-light`}>
           <span className={shell.paperHandle} aria-hidden="true" />
-          <div className={shell.sectionHead}>
-            <h2 className={shell.sectionTitle}>
-              Saved people {recipients.status === "ready" && recipients.preview && <PreviewTag />}
+          <div className={shell.sectionHead} ref={savedRef}>
+            <h2 className={shell.sectionTitle} id="saved-recipients" tabIndex={-1}>
+              Saved recipients {recipients.status === "ready" && recipients.preview && <PreviewTag />}
             </h2>
           </div>
           {recipients.status === "loading" && <RowSkeletons count={3} />}
@@ -565,9 +601,9 @@ export function SendFlow(): React.JSX.Element {
                   <button type="button" className={styles.payeeLine} onClick={() => setStep("who")}>
                     {payee ? (
                       <>
-                        <Avatar name={payee.name} tone={payee.tone} size={26} />
+                        <Avatar name={labelFor(payee)} tone={payee.tone} size={26} />
                         <span>
-                          <strong>{firstName(payee.name)}</strong> · {destination.sentence}
+                          <strong>{payee.name ? firstName(payee.name) : labelFor(payee)}</strong> · {destination.sentence}
                         </span>
                       </>
                     ) : (
@@ -669,7 +705,7 @@ export function SendFlow(): React.JSX.Element {
 
           {step === "handoff" && handoffInput && (
             <HandoffStep
-              payeeName={handoffInput.payee.name ?? payee?.name ?? "They"}
+              payeeName={handoffInput.payee.name || payee?.name || "They"}
               amount={handoffDisplayAmount}
               assetLabel={destinationFor(handoffInput.payee.routeId).asset}
               routeId={handoffInput.payee.routeId}
@@ -718,12 +754,30 @@ export function SendFlow(): React.JSX.Element {
         </section>
       )}
 
-      <Sheet open={newOpen} onClose={() => setNewOpen(false)} title="Someone new">
+      <Sheet
+        open={newOpen}
+        onClose={() => {
+          setNewOpen(false);
+          setSavedDraftId(null);
+        }}
+        title="New recipient"
+      >
         <DestinationForm
           submitLabel="Continue"
-          onSubmit={(draft: DestinationDraft) => {
+          nameOptional
+          offerSave={canSaveRecipients}
+          onSubmit={async (draft: DestinationDraft) => {
+            if (draft.save) {
+              const { recipientId, error } = await addPerson(draft, savedDraftId);
+              setSavedDraftId(error ? recipientId : null);
+              if (error || !recipientId) return error ?? { field: "form", message: "Couldn't save this recipient. Untick “Save this recipient” to pay without saving." };
+              setNewOpen(false);
+              choosePayee({ id: recipientId, name: draft.name, tone: toneFor(recipientId), routeId: draft.routeId, address: draft.address, walletVerified: false, isNew: false, destinationId: null, walletCount: 1 });
+              return null;
+            }
             setNewOpen(false);
             choosePayee({ id: null, name: draft.name, tone: "sand", routeId: draft.routeId, address: draft.address, walletVerified: false, isNew: true, destinationId: null, walletCount: 1 });
+            return null;
           }}
         />
       </Sheet>
@@ -785,8 +839,8 @@ function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quoteInput,
 
       <div className={styles.reviewScroll}>
         <div className={styles.reviewHero}>
-          <Avatar name={payee.name} tone={payee.tone} size={64} verified={payee.walletVerified} />
-          <p className={styles.reviewWho}>{firstName(payee.name)} receives</p>
+          <Avatar name={labelFor(payee)} tone={payee.tone} size={64} verified={payee.walletVerified} />
+          <p className={styles.reviewWho}>{payee.name ? `${firstName(payee.name)} receives` : "They receive"}</p>
           <p className={styles.reviewAmount}>
             <span className="tabular">{formatted}</span> <span className={styles.reviewAsset}>{destination.asset}</span>
           </p>
@@ -806,7 +860,7 @@ function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quoteInput,
           <div>
             <dt>Recipient</dt>
             <dd>
-              <span>{payee.name}</span>
+              <span>{labelFor(payee)}</span>
               <span className={payee.walletVerified ? styles.badgeOk : styles.badge}>
                 {payee.walletVerified ? "Wallet verified" : fixed ? "From their request" : payee.isNew ? "New destination" : "Added by you"}
               </span>

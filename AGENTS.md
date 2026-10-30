@@ -12,6 +12,10 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 - Verify: `npm test` (live Neon dev DB, ~8 min), `npm run typecheck`, `npm run lint`, `npm run build`. Never reset/truncate Neon.
 - Focused suites: `npx vitest run tests/<file>.test.ts`. Live-handler tests dispatch the browser client to real route handlers (see `tests/f3-data.test.ts`, `tests/f32-requests-quotes.test.ts`); mock Satora via `setSatoraFetchersForTests` + `vi.spyOn(await getSatoraClient(), "getQuote")`.
+- TEST DATABASE ISOLATION (F6.2.1, critical): live integration tests run ONLY with an explicit `THENCE_TEST_DATABASE_URL` pointing at the isolated test database (see `tests/test-db.ts`). A generic `DATABASE_URL` NEVER authorizes live tests. Never point `THENCE_TEST_DATABASE_URL` at production; the guard refuses same-target config. Never run `npm test` without the test URL configured — live suites skip safely and pure tests still run.
 - Local quoting: `.env` enables only `usdc-polygon` with the provider-verified token in `THENCE_ROUTE_TOKENS_JSON`. Check `GET /api/routes/public` after changing route config.
 - Browser QA: headless Chromium against `next dev` can loop on HMR reloads; screenshot against `npm run build && npm run start` instead.
+- `npm run start` runs with `NODE_ENV=production`, which requires an https `THENCE_APP_ORIGIN`; set it per-process for local QA (e.g. `THENCE_APP_ORIGIN=https://paywiththence.vercel.app`).
+- NIM balance (F6): host `getBalance` first (compact-address retry), then `GET /api/me/balance` (session address only, `THENCE_NIMIQ_RPC_URL` `getAccountByAddress`). Older Nimiq Pay hosts don't inject `getBalance`. Mock the RPC with `setNimiqRpcTransportForTests`. USDT balances aren't readable; the USDT card says so.
+- CSS Modules scope `animation-name`, so global `th-*` keyframes from tokens.css don't resolve inside `*.module.css`; define local keyframes.
 - Money honesty: quotes are Lightning sats, never NIM; no NIM rate exists. Swipe/review never creates transfers, invoices or swaps until F4.

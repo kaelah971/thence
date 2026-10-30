@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { CardStack } from "@/ui/components/PaymentCard";
+import { HeroCards } from "@/ui/components/HeroCards";
 import { ThenceMark } from "@/ui/components/ThenceMark";
 import { useSetupName } from "@/ui/lib/stores";
 import { ConnectWallet } from "./ConnectWallet";
@@ -19,7 +19,7 @@ export function Reconnect(): React.JSX.Element {
         <ThenceMark size={30} />
       </header>
       <div className={styles.reconnectArt}>
-        <CardStack size="compact" routeId="usdc-polygon" label="Illustration: your NIM card" />
+        <HeroCards variant="welcome" label="Your NIM card in front of a USDT card" />
       </div>
       <div className={styles.reconnectBody}>
         <h1 className={styles.reconnectTitle}>{name ? `Welcome back, ${name}.` : "Welcome back."}</h1>

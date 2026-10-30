@@ -10,6 +10,16 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
+  min-height: 48px;
+  margin-left: -4px;
+  padding: 2px 12px 2px 2px;
+  border-radius: var(--r-full);
+  text-align: left;
+  transition: transform var(--dur-press) var(--ease-press);
+}
+
+button.hello:active {
+  transform: scale(0.98);
 }
 
 .helloText {
@@ -18,66 +28,36 @@
 }
 
 .helloSmall {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--on-ink-3);
 }
 
 .helloName {
   overflow: hidden;
-  font-size: 1rem;
-  font-weight: 800;
+  font-family: var(--font-display);
+  font-size: 1.375rem;
+  font-weight: 700;
+  line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.connection {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 0 14px 0 12px;
-  border-radius: var(--r-full);
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 1px var(--line-ink);
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--on-ink-2);
 }
 
 .connectionDot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--on-ink-3);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  background: var(--status-done);
+  box-shadow: 0 0 0 3px rgba(19, 163, 91, 0.16);
 }
 
-.connectionDot[data-state="connected"] {
-  background: var(--mint-400);
-  box-shadow: 0 0 0 3px rgba(91, 227, 176, 0.18);
-}
-
-.balance {
-  margin-top: 28px;
-}
-
-.balanceValue[data-state="loaded"] {
-  color: var(--on-ink);
-}
-
-.balanceFraction {
-  font-size: 0.6em;
-  opacity: 0.6;
-}
-
-.balanceRetry {
-  min-height: 32px;
+.accountStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-caption);
   font-weight: 700;
-  color: var(--mint-300);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  color: var(--text-2);
 }
 
 .account {
@@ -86,11 +66,6 @@
   padding-bottom: 8px;
 }
 
-.accountLabel {
-  font-size: var(--text-caption);
-  font-weight: 700;
-  color: var(--text-2);
-}
 
 .accountAddress {
   padding: 14px 16px;
@@ -109,44 +84,12 @@
   color: var(--text-3);
 }
 
-.balanceLabel {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--on-ink-2);
-}
 
-.balanceValue {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-top: 2px;
-  font-family: var(--font-display);
-  font-size: clamp(2.75rem, 13vw, 3.25rem);
-  font-weight: 700;
-  line-height: 1.05;
-  color: var(--on-ink-3);
-}
 
-.balanceUnit {
-  font-family: var(--font-body);
-  font-size: 1.125rem;
-  font-weight: 800;
-  color: var(--on-ink-2);
-}
 
-.balanceHint {
-  margin-top: 4px;
-  font-size: 0.875rem;
-  color: var(--on-ink-3);
-}
 
 .stack {
-  margin: 22px 0 0;
-}
-
-.cardStatus {
-  display: block;
-  color: var(--on-ink-2);
+  margin: 18px 0 0;
 }
 
 .actions {

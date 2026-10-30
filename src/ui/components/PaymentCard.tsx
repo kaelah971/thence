@@ -1,8 +1,6 @@
 import { useId, type ReactNode } from "react";
 import type { SupportedAsset } from "@/domain/routes";
 import { cn } from "@/ui/lib/cn";
-import { destinationFor, type Destination } from "@/ui/lib/assets";
-import type { RouteId } from "@/domain/routes";
 import styles from "./cards.module.css";
 
 export function NimMark({ size = 28 }: { size?: number }): React.JSX.Element {
@@ -46,79 +44,40 @@ function Orbit(): React.JSX.Element {
   );
 }
 
-interface NimCardProps {
-  footer?: ReactNode;
-  eyebrow?: string;
-  className?: string | undefined;
+/** USDT's sibling of the NIM orbit: concentric rings rising from the corner. */
+function Rings(): React.JSX.Element {
+  return (
+    <svg className={styles.rings} viewBox="0 0 320 200" preserveAspectRatio="xMaxYMax slice" aria-hidden="true">
+      <circle cx="300" cy="196" r="64" />
+      <circle cx="300" cy="196" r="104" />
+      <circle cx="300" cy="196" r="144" />
+      <circle cx="300" cy="196" r="184" />
+    </svg>
+  );
 }
 
-/** The sender's NIM card. Shows identity only — never a fabricated balance or number. */
-export function NimCard({ footer, eyebrow = "Pay with", className }: NimCardProps): React.JSX.Element {
+export type WalletAsset = "NIM" | "USDT";
+
+/** Card surface shared by the wallet deck and illustrations: colour, pattern, depth. */
+export function CardSurface({ asset, className, children }: { asset: WalletAsset; className?: string | undefined; children: ReactNode }): React.JSX.Element {
   return (
-    <div className={cn(styles.card, styles.nim, className)}>
-      <Orbit />
+    <div className={cn(styles.card, asset === "NIM" ? styles.nim : styles.usdt, className)}>
+      {asset === "NIM" ? <Orbit /> : <Rings />}
       <span className={styles.sheen} aria-hidden="true" />
-      <div className={styles.cardTop}>
-        <NimMark />
-        <span className={styles.cardEyebrow}>{eyebrow}</span>
-      </div>
-      <div className={styles.cardBottom}>
-        <div>
-          <p className={styles.cardAsset}>NIM</p>
-          <p className={styles.cardSub}>Nimiq</p>
-        </div>
-        {footer && <div className={styles.cardFooter}>{footer}</div>}
-      </div>
+      {children}
     </div>
   );
 }
 
-interface DestinationCardProps {
-  destination: Destination;
-  eyebrow?: string;
-  className?: string | undefined;
-}
-
-export function DestinationCard({ destination, eyebrow = "They receive", className }: DestinationCardProps): React.JSX.Element {
+/** Mark + name, the top-left identity on every wallet card. */
+export function CardIdentity({ asset, sub }: { asset: WalletAsset; sub?: string | undefined }): React.JSX.Element {
   return (
-    <div className={cn(styles.card, styles.dest, styles[`dest-${destination.asset}`], className)}>
-      <span className={styles.sheen} aria-hidden="true" />
-      <div className={styles.cardTop}>
-        <span className={styles.destIdentity}>
-          <AssetMark asset={destination.asset} />
-          <span>
-            <span className={styles.destAsset}>{destination.asset}</span>
-            <span className={styles.destNetwork}>{destination.network}</span>
-          </span>
-        </span>
-        <span className={styles.cardEyebrow}>{eyebrow}</span>
-      </div>
-    </div>
-  );
-}
-
-interface CardStackProps {
-  routeId: RouteId;
-  size?: "hero" | "home" | "compact";
-  nimFooter?: ReactNode;
-  label: string;
-  className?: string | undefined;
-}
-
-/**
- * Signature layered stack: NIM in front, the destination card emerging
- * behind it. Re-keying on route makes the back card glide out again.
- */
-export function CardStack({ routeId, size = "home", nimFooter, label, className }: CardStackProps): React.JSX.Element {
-  const destination = destinationFor(routeId);
-  return (
-    <div className={cn(styles.stack, styles[`stack-${size}`], className)} role="img" aria-label={label}>
-      <div className={styles.stackBack} key={routeId}>
-        <DestinationCard destination={destination} />
-      </div>
-      <div className={styles.stackFront}>
-        <NimCard footer={nimFooter} />
-      </div>
-    </div>
+    <span className={styles.ident}>
+      {asset === "NIM" ? <NimMark size={30} /> : <AssetMark asset="USDT" size={30} />}
+      <span>
+        <span className={styles.identName}>{asset}</span>
+        {sub && <span className={styles.identSub}>{sub}</span>}
+      </span>
+    </span>
   );
 }
