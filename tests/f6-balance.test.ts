@@ -14,11 +14,20 @@ import { NimiqProviderError } from "@nimiq/mini-app-sdk";
 import { users } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { validateEnv } from "@/lib/env";
-import { NimiqBalanceReadError, NimiqBalanceUnavailableError, parseAccountBalance, readChainBalance, setNimiqRpcTransportForTests } from "@/lib/nimiq-balance";
+import {
+  clearChainBalanceCacheForTests,
+  NimiqBalanceReadError,
+  NimiqBalanceUnavailableError,
+  parseAccountBalance,
+  parseRetryAfterMs,
+  readChainBalance,
+  setNimiqBalanceSleepForTests,
+  setNimiqRpcTransportForTests,
+} from "@/lib/nimiq-balance";
 import { readNimBalance, type ChainOutcome } from "@/ui/lib/balance";
 import { buildTransferBody } from "@/ui/lib/prepare-flow";
 import { HostUnavailableError, type HostProvider } from "@/ui/lib/nimiq-provider";
-import { LIVE, loginAs } from "./helpers";
+import { LIVE, fixtureWallet, loginAs } from "./helpers";
 import { GET as balanceGET } from "../app/api/me/balance/route";
 
 const ADDRESS = "NQ07 0000 0000 0000 0000 0000 0000 0000 0000";
@@ -117,7 +126,11 @@ describe("client balance: host first, then trusted node", () => {
 
 describe("server chain reader", () => {
   const env = { NODE_ENV: "test", DATABASE_URL: "postgresql://u:p@localhost:5432/x", THENCE_NIMIQ_RPC_URL: "https://rpc.example.test" };
-  afterEach(() => setNimiqRpcTransportForTests(null));
+  afterEach(() => {
+    setNimiqRpcTransportForTests(null);
+    setNimiqBalanceSleepForTests(null);
+    clearChainBalanceCacheForTests();
+  });
 
   it("validates the RPC URL as https-only", () => {
     expect(validateEnv({ ...env, THENCE_NIMIQ_RPC_URL: "http://rpc.example.test" }).ok).toBe(false);
@@ -152,6 +165,106 @@ describe("server chain reader", () => {
       throw new TypeError("fetch failed");
     });
     await expect(readChainBalance(ADDRESS, env)).rejects.toBeInstanceOf(NimiqBalanceReadError);
+  });
+
+  it("F8.5: recovers from transient 429s with bounded retries (then stops)", async () => {
+    const sleeps: number[] = [];
+    setNimiqBalanceSleepForTests(async (ms) => {
+      sleeps.push(ms);
+    });
+    let calls = 0;
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      if (calls <= 2) throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true });
+      return { jsonrpc: "2.0", result: { data: { balance: 8_837_000_00 } }, id: 1 };
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("883700000");
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([400, 1_200]);
+  });
+
+  it("F8.5: gives up honestly after bounded attempts (never retries forever)", async () => {
+    const sleeps: number[] = [];
+    setNimiqBalanceSleepForTests(async (ms) => {
+      sleeps.push(ms);
+    });
+    let calls = 0;
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true });
+    });
+    await expect(readChainBalance(ADDRESS, env)).rejects.toMatchObject({ reason: "rate_limited" });
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([400, 1_200]);
+  });
+
+  it("F8.5: honors a capped Retry-After hint", async () => {
+    const sleeps: number[] = [];
+    setNimiqBalanceSleepForTests(async (ms) => {
+      sleeps.push(ms);
+    });
+    let calls = 0;
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      if (calls === 1) throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true, retryAfterMs: 9_000 });
+      return { jsonrpc: "2.0", result: { data: { balance: 1 } }, id: 1 };
+    });
+    await readChainBalance(ADDRESS, env);
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([3_000]);
+  });
+
+  it("F8.5: terminal answers fail immediately without retries", async () => {
+    const sleeps: number[] = [];
+    setNimiqBalanceSleepForTests(async (ms) => {
+      sleeps.push(ms);
+    });
+    let calls = 0;
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      return { jsonrpc: "2.0", error: { code: -32602, message: "Invalid params" }, id: 1 };
+    });
+    await expect(readChainBalance(ADDRESS, env)).rejects.toBeInstanceOf(NimiqBalanceReadError);
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("F8.5: parses Retry-After delta-seconds and HTTP-dates (bounded)", () => {
+    expect(parseRetryAfterMs(null)).toBeNull();
+    expect(parseRetryAfterMs("junk")).toBeNull();
+    expect(parseRetryAfterMs("2")).toBe(2_000);
+    expect(parseRetryAfterMs("120")).toBe(3_000);
+    expect(parseRetryAfterMs(new Date(Date.now() + 60_000).toUTCString())).toBe(3_000);
+    expect(parseRetryAfterMs(new Date(Date.now() - 60_000).toUTCString())).toBe(0);
+  });
+
+  it("F8.5: caches successes briefly, never failures", async () => {
+    let calls = 0;
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      return { jsonrpc: "2.0", result: { data: { balance: 7 } }, id: 1 };
+    });
+    await readChainBalance(ADDRESS, env);
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      throw new NimiqBalanceReadError("down", { reason: "failed", retryable: true });
+    });
+    // Same address reads from cache despite the failing transport.
+    expect((await readChainBalance(ADDRESS, env)).luna).toBe("7");
+    expect(calls).toBe(1);
+    // Failures are never cached: a fresh address still reaches the transport
+    // (1 initial + 2 bounded retries = 3 calls), then rejects honestly.
+    await expect(readChainBalance(fixtureWallet().address, env)).rejects.toBeInstanceOf(NimiqBalanceReadError);
+    expect(calls).toBe(4);
+    // After clearing, the next read refetches.
+    clearChainBalanceCacheForTests();
+    setNimiqRpcTransportForTests(async () => {
+      calls += 1;
+      return { jsonrpc: "2.0", result: { data: { balance: 9 } }, id: 1 };
+    });
+    expect((await readChainBalance(ADDRESS, env)).luna).toBe("9");
+    expect(calls).toBe(5);
   });
 });
 
@@ -189,6 +302,8 @@ afterAll(async () => {
 describe.skipIf(!LIVE)("GET /api/me/balance (live handler)", () => {
   afterEach(() => {
     setNimiqRpcTransportForTests(null);
+    setNimiqBalanceSleepForTests(null);
+    clearChainBalanceCacheForTests();
     delete process.env["THENCE_NIMIQ_RPC_URL"];
   });
 
@@ -215,6 +330,8 @@ describe.skipIf(!LIVE)("GET /api/me/balance (live handler)", () => {
     expect(asked).toBe(login.address);
     expect(await on.json()).toEqual({ balance: { luna: "12345", blockNumber: null, network: "mainnet", source: "chain" } });
 
+    // The previous success is cached: prove the failure path with a fresh read.
+    clearChainBalanceCacheForTests();
     setNimiqRpcTransportForTests(async () => ({ error: { code: -1, message: "down" } }));
     const down = await balanceGET(new Request("http://localhost/api/me/balance", { headers: { cookie: login.cookie } }));
     expect(down.status).toBe(503);

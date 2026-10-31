@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { users } from "@/db/schema";
 import { AuthError, requireSession } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { NimiqBalanceUnavailableError, readChainBalance } from "@/lib/nimiq-balance";
+import { NimiqBalanceReadError, NimiqBalanceUnavailableError, readChainBalance } from "@/lib/nimiq-balance";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 
 const BALANCE_READS_PER_MINUTE = 30;
@@ -36,8 +36,14 @@ export async function GET(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: err.code, message: err.message }, { status: err.status, headers: NO_STORE });
     }
     if (err instanceof NimiqBalanceUnavailableError) {
+      // Static code only: never an address, URL, or body.
+      console.warn("thence balance fallback: rpc_not_configured");
       return NextResponse.json({ error: "BALANCE_NOT_CONFIGURED", message: "Balance lookup is unavailable." }, { status: 503, headers: NO_STORE });
     }
+    // Static failure class only (rate_limited | timeout | failed): the exact
+    // layer is visible in Vercel logs without exposing any request data.
+    const reason = err instanceof NimiqBalanceReadError ? err.reason : "failed";
+    console.warn(`thence balance fallback: rpc_${reason}`);
     return NextResponse.json({ error: "BALANCE_READ_FAILED", message: "Couldn't read the Nimiq network." }, { status: 503, headers: NO_STORE });
   }
 }
