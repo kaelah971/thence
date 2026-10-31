@@ -20,7 +20,7 @@
  * OFF independently: this gate alone never authorizes a host payment.
  * Blocked attempts throw AuthError (403 PILOT_*, never a zero or silent pass).
  */
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { AuthError } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { transfers, users } from "@/db/schema";
@@ -86,6 +86,18 @@ export function canonicalKey(address: string): string {
   }
 }
 
+type PilotDb = ReturnType<typeof getDb>;
+/** Minimal handle for the budget count: plain db or a creation transaction. */
+type BudgetDb = Pick<PilotDb, "select">;
+
+/** Per-owner creation mutex: serializes the budget check + insert so two
+ * concurrent different-key creates cannot both pass the one-attempt limit.
+ * Transaction-scoped (released at commit/rollback), same advisory-lock
+ * pattern as handoff attempt locks. */
+export async function lockPilotCreate(tx: { execute: PilotDb["execute"] }, userId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"pilot-create:" + userId}))`);
+}
+
 /** Owner lookup for server-side allowlist enforcement (null when unknown). */
 export async function getOwnerAddress(userId: string): Promise<string | null> {
   const rows = await getDb().select({ nimiqAddress: users.nimiqAddress }).from(users).where(eq(users.id, userId)).limit(1);
@@ -139,12 +151,13 @@ export async function assertPilotBudget(
   userId: string,
   newAtomic: string,
   config: PilotConfig = getPilotConfig(),
+  db: BudgetDb = getDb(),
 ): Promise<void> {
   if (config.owners.length === 0) {
     if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
     return;
   }
-  const rows = await getDb()
+  const rows = await db
     .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)
     .where(eq(transfers.ownerUserId, userId));

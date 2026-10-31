@@ -27,7 +27,7 @@ import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import { paymentRequests, recipientDestinations, recipients, transfers } from "@/db/schema";
 
-import { assertPilotBudget, assertPilotIntent, getOwnerAddress } from "@/lib/pilot";
+import { assertPilotBudget, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
 import { isAtomicAmount, parseAtomicAmount } from "@/domain/money";
 import {
   TRANSFER_STATUSES,
@@ -384,31 +384,39 @@ export async function createTransfer(
   });
 
   try {
-    const inserted = await db
-      .insert(transfers)
-      .values({
-        ownerUserId: userId,
-        recipientId: intent.recipientId,
-        recipientDestinationId: intent.recipientDestinationId,
-        requestId: intent.requestId,
-        routeId: intent.routeId,
-        targetAsset: intent.asset,
-        targetNetwork: intent.network,
-        destination: intent.address,
-        targetAmountAtomic: intent.targetAmountAtomic,
-        recipientName: intent.recipientName,
-        status: "QUOTED",
-        idempotencyKey: parsed.data.idempotencyKey,
-        quoteProvider: "satora",
-        quoteRevision: 1,
-        quotedAt: new Date(quote.observedAt),
-        quotedNetTargetAtomic: quote.netTargetAmountAtomic,
-        quotedSourceSats: quote.sourceAmountSats,
-        quotedFeesJson: quote.fees,
-        quotedLimitsJson: quote.limits,
-        quoteExpiresAt: new Date(quote.validUntil),
-      })
-      .returning();
+    // Creation transaction: per-owner advisory lock + authoritative pilot
+    // re-check close the check-then-insert race between concurrent
+    // different-key creates (the pre-quote gate above is best-effort
+    // fast-fail only). Same-key races still converge via 23505 below.
+    const inserted = await db.transaction(async (tx) => {
+      await lockPilotCreate(tx, userId);
+      await assertPilotBudget(userId, intent.targetAmountAtomic, getPilotConfig(), tx);
+      return tx
+        .insert(transfers)
+        .values({
+          ownerUserId: userId,
+          recipientId: intent.recipientId,
+          recipientDestinationId: intent.recipientDestinationId,
+          requestId: intent.requestId,
+          routeId: intent.routeId,
+          targetAsset: intent.asset,
+          targetNetwork: intent.network,
+          destination: intent.address,
+          targetAmountAtomic: intent.targetAmountAtomic,
+          recipientName: intent.recipientName,
+          status: "QUOTED",
+          idempotencyKey: parsed.data.idempotencyKey,
+          quoteProvider: "satora",
+          quoteRevision: 1,
+          quotedAt: new Date(quote.observedAt),
+          quotedNetTargetAtomic: quote.netTargetAmountAtomic,
+          quotedSourceSats: quote.sourceAmountSats,
+          quotedFeesJson: quote.fees,
+          quotedLimitsJson: quote.limits,
+          quoteExpiresAt: new Date(quote.validUntil),
+        })
+        .returning();
+    });
     const row = inserted[0];
     if (!row) throw new AuthError(500, "TRANSFER_FAILED", "Could not create transfer.");
     return { transfer: await toView(db, row), deduplicated: false };
