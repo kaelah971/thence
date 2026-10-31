@@ -140,10 +140,16 @@ export function setNimiqBalanceSleepForTests(next: Sleeper | null): void {
   sleepImpl = next ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 }
 
-/** Max unsettled vault contracts read per lookup (bounded RPC load). */
+/** Max vault contracts read per lookup (bounded RPC load). */
 export const MAX_VAULT_READS = 10;
-/** Recent-history window scanned for session-funded vaults. */
-export const VAULT_DISCOVERY_LIMIT = 50;
+/** Recent-history window scanned for session-funded vaults. Older fundings
+ * beyond the window are invisible (documented limit); a full window WITH
+ * vault activity therefore marks coverage unknown (fail-closed). */
+export const VAULT_DISCOVERY_LIMIT = 100;
+/** Follow-up contract histories per lookup (rollover tracing, bounded). */
+export const MAX_CONTRACT_HISTORIES = 3;
+/** Window per contract-history read (rollovers are recent by nature). */
+export const CONTRACT_HISTORY_LIMIT = 20;
 /** Whole vault-phase budget (discovery + parallel contract reads). */
 export const VAULT_PHASE_TIMEOUT_MS = 8_000;
 /** Contract type for HTLC vaults (mirrors the provider catalogue). */
@@ -210,25 +216,33 @@ export interface VaultDiscovery {
 }
 
 /**
- * F8.6 — wallet-managed HTLC vaults (Nimiq Pay vault semantics).
+ * F8.6/F8.8 — wallet-managed HTLC vaults (Nimiq Pay vault semantics).
  *
  * Nimiq Pay parks wallet NIM in HTLC contracts: the basic account often
  * reads near-zero while the wallet UI aggregates the vaults. A basic-only
  * lookup therefore mistakes managed funds for an empty wallet. Discovery
  * mirrors the verified chain pattern: contracts the session address funded
- * (toType 2 funding leg in its history) whose returns fall short of the
- * funding are read LIVE — the live contract balance (not arithmetic) is
- * ground truth, so rollovers, partial spends, expirations and settled
- * contracts resolve correctly with no extra logic:
+ * (toType 2 funding leg in its history) are read LIVE — the live contract
+ * balance (not arithmetic) is ground truth, so settled contracts, partial
+ * spends and expirations resolve correctly with no extra logic:
  * - settled/emptied contracts read 0/absent and are excluded,
- * - unrelated contracts (never funded by this session) are never read,
+ * - unrelated contracts (never funded by this session lineage) are never read,
  * - recipient-side locks (funds locked FOR the user by others) are
  *   excluded: unilateral spendability is unverifiable from chain data,
- * - anything unreadable or over the read cap marks unknown instead of
- *   silently understating.
+ * - HTLC-to-HTLC rollovers are followed one lineage at a time (bounded
+ *   follow-up histories): a vault whose funding is unaccounted for by
+ *   returns plus live balance has its own history scanned for the next
+ *   contract; partial rollovers resolve because live balances (not
+ *   arithmetic) decide every total,
+ * - anything unreadable or over the read/history caps marks unknown
+ *   instead of silently understating (fundings older than the 100-tx
+ *   discovery window are invisible; the window covers years of normal
+ *   activity and vaults are recent-by-construction through timeouts).
  *
- * Best-effort by design: failures resolve to unknown (honest partial),
- * never to zero and never to an exception.
+ * Single-funding assumption: HTLC vaults are created once, not topped up;
+ * repeated fundings of one contract sum harmlessly. Best-effort by design:
+ * failures resolve to unknown (honest partial), never to zero and never to
+ * an exception.
  */
 export async function readManagedVaults(
   url: string,
@@ -236,78 +250,132 @@ export async function readManagedVaults(
   signal: AbortSignal,
 ): Promise<VaultDiscovery> {
   const done = (totalLuna: bigint, contracts: number, unknown: boolean): VaultDiscovery => ({ totalLuna, contracts, unknown });
-  let history: unknown;
-  try {
-    history = await postJson(
-      url,
-      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransactionsByAddress", params: [canonical, VAULT_DISCOVERY_LIMIT, null] }),
-      signal,
-    );
-  } catch {
-    return done(0n, 0, true);
-  }
-  const holder = history as { result?: unknown } | null;
-  const rawList = holder && typeof holder === "object" ? (holder.result as { data?: unknown } | unknown[] | null) : null;
-  const txs: unknown[] = Array.isArray(rawList) ? rawList : Array.isArray((rawList as { data?: unknown } | null)?.data) ? ((rawList as { data?: unknown[] }).data as unknown[]) : [];
+  const extractTxs = (history: unknown): { txs: unknown[]; truncated: boolean } => {
+    const holder = history as { result?: unknown } | null;
+    const rawList = holder && typeof holder === "object" ? (holder.result as { data?: unknown } | unknown[] | null) : null;
+    const txs: unknown[] = Array.isArray(rawList)
+      ? rawList
+      : Array.isArray((rawList as { data?: unknown } | null)?.data)
+        ? ((rawList as { data?: unknown[] }).data as unknown[])
+        : [];
+    return { txs, truncated: false };
+  };
+  const readHistory = async (address: string, limit: number): Promise<{ txs: unknown[] } | null> => {
+    let spaced: string;
+    try {
+      spaced = normalizeNimiqAddress(address);
+    } catch {
+      return { txs: [] };
+    }
+    try {
+      const payload = await postJson(
+        url,
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransactionsByAddress", params: [spaced, limit, null] }),
+        signal,
+      );
+      return extractTxs(payload);
+    } catch {
+      return null;
+    }
+  };
+  const readLiveBalance = async (contract: string): Promise<{ luna: bigint } | "empty" | null> => {
+    let spaced: string;
+    try {
+      spaced = normalizeNimiqAddress(contract);
+    } catch {
+      return "empty";
+    }
+    let payload: unknown;
+    try {
+      payload = await postJson(
+        url,
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccountByAddress", params: [spaced] }),
+        signal,
+      );
+    } catch {
+      return null;
+    }
+    const response = (payload ?? {}) as { result?: unknown };
+    if (response.result === undefined || response.result === null) return "empty"; // settled/removed: resolved empty
+    try {
+      return { luna: BigInt(parseAccountBalance(response.result).luna) };
+    } catch {
+      return null; // present but unreadable
+    }
+  };
   const own = flatAddress(canonical);
+  const sessionHistory = await readHistory(canonical, VAULT_DISCOVERY_LIMIT);
+  if (!sessionHistory) return done(0n, 0, true);
+  // Funding lineage: session fundings seed the queue; contract-to-contract
+  // legs discovered during follow-ups extend it (bounded).
   const funded = new Map<string, bigint>();
   const returned = new Map<string, bigint>();
-  for (const tx of txs) {
+  for (const tx of sessionHistory.txs) {
     const rec = parseFundingRecord(tx);
     if (!rec) continue;
     if (flatAddress(rec.sender) === own && rec.toType === HTLC_CONTRACT_TYPE) {
       const c = flatAddress(rec.recipient);
       funded.set(c, (funded.get(c) ?? 0n) + rec.value);
     }
-  }
-  for (const tx of txs) {
-    const rec = parseFundingRecord(tx);
-    if (!rec) continue;
-    const s = flatAddress(rec.sender);
-    if (flatAddress(rec.recipient) === own && funded.has(s)) {
+    if (flatAddress(rec.recipient) === own) {
+      const s = flatAddress(rec.sender);
       returned.set(s, (returned.get(s) ?? 0n) + rec.value);
     }
   }
-  const unsettled = [...funded.keys()].filter((c) => (returned.get(c) ?? 0n) < (funded.get(c) ?? 0n));
-  const capped = unsettled.length > MAX_VAULT_READS;
-  const toRead = unsettled.slice(0, MAX_VAULT_READS);
+  const seen = new Set<string>(funded.keys());
+  // Highest likely-holding balance first, so the read cap keeps the most
+  // material vaults when history is long.
+  const netFunded = (c: string): bigint => (funded.get(c) ?? 0n) - (returned.get(c) ?? 0n);
+  const queue: string[] = [...funded.keys()].sort((a, b) => {
+    const nb = netFunded(b);
+    const na = netFunded(a);
+    return nb > na ? 1 : nb < na ? -1 : 0;
+  });
   let totalLuna = 0n;
   let contracts = 0;
-  let unknown = capped;
-  await Promise.all(
-    toRead.map(async (contract) => {
-      // Query in canonical spaced form (flat is compare-only); malformed skips.
-      let spaced: string;
-      try {
-        spaced = normalizeNimiqAddress(contract);
-      } catch {
-        return;
-      }
-      let payload: unknown;
-      try {
-        payload = await postJson(
-          url,
-          JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccountByAddress", params: [spaced] }),
-          signal,
-        );
-      } catch {
+  let unknown = false;
+  let reads = 0;
+  let followups = 0;
+  while (queue.length > 0 && reads < MAX_VAULT_READS) {
+    const contract = queue.shift() as string;
+    // Fully returned contracts are settled by linkage alone: reading them
+    // could only attribute strangers' later top-ups to the user, so they
+    // are never read (this also skips the common settled-vault case).
+    if (netFunded(contract) <= 0n) continue;
+    reads += 1;
+    const live = await readLiveBalance(contract);
+    if (live === null) {
+      unknown = true;
+      continue;
+    }
+    const held = live === "empty" ? 0n : live.luna;
+    if (held > 0n) {
+      totalLuna += held;
+      contracts += 1;
+    }
+    const unexplained = (funded.get(contract) ?? 0n) - (returned.get(contract) ?? 0n) - held;
+    if (unexplained > 0n && followups < MAX_CONTRACT_HISTORIES) {
+      followups += 1;
+      const sub = await readHistory(contract, CONTRACT_HISTORY_LIMIT);
+      if (!sub) {
         unknown = true;
-        return;
+        continue;
       }
-      const response = (payload ?? {}) as { result?: unknown };
-      if (response.result === undefined || response.result === null) return; // settled/removed: resolved empty
-      try {
-        const parsed = parseAccountBalance(response.result);
-        const luna = BigInt(parsed.luna);
-        if (luna > 0n) {
-          totalLuna += luna;
-          contracts += 1;
+      for (const tx of sub.txs) {
+        const rec = parseFundingRecord(tx);
+        if (!rec) continue;
+        if (flatAddress(rec.sender) === contract && rec.toType === HTLC_CONTRACT_TYPE) {
+          const next = flatAddress(rec.recipient);
+          funded.set(next, (funded.get(next) ?? 0n) + rec.value);
+          if (!seen.has(next)) {
+            seen.add(next);
+            queue.push(next);
+          }
         }
-      } catch {
-        unknown = true; // present but unreadable: do not silently understate
       }
-    }),
-  );
+    }
+  }
+  if (queue.length > 0) unknown = true;
   return done(totalLuna, contracts, unknown);
 }
 

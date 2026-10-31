@@ -46,7 +46,9 @@ describe("NIM balance via the provider", () => {
   });
 
   it("distinguishes zero from unavailable", async () => {
-    expect(await readNimBalance(async () => ({ sign, getBalance: async () => 0 }), ADDRESS)).toEqual({ status: "loaded", luna: 0n, basicLuna: 0n, vaultLuna: null, vaultUnknown: false, source: "host", network: null });
+    // F8.8: a host zero without chain confirmation loads as zero but marks
+    // vault coverage unknown — never "verified empty" on the host alone.
+    expect(await readNimBalance(async () => ({ sign, getBalance: async () => 0 }), ADDRESS)).toEqual({ status: "loaded", luna: 0n, basicLuna: 0n, vaultLuna: null, vaultUnknown: true, source: "host", network: null });
     expect(await readNimBalance(async () => ({ sign }), ADDRESS)).toEqual({ status: "unavailable", reason: "host-outdated" });
     expect(
       await readNimBalance(async () => {
