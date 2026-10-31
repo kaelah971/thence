@@ -330,12 +330,6 @@ export async function createTransfer(
   if (!parsed.success) throw new AuthError(400, "BAD_BODY", parsed.error.issues[0]?.message ?? "Invalid transfer request.");
   const db = getDb();
   const intent = await resolveIntent(userId, parsed.data);
-  // F8 restricted pilot: server-side allowlist + caps before any live quote binds.
-  {
-    const ownerAddress = await getOwnerAddress(userId);
-    assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress });
-    await assertPilotBudget(userId, intent.targetAmountAtomic);
-  }
   const fingerprint = fingerprintTransfer({
     routeId: intent.routeId,
     asset: intent.asset,
@@ -373,6 +367,14 @@ export async function createTransfer(
 
   if (!canTransition("DRAFT", "QUOTED")) {
     throw new AuthError(500, "LIFECYCLE_FORBIDDEN", "Transfer preparation is not permitted.");
+  }
+  // F8 restricted pilot: server-side allowlist + caps. Placed AFTER the
+  // idempotent replay above so retries of the same key stay deduplicated
+  // and never strand or double-count.
+  {
+    const ownerAddress = await getOwnerAddress(userId);
+    assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress });
+    await assertPilotBudget(userId, intent.targetAmountAtomic);
   }
   // Live exact-output quote on server-controlled parameters (no second engine).
   const quote = await createQuote({

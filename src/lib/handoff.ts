@@ -178,12 +178,6 @@ export async function prepareHandoff(
     if (transfer.status !== "QUOTED") {
       throw new AuthError(409, "NOT_PREPARABLE", "Only pre-funding quoted transfers can be prepared.");
     }
-    // F8 restricted pilot: prepare is a funded-execution path.
-    assertPilotIntent({
-      routeId: transfer.routeId,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-      ownerAddress: await getOwnerAddress(userId),
-    });
     if (transfer.quoteRevision !== expectedQuoteRevision) {
       throw new AuthError(409, "VERSION_CONFLICT", "Quote revision changed; re-read the transfer before preparing.");
     }
@@ -236,6 +230,13 @@ export async function prepareHandoff(
     if (existing) {
       throw new AuthError(409, "ATTEMPT_IN_PROGRESS", "Another handoff attempt is already active for this transfer.");
     }
+    // F8 restricted pilot: prepare is a funded-execution path. Placed AFTER
+    // the idempotent replay above so crash recovery never strands an attempt.
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     // Explicitly retire stale/ambiguous predecessors (auditable, never silent).
     await tx
       .update(handoffAttempts)

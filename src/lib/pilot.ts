@@ -5,8 +5,16 @@
  * - Kill switch armed: THENCE_PILOT_ENABLED === "1" (default OFF, fail-closed)
  * - Strict route: usdc-polygon only
  * - Authenticated owner wallet allowlisted (canonical Nimiq address compare)
- * - Per-transfer atomic cap (default 3 USDC)
- * - Pilot spend + attempt caps (default 6 USDC total, 5 transfers)
+ * - Per-transfer RECIPIENT cap (default 0.10 USDC = 100000 atomic)
+ * - Pilot spend + attempt caps (default single 0.10 shot, 1 transfer)
+ *
+ * SCOPE LIMIT (honest): these caps bind the RECIPIENT USDC amount only.
+ * The NIM debit is set inside Nimiq Pay (host converts NIM->Lightning sats
+ * and shows the exact NIM figure on its own approval screen); the server
+ * never sees a NIM number, so no server gate can enforce a NIM-denominated
+ * ceiling. The $0.50 NIM budget is therefore PROCEDURAL: the user reads the
+ * host approval screen and aborts when it exceeds the agreed maximum.
+ * Never represent the atomic caps as a NIM-spend guarantee.
  *
  * Client feature flags (NEXT_PUBLIC_THENCE_ENABLE_PAYMENT / _CLAIM) stay
  * OFF independently: this gate alone never authorizes a host payment.
