@@ -16,6 +16,7 @@ import { WalletCards } from "@/ui/components/WalletCards";
 import shell from "@/ui/components/shell.module.css";
 import { DEFAULT_DESTINATION, destinationFor } from "@/ui/lib/assets";
 import { readChainBalanceFromApi, useNimBalance, type BalanceState } from "@/ui/lib/balance";
+import { buildId } from "@/ui/lib/build";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import { getHostProvider } from "@/ui/lib/nimiq-provider";
 import {
@@ -176,6 +177,7 @@ export function Home(): React.JSX.Element {
             <Button variant="soft" block icon="close" onClick={() => void signOut()} disabled={signingOut} aria-busy={signingOut}>
               {signingOut ? "Signing out…" : "Sign out of Thence"}
             </Button>
+            <p className={styles.accountNote}>Thence build {buildId()} — quote this if reporting an issue.</p>
           </div>
         )}
       </Sheet>
