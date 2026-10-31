@@ -9,13 +9,23 @@ import { Button, ButtonLink } from "@/ui/components/Button";
 import { DestinationPicker } from "@/ui/components/DestinationPicker";
 import { Icon } from "@/ui/components/Icon";
 import { AssetMark } from "@/ui/components/PaymentCard";
-import { Avatar, EmptyState, PreviewTag } from "@/ui/components/primitives";
+import { Avatar, EmptyState, Notice, PreviewTag } from "@/ui/components/primitives";
 import { ActivityRow, RowSkeletons } from "@/ui/components/rows";
 import { Sheet } from "@/ui/components/Sheet";
 import { WalletCards } from "@/ui/components/WalletCards";
 import shell from "@/ui/components/shell.module.css";
 import { DEFAULT_DESTINATION, destinationFor } from "@/ui/lib/assets";
-import { useNimBalance, type BalanceState } from "@/ui/lib/balance";
+import { readChainBalanceFromApi, useNimBalance, type BalanceState } from "@/ui/lib/balance";
+import { getHostNetwork } from "@nimiq/mini-app-sdk";
+import { getHostProvider } from "@/ui/lib/nimiq-provider";
+import {
+  diagnoseSignedWallet,
+  guidanceForSigned,
+  listOtherWallets,
+  type OtherWalletsResult,
+  type SignedWalletDiagnosis,
+} from "@/ui/lib/wallet-diagnostics";
+import { formatLuna } from "@/ui/lib/luna";
 import { useActivityData } from "@/ui/lib/data";
 import { signOutEverywhere, useSession } from "@/ui/lib/session";
 import { usePreviewMode, useSetupName } from "@/ui/lib/stores";
@@ -162,6 +172,7 @@ export function Home(): React.JSX.Element {
               This is the address you signed in with. Nimiq Pay chooses which wallet signs and pays.
             </p>
             <p className={styles.accountNote}>{balanceSourceNote(balance.state)}</p>
+            <WalletDiagnostics address={address} />
             <Button variant="soft" block icon="close" onClick={() => void signOut()} disabled={signingOut} aria-busy={signingOut}>
               {signingOut ? "Signing out…" : "Sign out of Thence"}
             </Button>
@@ -178,6 +189,172 @@ function HelloText({ name }: { name: string | null | undefined }): React.JSX.Ele
       <span className={styles.helloSmall}>{name ? "Hello," : "Welcome to"}</span>
       <span className={styles.helloName}>{name || "Thence"}</span>
     </span>
+  );
+}
+
+/**
+ * F7.3 — read-only wallet diagnostics in the account sheet.
+ * Phase 1 compares both balance sources for the signed-in wallet (no
+ * account listing). Phase 2 lists other host wallets ONLY after the user
+ * explicitly asks. Masked identities only; never changes the session.
+ */
+function WalletDiagnostics({ address }: { address: string }): React.JSX.Element {
+  const [phase, setPhase] = useState<"idle" | "checking" | "done">("idle");
+  const [signed, setSigned] = useState<SignedWalletDiagnosis | null>(null);
+  const [othersPhase, setOthersPhase] = useState<"idle" | "checking" | "done">("idle");
+  const [others, setOthers] = useState<OtherWalletsResult | null>(null);
+
+  const check = async () => {
+    if (phase === "checking") return;
+    setPhase("checking");
+    try {
+      const result = await diagnoseSignedWallet({
+        getProvider: getHostProvider,
+        readChain: readChainBalanceFromApi,
+        getHostNetwork: typeof getHostNetwork === "function" ? getHostNetwork : undefined,
+        sessionAddress: address,
+      });
+      setSigned(result);
+    } catch {
+      setSigned(null);
+    } finally {
+      setPhase("done");
+    }
+  };
+
+  const listOthers = async () => {
+    if (othersPhase === "checking") return;
+    setOthersPhase("checking");
+    try {
+      setOthers(await listOtherWallets({ getProvider: getHostProvider, sessionAddress: address }));
+    } catch {
+      setOthers({ state: "failed", sessionInHost: null, others: [] });
+    } finally {
+      setOthersPhase("done");
+    }
+  };
+
+  if (phase === "idle") {
+    return (
+      <div>
+        <Button variant="soft" block icon="info" onClick={() => void check()}>
+          Check this wallet on both sources
+        </Button>
+        <p className={styles.accountNote}>Compares Nimiq Pay with the confirmed network balance — nothing moves.</p>
+      </div>
+    );
+  }
+
+  if (phase === "checking" && !signed) {
+    return (
+      <Notice tone="info" title="Checking this wallet…">
+        Reading Nimiq Pay and the confirmed network balance. Nothing moves.
+      </Notice>
+    );
+  }
+
+  if (!signed) {
+    return (
+      <div>
+        <Notice tone="error" title="Couldn't check this wallet">
+          The check didn&apos;t finish. Try again — nothing moved.
+        </Notice>
+        <Button variant="soft" size="sm" icon="refresh" onClick={() => void check()}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+
+  const guidance = guidanceForSigned(signed);
+  const networkLabel = signed.hostNetwork === "mainnet" ? "Mainnet" : signed.hostNetwork === "testnet" ? "Testnet" : "Unknown network";
+  const fundedOthers = (others?.others ?? []).filter((e) => e.luna !== null && e.luna > 0n);
+
+  return (
+    <div>
+      <p className={styles.accountNote}>
+        Nimiq Pay network: {networkLabel} · Server network: {signed.chain.network ?? "unavailable"}.
+      </p>
+      <p className={styles.accountNote}>
+        Nimiq Pay: {signed.host.state === "loaded" ? `${formatLuna(signed.host.luna!).text} NIM` : signed.host.state}. Server:{" "}
+        {signed.chain.state === "loaded" ? `${formatLuna(signed.chain.luna!).text} NIM` : signed.chain.state}.
+      </p>
+      {guidance === "funds-confirmed" && (
+        <Notice tone="info" title="Funds confirmed">
+          Both sources agree this wallet holds funds on the read networks.
+        </Notice>
+      )}
+      {guidance === "host-chain-disagree" && (
+        <Notice tone="warn" title="Sources disagree for this wallet">
+          Nimiq Pay and the server see different balances for the signed-in wallet. This happens when the host is on a
+          different network, the host hasn&apos;t synced yet, or funds moved recently. Compare the two lines above —
+          neither is used to move money.
+        </Notice>
+      )}
+      {guidance === "empty-on-read-networks" && (
+        <Notice tone="info" title="This wallet reads empty on both sources">
+          The signed-in wallet shows 0 NIM in Nimiq Pay and 0 NIM confirmed on the server network. If your funds are
+          in a different Nimiq Pay wallet, list it below, then switch to it in Nimiq Pay and reconnect.
+        </Notice>
+      )}
+      {guidance === "no-readable-source" && (
+        <Notice tone="warn" title="No balance source is readable">
+          Nimiq Pay can&apos;t share a balance here and the server lookup isn&apos;t available. Update Nimiq Pay and try
+          again.
+        </Notice>
+      )}
+      {guidance === "read-error" && (
+        <Notice tone="error" title="Couldn't read a balance source">
+          A lookup failed. A failed lookup is never shown as zero — try again.
+        </Notice>
+      )}
+      {othersPhase === "idle" && (
+        <div>
+          <Button variant="soft" block icon="users" onClick={() => void listOthers()}>
+            List my other Nimiq Pay wallets
+          </Button>
+          <p className={styles.accountNote}>Only with your permission. Shows masked identities and balances.</p>
+        </div>
+      )}
+      {othersPhase === "checking" && !others && (
+        <Notice tone="info" title="Listing wallets…">
+          Asking Nimiq Pay for its wallet list. Nothing moves.
+        </Notice>
+      )}
+      {others && others.state === "ready" && (
+        <div>
+          <p className={styles.accountNote}>
+            {others.others.length} other wallet{others.others.length === 1 ? "" : "s"} in Nimiq Pay.
+            {others.sessionInHost === false && " The signed-in wallet isn't in that list — reconnect after switching wallets."}
+          </p>
+          {fundedOthers.length > 0 && (
+            <Notice tone="warn" title="Funds found in another wallet">
+              {fundedOthers.map((e) => `${e.masked}: ${formatLuna(e.luna!).text} NIM`).join(", ")}.
+              Switch to that wallet in Nimiq Pay, then reconnect and sign with it. Thence never switches wallets by
+              itself.
+            </Notice>
+          )}
+          {others.others.map((e) => (
+            <p key={e.key} className={styles.accountNote}>
+              {e.masked}: {e.luna !== null ? `${formatLuna(e.luna).text} NIM` : e.error ?? "unreadable"}
+            </p>
+          ))}
+        </div>
+      )}
+      {others && others.state !== "ready" && (
+        <Notice tone={others.state === "unsupported" ? "warn" : "error"} title="Couldn't list other wallets">
+          {others.state === "unsupported"
+            ? "This Nimiq Pay version can't list wallets. Update Nimiq Pay to compare wallets."
+            : "The wallet list couldn't be read. Try again — nothing moved."}
+        </Notice>
+      )}
+      <p className={styles.accountNote}>
+        <Link href="/app/reconnect">Reconnect with a different wallet</Link>
+      </p>
+      <Button variant="soft" size="sm" icon="refresh" onClick={() => void check()}>
+        Check again
+      </Button>
+    </div>
   );
 }
 

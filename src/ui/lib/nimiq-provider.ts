@@ -11,10 +11,19 @@
  */
 import { init, NimiqProviderError, type NimiqProvider } from "@nimiq/mini-app-sdk";
 
-/** The subset of the provider Thence uses in F2. `getBalance` is absent on older hosts. */
+/**
+ * The subset of the provider Thence uses.
+ * - `getBalance` is absent on older hosts.
+ * - `listAccounts` is read-only diagnostics (F7.3): it enumerates the
+ *   host's accounts only after the user explicitly asks, so Thence can
+ *   compare the signed-in wallet against the wallets Nimiq Pay holds.
+ *   It is NEVER used to pick a signer; identity stays the address the
+ *   backend derives from the verified signature.
+ */
 export interface HostProvider {
   sign: NimiqProvider["sign"];
   getBalance?: NimiqProvider["getBalance"];
+  listAccounts?: NimiqProvider["listAccounts"];
 }
 
 export type ProviderFailure = "unavailable" | "rejected" | "network" | "unsupported" | "invalid" | "failed";
