@@ -42,7 +42,7 @@ import {
   transfers,
 } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
-import { assertPilotIntent, getOwnerAddress } from "@/lib/pilot";
+import { assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig } from "@/lib/pilot";
 import { canTransition, transition } from "@/domain/transfers";
 import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
@@ -232,11 +232,16 @@ export async function prepareHandoff(
     }
     // F8 restricted pilot: prepare is a funded-execution path. Placed AFTER
     // the idempotent replay above so crash recovery never strands an attempt.
-    assertPilotIntent({
-      routeId: transfer.routeId,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-      ownerAddress: await getOwnerAddress(userId),
-    });
+    // F8.2: database kill switch gates new preparations (same ordering).
+    {
+      const config = getPilotConfig();
+      assertPilotIntent({
+        routeId: transfer.routeId,
+        targetAmountAtomic: transfer.targetAmountAtomic,
+        ownerAddress: await getOwnerAddress(userId),
+      }, config);
+      await assertPilotDbEnabled(config, tx);
+    }
     // Explicitly retire stale/ambiguous predecessors (auditable, never silent).
     await tx
       .update(handoffAttempts)
@@ -316,11 +321,16 @@ export async function attachSwap(
       throw new AuthError(409, "NOT_ATTACHABLE", "Only pre-funding quoted transfers can bind a swap.");
     }
     // F8 restricted pilot: attach binds a live swap (funded-execution path).
-    assertPilotIntent({
-      routeId: transfer.routeId,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-      ownerAddress: await getOwnerAddress(userId),
-    });
+    // F8.2: database kill switch gates new swap bindings (replay stays first).
+    {
+      const config = getPilotConfig();
+      assertPilotIntent({
+        routeId: transfer.routeId,
+        targetAmountAtomic: transfer.targetAmountAtomic,
+        ownerAddress: await getOwnerAddress(userId),
+      }, config);
+      await assertPilotDbEnabled(config, tx);
+    }
     const attempts = await tx
       .select()
       .from(handoffAttempts)
@@ -459,11 +469,17 @@ export async function authorizeHandoff(
       throw new AuthError(409, "NOT_AUTHORIZABLE", "Only swap-bound pre-funding transfers can authorize handoff.");
     }
     // F8 restricted pilot: authorization is the last server gate before host payment.
-    assertPilotIntent({
-      routeId: transfer.routeId,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-      ownerAddress: await getOwnerAddress(userId),
-    });
+    // F8.2: database kill switch gates new authorizations (in-transaction,
+    // so a stop landing mid-handoff still blocks before any host payment).
+    {
+      const config = getPilotConfig();
+      assertPilotIntent({
+        routeId: transfer.routeId,
+        targetAmountAtomic: transfer.targetAmountAtomic,
+        ownerAddress: await getOwnerAddress(userId),
+      }, config);
+      await assertPilotDbEnabled(config, tx);
+    }
     const attempts = await tx
       .select()
       .from(handoffAttempts)

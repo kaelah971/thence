@@ -1,8 +1,23 @@
 /**
- * F8 — restricted live pilot gate (server-side only).
+ * F8/F8.2 — restricted live pilot gate (server-side only).
+ *
+ * TWO-KEY RULE (F8.2 correction): Vercel environment-variable changes only
+ * apply to NEW deployments — even server-side variables. Toggling
+ * THENCE_PILOT_ENABLED in the Vercel dashboard is therefore NOT an
+ * instantaneous emergency switch (it needs a redeploy to take effect).
+ * New funded execution now requires BOTH keys:
+ * - KEY 1 (deployed env): THENCE_PILOT_ENABLED === "1" (default OFF,
+ *   fail-closed) + owner allowlist + caps below. Changed via Vercel
+ *   dashboard AND a new production deployment.
+ * - KEY 2 (database): the `pilot_controls` singleton row
+ *   (`id = 'pilot'`) has `enabled = TRUE` (default FALSE, fail-closed).
+ *   Flipped with one UPDATE — effective on the next funded request on
+ *   every already-running deployment, no redeploy. This is the
+ *   instantaneous emergency stop: set it FALSE to halt NEW funding while
+ *   recovery keeps working.
  *
  * When configured (allowlist set), all funded execution paths require:
- * - Kill switch armed: THENCE_PILOT_ENABLED === "1" (default OFF, fail-closed)
+ * - Both kill switches armed (env AND database; default OFF, fail-closed)
  * - Strict route: usdc-polygon only
  * - Authenticated owner wallet allowlisted (canonical Nimiq address compare)
  * - Per-transfer RECIPIENT cap (default 0.30 USDC = 300000 atomic)
@@ -23,7 +38,7 @@
 import { eq, sql } from "drizzle-orm";
 import { AuthError } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { transfers, users } from "@/db/schema";
+import { pilotControls, transfers, users } from "@/db/schema";
 import { normalizeNimiqAddress } from "@/lib/nimiq";
 
 // F8 pilot: proposed first-test $0.30 USDC (live quotes 2026-10-31: $0.28
@@ -139,6 +154,68 @@ export function assertPilotIntent(
   }
   if (BigInt(input.targetAmountAtomic) > BigInt(config.maxTargetAtomic)) {
     throw new AuthError(403, "PILOT_AMOUNT_EXCEEDS_MAX", "Pilot transfer exceeds the per-transfer maximum.");
+  }
+}
+
+/** Singleton id of the database kill-switch row. */
+export const PILOT_DB_ID = "pilot";
+
+/** Read handle for the kill switch: plain db or a creation transaction. */
+type KillSwitchDb = Pick<PilotDb, "select">;
+
+/**
+ * F8.2 database kill switch (KEY 2 of the two-key rule).
+ *
+ * Returns TRUE only when the `pilot_controls` singleton row exists and has
+ * `enabled = TRUE`. Fail-closed: a missing row, a missing table
+ * (pre-migration database) or any read error reads as DISABLED — never as
+ * permission. Recovery paths (reconcile, resume, attempt status, receipt,
+ * outcome reports, settlement verification) never call this, so an
+ * emergency stop halts NEW funding without stranding already-funded
+ * transfers.
+ *
+ * NO-OP unless the env gate is armed with an allowlist: unconfigured envs
+ * (no allowlist) keep legacy behavior and never touch this table — old
+ * databases without the migration keep working, and disarmed/misconfigured
+ * envs already failed closed in assertPilotIntent before any read here.
+ */
+export async function isPilotDbEnabled(
+  config: PilotConfig = getPilotConfig(),
+  db: KillSwitchDb = getDb(),
+): Promise<boolean> {
+  if (config.owners.length === 0 || !config.enabled) return false;
+  try {
+    const rows = await db
+      .select({ enabled: pilotControls.enabled })
+      .from(pilotControls)
+      .where(eq(pilotControls.id, PILOT_DB_ID))
+      .limit(1);
+    return rows[0]?.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * F8.2 database kill-switch assertion for funded-execution paths.
+ *
+ * Throws AuthError(403 PILOT_DISABLED) unless the env gate is armed AND the
+ * database switch is enabled. Call AFTER assertPilotIntent so misconfigured
+ * envs keep their specific codes (PILOT_NOT_AUTHORIZED / PILOT_ROUTE_ONLY /
+ * PILOT_AMOUNT_EXCEEDS_MAX) and a stopped database reports PILOT_DISABLED.
+ * Idempotent replays (same key / same swap) stay BEFORE both gates so crash
+ * recovery never strands a durable attempt.
+ */
+export async function assertPilotDbEnabled(
+  config: PilotConfig = getPilotConfig(),
+  db: KillSwitchDb = getDb(),
+): Promise<void> {
+  // Unconfigured envs skip the pilot entirely (legacy/quote-only flows);
+  // disarmed envs already failed closed in assertPilotIntent. Only an
+  // armed-with-allowlist env consults the database switch.
+  if (config.owners.length === 0 || !config.enabled) return;
+  if (!(await isPilotDbEnabled(config, db))) {
+    throw new AuthError(403, "PILOT_DISABLED", "Live pilot is stopped (database kill switch). No new funding is permitted.");
   }
 }
 

@@ -27,7 +27,7 @@ import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import { paymentRequests, recipientDestinations, recipients, transfers } from "@/db/schema";
 
-import { assertPilotBudget, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
+import { assertPilotBudget, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
 import { isAtomicAmount, parseAtomicAmount } from "@/domain/money";
 import {
   TRANSFER_STATUSES,
@@ -373,8 +373,12 @@ export async function createTransfer(
   // and never strand or double-count.
   {
     const ownerAddress = await getOwnerAddress(userId);
-    assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress });
-    await assertPilotBudget(userId, intent.targetAmountAtomic);
+    const config = getPilotConfig();
+    assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress }, config);
+    await assertPilotBudget(userId, intent.targetAmountAtomic, config);
+    // F8.2 KEY 2: database kill switch. Checked BEFORE the live quote so a
+    // stopped pilot never reaches the provider.
+    await assertPilotDbEnabled(config);
   }
   // Live exact-output quote on server-controlled parameters (no second engine).
   const quote = await createQuote({
@@ -390,7 +394,12 @@ export async function createTransfer(
     // fast-fail only). Same-key races still converge via 23505 below.
     const inserted = await db.transaction(async (tx) => {
       await lockPilotCreate(tx, userId);
-      await assertPilotBudget(userId, intent.targetAmountAtomic, getPilotConfig(), tx);
+      const txConfig = getPilotConfig();
+      await assertPilotBudget(userId, intent.targetAmountAtomic, txConfig, tx);
+      // F8.2: re-check the database switch inside the creation transaction
+      // so an emergency stop landing between the pre-quote gate and the
+      // insert still blocks the insert (fail-closed).
+      await assertPilotDbEnabled(txConfig, tx);
       return tx
         .insert(transfers)
         .values({
@@ -511,11 +520,16 @@ export async function requoteTransfer(
     throw new AuthError(409, "NOT_REQUOTEABLE", "Only pre-funding quoted transfers can be re-quoted.");
   }
   // F8 restricted pilot: re-quote stays inside pilot bounds (no budget recount).
-  assertPilotIntent({
-    routeId: current.routeId,
-    targetAmountAtomic: current.targetAmountAtomic,
-    ownerAddress: await getOwnerAddress(userId),
-  });
+  // F8.2: database kill switch also gates re-quotes (new funding preparation).
+  {
+    const config = getPilotConfig();
+    assertPilotIntent({
+      routeId: current.routeId,
+      targetAmountAtomic: current.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    }, config);
+    await assertPilotDbEnabled(config);
+  }
   // Resolve the live request public id for snapshot revalidation, if linked.
   let requestPublicId: string | undefined;
   if (current.requestId) {

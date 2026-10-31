@@ -118,6 +118,25 @@ as verified.
   `npm run db:migrate` (repeatable), full `npm test` on a staging DB,
   confirm `THENCE_*` production values, edge/WAF rules from §3.
 
+## 8. Pilot activation correction (F8.2)
+
+Vercel environment-variable changes apply to NEW deployments only —
+even server-side variables. Toggling `THENCE_PILOT_ENABLED` (or any
+`THENCE_*` / `NEXT_PUBLIC_*` flag) in the Vercel dashboard is NOT an
+instantaneous switch; it needs a redeploy (rebuild for `NEXT_PUBLIC_*`)
+to take effect on serving traffic.
+
+The instantaneous control is the database kill switch
+(`pilot_controls.enabled`, KEY 2 of the two-key rule): one UPDATE,
+effective on the next funded request, no redeploy. Emergency stop =
+`npm run pilot:disable`; recovery (reconcile, resume, attempt status,
+receipt, outcome reports, settlement verification) never reads the
+switch and stays available for already-funded transfers.
+
+Full ordered sequence — activation, pre-flight verification, emergency
+stop, first-test procedure, blockers: `docs/PILOT_ACTIVATION.md`.
+Do not activate from this section alone.
+
 ## 8. Verification gates for B6
 
 B6 may not start until: real Nimiq Pay host signing works end-to-end;

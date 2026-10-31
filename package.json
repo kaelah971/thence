@@ -13,6 +13,10 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx ./src/db/migrate.ts",
+    "pilot:status": "tsx ./scripts/pilot-switch.ts status",
+    "pilot:disable": "tsx ./scripts/pilot-switch.ts disable",
+    "pilot:enable": "tsx ./scripts/pilot-switch.ts enable",
+    "pilot:probe": "tsx ./scripts/probe-pilot-route.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },
