@@ -114,6 +114,25 @@ export function buildTransferBody(input: {
   return body;
 }
 
+/**
+ * Bounded wait for client-side reads that have no native timeout
+ * (IndexedDB opens/transactions, SDK storage readback). A hang here used
+ * to leave the UI on an infinite spinner with no error and no retry;
+ * timing out converts it into the normal retryable failure path.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out.`)), ms);
+  });
+  const clear = (): void => {
+    if (timer !== undefined) clearTimeout(timer);
+  };
+  // Settle the timer either way and mark the loser handled (no unhandled rejections).
+  void promise.then(clear, clear);
+  return Promise.race([promise, timeout]);
+}
+
 /** Stable idempotency key: crypto-random, durable per intent via pending pointer. */
 export function newIdempotencyKey(): string {
   try {

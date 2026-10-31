@@ -16,6 +16,7 @@ import {
   newIdempotencyKey,
   prepareTransfer,
   savePending,
+  withTimeout,
   type FixedTerms,
   type PayeeTerms,
   type PendingPointer,
@@ -49,6 +50,13 @@ export interface PreparationInput {
   tokenAddress: string | null;
   evmChainId: number | null;
 }
+
+/**
+ * F8.11: client-side storage/SDK reads have no native timeouts. A hang
+ * here used to leave the UI on an infinite spinner with no error and no
+ * retry. Reads slower than this fail into the normal retryable path.
+ */
+const VAULT_READ_TIMEOUT_MS = 15_000;
 
 const STEP_COPY: Record<PreparationStep, string> = {
   creating: "Creating your payment…",
@@ -111,6 +119,9 @@ export function usePreparation(): {
       if (inflight.current) return;
       inflight.current = true;
       lastInput.current = input;
+      // Tracked for the catch-all below: any unexpected throw or hang must
+      // surface as a bounded, retryable failure — never an endless spinner.
+      let activeTransferId: string | null = resumeTransferId ?? null;
       try {
         if (!input.tokenAddress || !input.evmChainId) {
           fail(
@@ -124,7 +135,7 @@ export function usePreparation(): {
         // 1 — idempotency key: stable per intent, survives reload via pending pointer.
         const existingPending = loadPending(input.ownerUserId);
         let idempotencyKey = newIdempotencyKey();
-        let transferId: string | null = resumeTransferId ?? null;
+        let transferId: string | null = activeTransferId;
         let attemptToken: string | null = null;
         if (existingPending && (!resumeTransferId || existingPending.transferId === resumeTransferId)) {
           // Same user, same unresolved payment: reuse the key so a refresh or
@@ -147,6 +158,7 @@ export function usePreparation(): {
             return;
           }
           transferId = created.data.transfer.id;
+          activeTransferId = transferId;
           quoteRevision = created.data.transfer.quote?.revision ?? 1;
           transferDestination = created.data.transfer.destination;
           transferTargetAtomic = created.data.transfer.targetAmountAtomic;
@@ -252,7 +264,7 @@ export function usePreparation(): {
         }
 
         // 4 — reuse check: never regenerate swap secrets blindly.
-        const vaultBinding = await loadBindingDurable(tid, input.ownerUserId);
+        const vaultBinding = await withTimeout(loadBindingDurable(tid, input.ownerUserId), VAULT_READ_TIMEOUT_MS, "recovery vault read");
         if (vaultBinding.status === "ok" && attemptToken) {
           const binding = vaultBinding.binding;
           if (
@@ -265,7 +277,7 @@ export function usePreparation(): {
               ownerUserId: input.ownerUserId,
             })
           ) {
-            const readback = await readBackSwap(binding.satoraSwapId);
+            const readback = await withTimeout(readBackSwap(binding.satoraSwapId), VAULT_READ_TIMEOUT_MS, "swap readback");
             if (readback.ok) {
               // Same swap, verified: skip creation, continue to attach.
               await attachAndAuthorize({
@@ -409,7 +421,7 @@ export function usePreparation(): {
           );
           return;
         }
-        const readback = await readBackSwap(swap.satoraSwapId);
+        const readback = await withTimeout(readBackSwap(swap.satoraSwapId), VAULT_READ_TIMEOUT_MS, "swap readback");
         if (!readback.ok || !readback.hasRecoveryMaterial) {
           fail(
             { title: "Not saved — do not pay", body: `${readback.reason ?? "The saved swap couldn't be read back."} Nothing was attached or approved.`, retryable: false, action: "abort" },
@@ -430,6 +442,21 @@ export function usePreparation(): {
           input,
           invoiceHint: swap.bolt11Invoice,
         });
+      } catch {
+        // F8.11: any unexpected throw (or timed-out storage read below) must
+        // surface as a bounded, retryable failure — never an endless spinner
+        // with no error and no retry. Nothing is created or paid here; the
+        // existing transfer (if any) stays recoverable via resume.
+        fail(
+          {
+            title: "Couldn't continue",
+            body: "Something interrupted this payment before anything was sent or approved. Try again — nothing was paid.",
+            retryable: true,
+            action: "retry",
+          },
+          "preparing",
+          activeTransferId,
+        );
       } finally {
         inflight.current = false;
       }
