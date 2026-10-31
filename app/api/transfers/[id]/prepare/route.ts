@@ -4,7 +4,7 @@
  * active attempt. No swap is created; nothing is funded or approved.
  */
 import { NextResponse } from "next/server";
-import { AuthError, assertSafeOrigin, requireSession } from "@/lib/auth";
+import { AuthError, assertSafeOrigin, logFundedFailure, requireSession } from "@/lib/auth";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { readJsonBody } from "@/lib/transfers";
@@ -34,6 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const { attempt, token, deduplicated } = await prepareHandoff(session.userId, id, expectedQuoteRevision);
     return NextResponse.json({ attempt, attemptToken: token, deduplicated }, { status: deduplicated ? 200 : 201 });
   } catch (err) {
+    logFundedFailure("prepare", err);
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
     }

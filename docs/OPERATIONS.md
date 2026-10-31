@@ -136,7 +136,9 @@ switch and stays available for already-funded transfers.
 F8.3 production rule: production never skips the pilot for missing
 configuration — a missing allowlist fails closed (`PILOT_NOT_AUTHORIZED`)
 on every funded path even with the database switch ON. Non-production
-keeps the legacy skip for dev/test/CI flows.
+keeps the legacy skip for dev/test/CI flows. F8.9: every funded-path
+failure logs one static line (`thence funded <action>: <CODE>`, allowlisted
+codes only) so production logs show which gate or provider read failed.
 
 Full ordered sequence — activation, pre-flight verification, emergency
 stop, first-test procedure, blockers: `docs/PILOT_ACTIVATION.md`.

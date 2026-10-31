@@ -5,7 +5,7 @@
  * the same swap; conflicting swap ids are rejected, never merged.
  */
 import { NextResponse } from "next/server";
-import { AuthError, assertSafeOrigin, requireSession } from "@/lib/auth";
+import { AuthError, assertSafeOrigin, logFundedFailure, requireSession } from "@/lib/auth";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { readJsonBody } from "@/lib/transfers";
@@ -30,6 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const result = await attachSwap(session.userId, id, await readJsonBody(request));
     return NextResponse.json({ attachment: result.attachment, transferStatus: result.transferStatus, deduplicated: result.deduplicated }, { status: result.deduplicated ? 200 : 201 });
   } catch (err) {
+    logFundedFailure("attach", err);
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
     }

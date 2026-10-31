@@ -282,6 +282,15 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
       return { title: "Not available right now", body: "This currency can't be paid at the moment.", retryable: false, action: "abort" };
     case "IDEMPOTENCY_CONFLICT":
       return { title: "Checking payment — do not resend", body: "A different payment already used this reference. Continue it instead of starting over.", retryable: true, action: "resume" };
+    case "PROVIDER_TIMEOUT":
+    case "PROVIDER_UNAVAILABLE":
+    case "PROVIDER_MALFORMED":
+    case "SWAP_NOT_FOUND":
+      // F8.9: transient provider-side verification failures (seen live as
+      // an unmapped 409/404/503 behind the generic fallback). Safe to retry
+      // the SAME payment (a fresh swap is created for the same attempt) —
+      // never start a new one.
+      return { title: "Provider hiccup — safe to retry", body: "The route provider didn't answer cleanly. Nothing was created or paid. Try again to continue the same payment — do not start a new one.", retryable: true, action: "retry" };
     default:
       break;
   }
