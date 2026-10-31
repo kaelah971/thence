@@ -1,6 +1,6 @@
 /**
  * F8 — restricted pilot gate unit tests (pure, no DB, no network, no funds).
- * Budget: $0.10 USDC single shot (100000 atomic), usdc-polygon only.
+ * Budget: $0.30 USDC single shot (300000 atomic), usdc-polygon only.
  */
 import { describe, expect, it } from "vitest";
 import { AuthError } from "@/lib/auth";
@@ -24,44 +24,44 @@ function config(over: Record<string, string> = {}) {
 }
 
 describe("F8 pilot gate", () => {
-  it("defaults to $0.10 single-shot caps", () => {
-    expect(DEFAULT_MAX_TARGET_ATOMIC).toBe("100000");
-    expect(DEFAULT_MAX_SPEND_ATOMIC).toBe("100000");
+  it("defaults to $0.30 single-shot caps", () => {
+    expect(DEFAULT_MAX_TARGET_ATOMIC).toBe("300000");
+    expect(DEFAULT_MAX_SPEND_ATOMIC).toBe("300000");
     const c = getPilotConfig({
       THENCE_PILOT_ENABLED: "1",
       THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: OWNER,
     });
-    expect(c.maxTargetAtomic).toBe("100000");
-    expect(c.maxSpendAtomic).toBe("100000");
+    expect(c.maxTargetAtomic).toBe("300000");
+    expect(c.maxSpendAtomic).toBe("300000");
     expect(c.maxTransfers).toBe(1);
   });
 
   it("kill switch blocks everything when not armed", () => {
     const off = getPilotConfig({ THENCE_PILOT_ENABLED: "0", THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: OWNER });
-    expect(() => assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "100000", ownerAddress: OWNER }, off)).toThrowError(
+    expect(() => assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, off)).toThrowError(
       expect.objectContaining({ code: "PILOT_DISABLED" }),
     );
   });
 
-  it("allows exactly $0.10 usdc-polygon for the allowlisted owner", () => {
+  it("allows exactly $0.30 usdc-polygon for the allowlisted owner", () => {
     expect(() =>
-      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "100000", ownerAddress: OWNER }, config()),
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, config()),
     ).not.toThrow();
   });
 
-  it("rejects other routes, other wallets, and amounts above $0.10", () => {
+  it("rejects other routes, other wallets, and amounts above $0.30", () => {
     expect(() =>
-      assertPilotIntent({ routeId: "usdc-arbitrum", targetAmountAtomic: "100000", ownerAddress: OWNER }, config()),
+      assertPilotIntent({ routeId: "usdc-arbitrum", targetAmountAtomic: "300000", ownerAddress: OWNER }, config()),
     ).toThrowError(expect.objectContaining({ code: "PILOT_ROUTE_ONLY" }));
     expect(() =>
-      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "100000", ownerAddress: OTHER }, config()),
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OTHER }, config()),
     ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
     expect(() =>
-      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "100001", ownerAddress: OWNER }, config()),
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300001", ownerAddress: OWNER }, config()),
     ).toThrowError(expect.objectContaining({ code: "PILOT_AMOUNT_EXCEEDS_MAX" }));
     // Signed-out (null address) never passes.
     expect(() =>
-      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "100000", ownerAddress: null }, config()),
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: null }, config()),
     ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
   });
 
@@ -69,7 +69,7 @@ describe("F8 pilot gate", () => {
     const compact = OWNER.replace(/\s+/g, "").toLowerCase();
     expect(canonicalKey(compact)).toBe(canonicalKey(OWNER));
     expect(() =>
-      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "100000", ownerAddress: compact }, config()),
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: compact }, config()),
     ).not.toThrow();
     expect(AuthError).toBeDefined();
   });

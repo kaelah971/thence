@@ -5,8 +5,8 @@
  * - Kill switch armed: THENCE_PILOT_ENABLED === "1" (default OFF, fail-closed)
  * - Strict route: usdc-polygon only
  * - Authenticated owner wallet allowlisted (canonical Nimiq address compare)
- * - Per-transfer RECIPIENT cap (default 0.10 USDC = 100000 atomic)
- * - Pilot spend + attempt caps (default single 0.10 shot, 1 transfer)
+ * - Per-transfer RECIPIENT cap (default 0.30 USDC = 300000 atomic)
+ * - Pilot spend + attempt caps (default single 0.30 shot, 1 transfer)
  *
  * SCOPE LIMIT (honest): these caps bind the RECIPIENT USDC amount only.
  * The NIM debit is set inside Nimiq Pay (host converts NIM->Lightning sats
@@ -26,14 +26,15 @@ import { getDb } from "@/lib/db";
 import { transfers, users } from "@/db/schema";
 import { normalizeNimiqAddress } from "@/lib/nimiq";
 
-// Budget correction (user has ~$2 NIM total; $2 USDC target CANCELLED):
-// first transfer $0.10 USDC, max total debit $0.50 USD-equiv incl fees.
-// NOTE (live check 2026-10-31): 0.10 USDC quotes 134 sats source vs
-// provider minimum 356 sats -> BELOW_MINIMUM, i.e. currently UNSUPPORTED.
-// Caps stay at 0.10 / single attempt: do NOT auto-increase.
+// F8 pilot: proposed first-test $0.30 USDC (live quotes 2026-10-31: $0.28
+// technical minimum at 368 sats vs 356 floor; $0.30 at 393 sats is the
+// smallest with margin). Single attempt, single allowlisted wallet.
+// Max total first-test spend stays $0.50 USD-equiv in NIM incl fees
+// (procedural, host-screen enforced — see SCOPE LIMIT above).
+// This code ships DISARMED (kill switch OFF) and moves no funds.
 export const PILOT_ROUTE_ID = "usdc-polygon";
-export const DEFAULT_MAX_TARGET_ATOMIC = "100000"; // 0.10 USDC
-export const DEFAULT_MAX_SPEND_ATOMIC = "100000"; // 0.10 USDC total (single shot)
+export const DEFAULT_MAX_TARGET_ATOMIC = "300000"; // 0.30 USDC
+export const DEFAULT_MAX_SPEND_ATOMIC = "300000"; // 0.30 USDC total (single shot)
 export const DEFAULT_MAX_TRANSFERS = 1;
 
 export interface PilotConfig {
