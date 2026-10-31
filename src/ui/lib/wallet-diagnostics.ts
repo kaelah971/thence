@@ -104,6 +104,10 @@ export interface SignedSourceRead {
   luna: bigint | null;
   error: "network" | "failed" | null;
   network: "mainnet" | "testnet" | null;
+  /** Managed-vault portion of a loaded chain read (null when none held). */
+  vaultLuna?: bigint | null;
+  /** True when vault discovery was incomplete: the total may understate. */
+  vaultUnknown?: boolean;
 }
 
 export interface SignedWalletDiagnosis {
@@ -186,7 +190,14 @@ export async function diagnoseSignedWallet(input: DiagnoseSignedInput): Promise<
     try {
       const outcome = await input.readChain();
       chain = outcome.ok
-        ? { state: "loaded", luna: outcome.luna, error: null, network: outcome.network }
+        ? {
+            state: "loaded",
+            luna: outcome.luna,
+            error: null,
+            network: outcome.network,
+            vaultLuna: outcome.vaults ? outcome.vaults.totalLuna : null,
+            vaultUnknown: outcome.vaultsUnknown ?? outcome.vaults === undefined,
+          }
         : outcome.reason === "not-configured"
           ? { state: "not-configured", luna: null, error: null, network: null }
           : outcome.reason === "network"

@@ -8,7 +8,7 @@
  * balance from a trusted node — never a fabricated or zero balance.
  * Mocked hosts and RPC only; not real Nimiq Pay evidence.
  */
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { NimiqProviderError } from "@nimiq/mini-app-sdk";
 import { users } from "@/db/schema";
@@ -32,19 +32,31 @@ import { GET as balanceGET } from "../app/api/me/balance/route";
 
 const ADDRESS = "NQ07 0000 0000 0000 0000 0000 0000 0000 0000";
 const sign: HostProvider["sign"] = async () => ({ publicKey: "", signature: "" });
-const chainOk = (luna: bigint, network: "mainnet" | "testnet" = "mainnet") => async (): Promise<ChainOutcome> => ({ ok: true, luna, network });
+const chainOk = (
+  luna: bigint,
+  network: "mainnet" | "testnet" = "mainnet",
+  extra: { basicLuna?: bigint; vaults?: { totalLuna: bigint; contracts: number } | null; vaultsUnknown?: boolean } = {},
+) =>
+async (): Promise<ChainOutcome> => ({
+  ok: true,
+  luna,
+  basicLuna: extra.basicLuna ?? luna,
+  vaults: extra.vaults ?? null,
+  vaultsUnknown: extra.vaultsUnknown ?? false,
+  network,
+});
 const chainOff = async (): Promise<ChainOutcome> => ({ ok: false, reason: "not-configured" });
 const outdatedHost = async (): Promise<HostProvider> => ({ sign });
 
 describe("client balance: host first, then trusted node", () => {
   it("prefers the host and tags the source", async () => {
     const state = await readNimBalance({ getProvider: async () => ({ sign, getBalance: async () => 35_260_449 }), readChain: chainOk(1n) }, ADDRESS);
-    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, source: "host", network: null });
+    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, basicLuna: 35_260_449n, vaultLuna: null, vaultUnknown: false, source: "host", network: null });
   });
 
   it("falls back to the trusted node when the host lacks getBalance (the real-device case)", async () => {
     const state = await readNimBalance({ getProvider: outdatedHost, readChain: chainOk(35_260_449n) }, ADDRESS);
-    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, source: "chain", network: "mainnet" });
+    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, basicLuna: 35_260_449n, vaultLuna: null, vaultUnknown: false, source: "chain", network: "mainnet" });
   });
 
   it("falls back when the host answers UNKNOWN_REQUEST", async () => {
@@ -54,7 +66,7 @@ describe("client balance: host first, then trusted node", () => {
         throw new NimiqProviderError("UNKNOWN_REQUEST", "Unknown method", 4200);
       },
     });
-    expect(await readNimBalance({ getProvider, readChain: chainOk(5n) }, ADDRESS)).toEqual({ status: "loaded", luna: 5n, source: "chain", network: "mainnet" });
+    expect(await readNimBalance({ getProvider, readChain: chainOk(5n) }, ADDRESS)).toEqual({ status: "loaded", luna: 5n, basicLuna: 5n, vaultLuna: null, vaultUnknown: false, source: "chain", network: "mainnet" });
   });
 
   it("retries the compact spelling only after INVALID_REQUEST", async () => {
@@ -69,11 +81,11 @@ describe("client balance: host first, then trusted node", () => {
     });
     const state = await readNimBalance({ getProvider }, ADDRESS);
     expect(asked).toEqual([ADDRESS, ADDRESS.replace(/\s+/g, "")]);
-    expect(state).toEqual({ status: "loaded", luna: 100_000n, source: "host", network: null });
+    expect(state).toEqual({ status: "loaded", luna: 100_000n, basicLuna: 100_000n, vaultLuna: null, vaultUnknown: false, source: "host", network: null });
   });
 
   it("keeps a genuine zero as zero", async () => {
-    expect(await readNimBalance({ getProvider: outdatedHost, readChain: chainOk(0n) }, ADDRESS)).toEqual({ status: "loaded", luna: 0n, source: "chain", network: "mainnet" });
+    expect(await readNimBalance({ getProvider: outdatedHost, readChain: chainOk(0n) }, ADDRESS)).toEqual({ status: "loaded", luna: 0n, basicLuna: 0n, vaultLuna: null, vaultUnknown: false, source: "chain", network: "mainnet" });
   });
 
   it("is honestly unavailable when neither the host nor a node can answer", async () => {
@@ -93,13 +105,13 @@ describe("client balance: host first, then trusted node", () => {
     let chainCalls = 0;
     const countingChain = async (): Promise<ChainOutcome> => {
       chainCalls += 1;
-      return { ok: true, luna: 1n, network: "mainnet" };
+      return { ok: true, luna: 1n, basicLuna: 1n, vaults: null, vaultsUnknown: false, network: "mainnet" };
     };
     const state = await readNimBalance(
       { getProvider: async () => ({ sign, getBalance: async () => 35_260_449 }), readChain: countingChain },
       ADDRESS,
     );
-    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, source: "host", network: null });
+    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, basicLuna: 35_260_449n, vaultLuna: null, vaultUnknown: false, source: "host", network: null });
     expect(chainCalls).toBe(0);
   });
 
@@ -107,10 +119,10 @@ describe("client balance: host first, then trusted node", () => {
     let chainCalls = 0;
     const countingChain = async (): Promise<ChainOutcome> => {
       chainCalls += 1;
-      return { ok: true, luna: 5n, network: "mainnet" };
+      return { ok: true, luna: 5n, basicLuna: 5n, vaults: null, vaultsUnknown: false, network: "mainnet" };
     };
     const state = await readNimBalance({ getProvider: outdatedHost, readChain: countingChain }, ADDRESS);
-    expect(state).toEqual({ status: "loaded", luna: 5n, source: "chain", network: "mainnet" });
+    expect(state).toEqual({ status: "loaded", luna: 5n, basicLuna: 5n, vaultLuna: null, vaultUnknown: false, source: "chain", network: "mainnet" });
     expect(chainCalls).toBe(1);
   });
 
@@ -149,12 +161,21 @@ describe("server chain reader", () => {
   it("asks for the canonical session address and returns exact Luna", async () => {
     let sent: { method: string; params: string[] } | null = null;
     setNimiqRpcTransportForTests(async (_url, body) => {
-      sent = JSON.parse(body) as { method: string; params: string[] };
+      const parsed = JSON.parse(body) as { method: string; params: string[] };
+      if (parsed.method === "getTransactionsByAddress") return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      sent = parsed;
       return { jsonrpc: "2.0", result: { data: { balance: 35_260_449 }, metadata: { blockNumber: 10 } }, id: 1 };
     });
     const balance = await readChainBalance(ADDRESS.replace(/\s+/g, ""), env);
     expect(sent).toEqual({ jsonrpc: "2.0", id: 1, method: "getAccountByAddress", params: [ADDRESS] });
-    expect(balance).toEqual({ luna: "35260449", blockNumber: 10, network: "mainnet" });
+    expect(balance).toEqual({
+      luna: "35260449",
+      basicLuna: "35260449",
+      vaults: null,
+      vaultsUnknown: false,
+      blockNumber: 10,
+      network: "mainnet",
+    });
   });
 
   it("fails closed when unconfigured, on RPC errors and on transport errors", async () => {
@@ -172,15 +193,21 @@ describe("server chain reader", () => {
     setNimiqBalanceSleepForTests(async (ms) => {
       sleeps.push(ms);
     });
-    let calls = 0;
-    setNimiqRpcTransportForTests(async () => {
-      calls += 1;
-      if (calls <= 2) throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true });
+    let basicCalls = 0;
+    let totalCalls = 0;
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      totalCalls += 1;
+      if ((JSON.parse(body) as { method: string }).method === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      }
+      basicCalls += 1;
+      if (basicCalls <= 2) throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true });
       return { jsonrpc: "2.0", result: { data: { balance: 8_837_000_00 } }, id: 1 };
     });
     const balance = await readChainBalance(ADDRESS, env);
     expect(balance.luna).toBe("883700000");
-    expect(calls).toBe(3);
+    expect(basicCalls).toBe(3);
+    expect(totalCalls).toBe(4); // + vault discovery
     expect(sleeps).toEqual([400, 1_200]);
   });
 
@@ -189,13 +216,19 @@ describe("server chain reader", () => {
     setNimiqBalanceSleepForTests(async (ms) => {
       sleeps.push(ms);
     });
-    let calls = 0;
-    setNimiqRpcTransportForTests(async () => {
-      calls += 1;
+    let basicCalls = 0;
+    let totalCalls = 0;
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      totalCalls += 1;
+      if ((JSON.parse(body) as { method: string }).method === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      }
+      basicCalls += 1;
       throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true });
     });
     await expect(readChainBalance(ADDRESS, env)).rejects.toMatchObject({ reason: "rate_limited" });
-    expect(calls).toBe(3);
+    expect(basicCalls).toBe(3);
+    expect(totalCalls).toBe(3); // basic fails: vault discovery never runs
     expect(sleeps).toEqual([400, 1_200]);
   });
 
@@ -204,14 +237,20 @@ describe("server chain reader", () => {
     setNimiqBalanceSleepForTests(async (ms) => {
       sleeps.push(ms);
     });
-    let calls = 0;
-    setNimiqRpcTransportForTests(async () => {
-      calls += 1;
-      if (calls === 1) throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true, retryAfterMs: 9_000 });
+    let basicCalls = 0;
+    let totalCalls = 0;
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      totalCalls += 1;
+      if ((JSON.parse(body) as { method: string }).method === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      }
+      basicCalls += 1;
+      if (basicCalls === 1) throw new NimiqBalanceReadError("busy", { reason: "rate_limited", retryable: true, retryAfterMs: 9_000 });
       return { jsonrpc: "2.0", result: { data: { balance: 1 } }, id: 1 };
     });
     await readChainBalance(ADDRESS, env);
-    expect(calls).toBe(2);
+    expect(basicCalls).toBe(2);
+    expect(totalCalls).toBe(3); // + vault discovery
     expect(sleeps).toEqual([3_000]);
   });
 
@@ -221,12 +260,15 @@ describe("server chain reader", () => {
       sleeps.push(ms);
     });
     let calls = 0;
-    setNimiqRpcTransportForTests(async () => {
+    setNimiqRpcTransportForTests(async (_url, body) => {
       calls += 1;
+      if ((JSON.parse(body) as { method: string }).method === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      }
       return { jsonrpc: "2.0", error: { code: -32602, message: "Invalid params" }, id: 1 };
     });
     await expect(readChainBalance(ADDRESS, env)).rejects.toBeInstanceOf(NimiqBalanceReadError);
-    expect(calls).toBe(1);
+    expect(calls).toBe(1); // terminal basic answer: no vault discovery, no retries
     expect(sleeps).toEqual([]);
   });
 
@@ -241,30 +283,191 @@ describe("server chain reader", () => {
 
   it("F8.5: caches successes briefly, never failures", async () => {
     let calls = 0;
-    setNimiqRpcTransportForTests(async () => {
+    const routed = (basic: () => unknown) => async (_url: string, body: string) => {
       calls += 1;
-      return { jsonrpc: "2.0", result: { data: { balance: 7 } }, id: 1 };
-    });
+      if ((JSON.parse(body) as { method: string }).method === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      }
+      return basic();
+    };
+    setNimiqRpcTransportForTests(routed(() => ({ jsonrpc: "2.0", result: { data: { balance: 7 } }, id: 1 })));
     await readChainBalance(ADDRESS, env);
-    setNimiqRpcTransportForTests(async () => {
-      calls += 1;
-      throw new NimiqBalanceReadError("down", { reason: "failed", retryable: true });
-    });
+    expect(calls).toBe(2); // basic + vault discovery
+    setNimiqRpcTransportForTests(
+      routed(() => {
+        throw new NimiqBalanceReadError("down", { reason: "failed", retryable: true });
+      }),
+    );
     // Same address reads from cache despite the failing transport.
     expect((await readChainBalance(ADDRESS, env)).luna).toBe("7");
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     // Failures are never cached: a fresh address still reaches the transport
-    // (1 initial + 2 bounded retries = 3 calls), then rejects honestly.
+    // (failing basic aborts before discovery: 1 initial + 2 retries), then rejects.
     await expect(readChainBalance(fixtureWallet().address, env)).rejects.toBeInstanceOf(NimiqBalanceReadError);
-    expect(calls).toBe(4);
+    expect(calls).toBe(5);
     // After clearing, the next read refetches.
     clearChainBalanceCacheForTests();
-    setNimiqRpcTransportForTests(async () => {
-      calls += 1;
-      return { jsonrpc: "2.0", result: { data: { balance: 9 } }, id: 1 };
-    });
+    setNimiqRpcTransportForTests(routed(() => ({ jsonrpc: "2.0", result: { data: { balance: 9 } }, id: 1 })));
     expect((await readChainBalance(ADDRESS, env)).luna).toBe("9");
-    expect(calls).toBe(5);
+    expect(calls).toBe(7); // basic + vault discovery refetch
+  });
+});
+
+describe("F8.6 wallet-managed vaults (mocked transport, no network)", () => {
+  const env = { NODE_ENV: "test", DATABASE_URL: "postgresql://u:p@localhost:5432/x", THENCE_NIMIQ_RPC_URL: "https://rpc.example.test" };
+  const VAULT = fixtureWallet().address;
+  const OTHER = fixtureWallet().address;
+  const methodOf = (body: string): string => (JSON.parse(body) as { method: string }).method;
+  const paramsOf = (body: string): string[] => (JSON.parse(body) as { params: string[] }).params;
+  beforeEach(() => clearChainBalanceCacheForTests());
+
+  function mockLedger(opts: { basic: unknown; txs: unknown[]; accounts?: Record<string, unknown>; calls?: { n: number } }): void {
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      if (opts.calls) opts.calls.n += 1;
+      const method = methodOf(body);
+      if (method === "getTransactionsByAddress") return { jsonrpc: "2.0", result: { data: opts.txs }, id: 1 };
+      const addr = paramsOf(body)[0] ?? "";
+      if (opts.accounts && Object.prototype.hasOwnProperty.call(opts.accounts, addr)) {
+        const v = opts.accounts[addr];
+        if (v instanceof Error) throw v;
+        return v;
+      }
+      return opts.basic;
+    });
+  }
+
+  const funding = (value: number) => ({ sender: ADDRESS, recipient: VAULT, toType: 2, value });
+  const vaultAccount = (balance: number) => ({ jsonrpc: "2.0", result: { data: { balance } }, id: 1 });
+
+  it("aggregates an active session-funded vault into the wallet total", async () => {
+    const calls = { n: 0 };
+    mockLedger({
+      basic: { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 },
+      txs: [funding(883734849)],
+      accounts: { [VAULT]: vaultAccount(883734849) },
+      calls,
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance).toEqual({
+      luna: "883734849",
+      basicLuna: "0",
+      vaults: { totalLuna: "883734849", contracts: 1 },
+      vaultsUnknown: false,
+      network: "mainnet",
+      blockNumber: null,
+    });
+    expect(calls.n).toBe(3); // basic + history + one vault read
+  });
+
+  it("excludes settled contracts without reading them", async () => {
+    const calls = { n: 0 };
+    mockLedger({
+      basic: { jsonrpc: "2.0", result: { data: { balance: 10 } }, id: 1 },
+      txs: [funding(100), { sender: VAULT, recipient: ADDRESS, value: 100 }],
+      calls,
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("10");
+    expect(balance.vaults).toBeNull();
+    expect(balance.vaultsUnknown).toBe(false);
+    expect(calls.n).toBe(2); // basic + history only
+  });
+
+  it("excludes contracts funded by other wallets", async () => {
+    const calls = { n: 0 };
+    mockLedger({
+      basic: { jsonrpc: "2.0", result: { data: { balance: 10 } }, id: 1 },
+      txs: [{ sender: OTHER, recipient: VAULT, toType: 2, value: 999 }],
+      accounts: { [VAULT]: vaultAccount(999) },
+      calls,
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("10");
+    expect(balance.vaults).toBeNull();
+    expect(calls.n).toBe(2);
+  });
+
+  it("uses the live vault balance, not funding arithmetic (partial returns)", async () => {
+    mockLedger({
+      basic: { jsonrpc: "2.0", result: { data: { balance: 5 } }, id: 1 },
+      txs: [funding(100), { sender: VAULT, recipient: ADDRESS, value: 40 }],
+      accounts: { [VAULT]: vaultAccount(60) },
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("65");
+    expect(balance.vaults).toEqual({ totalLuna: "60", contracts: 1 });
+    expect(balance.vaultsUnknown).toBe(false);
+  });
+
+  it("flags unknown when a vault read fails, keeping the basic total", async () => {
+    mockLedger({
+      basic: { jsonrpc: "2.0", result: { data: { balance: 5 } }, id: 1 },
+      txs: [funding(100)],
+      accounts: { [VAULT]: new Error("down") },
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("5");
+    expect(balance.basicLuna).toBe("5");
+    expect(balance.vaults).toBeNull();
+    expect(balance.vaultsUnknown).toBe(true);
+  });
+
+  it("caps contract reads and flags unknown beyond the cap", async () => {
+    const contracts = Array.from({ length: 11 }, () => fixtureWallet().address);
+    const accounts: Record<string, unknown> = {};
+    for (const c of contracts) accounts[c] = vaultAccount(7);
+    const calls = { n: 0 };
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      calls.n += 1;
+      if (methodOf(body) === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: contracts.map((c) => ({ sender: ADDRESS, recipient: c, toType: 2, value: 7 })) }, id: 1 };
+      }
+      const addr = paramsOf(body)[0] ?? "";
+      if (Object.prototype.hasOwnProperty.call(accounts, addr)) return accounts[addr];
+      return { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 };
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    // 1 basic + 1 history + 10 vault reads; the 11th contract flags unknown.
+    expect(calls.n).toBe(12);
+    expect(balance.luna).toBe("70");
+    expect(balance.vaults).toEqual({ totalLuna: "70", contracts: 10 });
+    expect(balance.vaultsUnknown).toBe(true);
+  });
+
+  it("client surfaces the vault breakdown and the unknown flag", async () => {
+    const withVaults = await readNimBalance(
+      {
+        getProvider: outdatedHost,
+        readChain: chainOk(65n, "mainnet", { basicLuna: 5n, vaults: { totalLuna: 60n, contracts: 1 }, vaultsUnknown: false }),
+      },
+      ADDRESS,
+    );
+    expect(withVaults).toEqual({
+      status: "loaded",
+      luna: 65n,
+      basicLuna: 5n,
+      vaultLuna: 60n,
+      vaultUnknown: false,
+      source: "chain",
+      network: "mainnet",
+    });
+    // Absent vault fields fail closed to unknown (shape drift can never present a partial total as complete).
+    const unknown = await readNimBalance(
+      {
+        getProvider: outdatedHost,
+        readChain: () => Promise.resolve({ ok: true, luna: 0n, network: "mainnet" } as unknown as ChainOutcome),
+      },
+      ADDRESS,
+    );
+    expect(unknown).toEqual({
+      status: "loaded",
+      luna: 0n,
+      basicLuna: 0n,
+      vaultLuna: null,
+      vaultUnknown: true,
+      source: "chain",
+      network: "mainnet",
+    });
   });
 });
 
@@ -328,7 +531,7 @@ describe.skipIf(!LIVE)("GET /api/me/balance (live handler)", () => {
     const on = await balanceGET(new Request("http://localhost/api/me/balance?address=NQ00", { headers: { cookie: login.cookie } }));
     expect(on.status).toBe(200);
     expect(asked).toBe(login.address);
-    expect(await on.json()).toEqual({ balance: { luna: "12345", blockNumber: null, network: "mainnet", source: "chain" } });
+    expect(await on.json()).toEqual({ balance: { luna: "12345", basicLuna: "12345", vaults: null, vaultsUnknown: false, blockNumber: null, network: "mainnet", source: "chain" } });
 
     // The previous success is cached: prove the failure path with a fresh read.
     clearChainBalanceCacheForTests();

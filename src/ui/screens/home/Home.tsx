@@ -278,6 +278,10 @@ function WalletDiagnostics({ address }: { address: string }): React.JSX.Element 
       <p className={styles.accountNote}>
         Nimiq Pay: {signed.host.state === "loaded" ? `${formatLuna(signed.host.luna!).text} NIM` : signed.host.state}. Server:{" "}
         {signed.chain.state === "loaded" ? `${formatLuna(signed.chain.luna!).text} NIM` : signed.chain.state}.
+        {signed.chain.state === "loaded" && signed.chain.vaultLuna != null && signed.chain.vaultLuna > 0n && (
+          <> Includes {formatLuna(signed.chain.vaultLuna).text} NIM held in Nimiq Pay vault contracts (basic account shows the rest).</>
+        )}
+        {signed.chain.state === "loaded" && signed.chain.vaultUnknown === true && <> Vault coverage was incomplete — the total may be higher. Try again.</>}
       </p>
       {guidance === "funds-confirmed" && (
         <Notice tone="info" title="Funds confirmed">
@@ -287,7 +291,7 @@ function WalletDiagnostics({ address }: { address: string }): React.JSX.Element 
       {guidance === "host-chain-disagree" && (
         <Notice tone="warn" title="Sources disagree for this wallet">
           Nimiq Pay and the server see different balances for the signed-in wallet. This happens when the host is on a
-          different network, the host hasn&apos;t synced yet, or funds moved recently. Compare the two lines above —
+          different network, the host hasn&apos;t synced yet, funds moved recently, or funds sit in Nimiq Pay vault contracts the host doesn&apos;t include. Compare the lines above —
           neither is used to move money.
         </Notice>
       )}
