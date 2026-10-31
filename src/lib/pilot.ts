@@ -96,17 +96,25 @@ export async function getOwnerAddress(userId: string): Promise<string | null> {
  * Pure intent check: kill switch, route, allowlist, per-transfer cap.
  * Throws AuthError on any violation (fail-closed when configured).
  *
- * NOT-CONFIGURED SKIP: when no owner allowlist is set, the pilot is not
- * configured and all checks are skipped — legacy paths keep their existing
- * protections (auth, route-enabled, single-attempt, swap verification,
- * client payment/claim flags OFF). This keeps the pre-existing suite and
- * normal quote-only flows working in envs without pilot variables.
+ * NOT-CONFIGURED SKIP: when no owner allowlist is set AND the kill switch
+ * is OFF, the pilot is not configured and all checks are skipped — legacy
+ * paths keep their existing protections (auth, route-enabled,
+ * single-attempt, swap verification, client payment/claim flags OFF). This
+ * keeps the pre-existing suite and normal quote-only flows working in envs
+ * without pilot variables.
+ *
+ * MISCONFIGURED FAIL-CLOSED: kill switch ON with an empty allowlist is
+ * incomplete configuration and blocks everything — an armed pilot with no
+ * authorized wallets must never permit funded execution.
  */
 export function assertPilotIntent(
   input: { routeId: string; targetAmountAtomic: string; ownerAddress: string | null },
   config: PilotConfig = getPilotConfig(),
 ): void {
-  if (config.owners.length === 0) return;
+  if (config.owners.length === 0) {
+    if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    return;
+  }
   if (!config.enabled) throw new AuthError(403, "PILOT_DISABLED", "Live pilot is not enabled.");
   if (input.routeId !== PILOT_ROUTE_ID) {
     throw new AuthError(403, "PILOT_ROUTE_ONLY", "Pilot is restricted to USDC on Polygon.");
@@ -132,7 +140,10 @@ export async function assertPilotBudget(
   newAtomic: string,
   config: PilotConfig = getPilotConfig(),
 ): Promise<void> {
-  if (config.owners.length === 0) return;
+  if (config.owners.length === 0) {
+    if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    return;
+  }
   const rows = await getDb()
     .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)

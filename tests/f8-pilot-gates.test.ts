@@ -76,6 +76,14 @@ describe("F8 pilot gate", () => {
     ).not.toThrow();
   });
 
+  it("blocks everything when armed with a missing allowlist (misconfigured)", () => {
+    const misconfigured = getPilotConfig({ THENCE_PILOT_ENABLED: "1" });
+    expect(misconfigured.owners).toEqual([]);
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, misconfigured),
+    ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
+  });
+
   it("matches owner addresses canonically (spacing/case-insensitive)", () => {
     const compact = OWNER.replace(/\s+/g, "").toLowerCase();
     expect(canonicalKey(compact)).toBe(canonicalKey(OWNER));
