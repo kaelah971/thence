@@ -42,6 +42,7 @@ import {
   transfers,
 } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
+import { assertPilotIntent, getOwnerAddress } from "@/lib/pilot";
 import { canTransition, transition } from "@/domain/transfers";
 import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
@@ -229,6 +230,13 @@ export async function prepareHandoff(
     if (existing) {
       throw new AuthError(409, "ATTEMPT_IN_PROGRESS", "Another handoff attempt is already active for this transfer.");
     }
+    // F8 restricted pilot: prepare is a funded-execution path. Placed AFTER
+    // the idempotent replay above so crash recovery never strands an attempt.
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     // Explicitly retire stale/ambiguous predecessors (auditable, never silent).
     await tx
       .update(handoffAttempts)
@@ -307,6 +315,12 @@ export async function attachSwap(
     if (transfer.status !== "QUOTED") {
       throw new AuthError(409, "NOT_ATTACHABLE", "Only pre-funding quoted transfers can bind a swap.");
     }
+    // F8 restricted pilot: attach binds a live swap (funded-execution path).
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     const attempts = await tx
       .select()
       .from(handoffAttempts)
@@ -444,6 +458,12 @@ export async function authorizeHandoff(
     if (transfer.status !== "SWAP_CREATED") {
       throw new AuthError(409, "NOT_AUTHORIZABLE", "Only swap-bound pre-funding transfers can authorize handoff.");
     }
+    // F8 restricted pilot: authorization is the last server gate before host payment.
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     const attempts = await tx
       .select()
       .from(handoffAttempts)

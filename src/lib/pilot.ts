@@ -1,0 +1,164 @@
+/**
+ * F8 — restricted live pilot gate (server-side only).
+ *
+ * When configured (allowlist set), all funded execution paths require:
+ * - Kill switch armed: THENCE_PILOT_ENABLED === "1" (default OFF, fail-closed)
+ * - Strict route: usdc-polygon only
+ * - Authenticated owner wallet allowlisted (canonical Nimiq address compare)
+ * - Per-transfer RECIPIENT cap (default 0.30 USDC = 300000 atomic)
+ * - Pilot spend + attempt caps (default single 0.30 shot, 1 transfer)
+ *
+ * SCOPE LIMIT (honest): these caps bind the RECIPIENT USDC amount only.
+ * The NIM debit is set inside Nimiq Pay (host converts NIM->Lightning sats
+ * and shows the exact NIM figure on its own approval screen); the server
+ * never sees a NIM number, so no server gate can enforce a NIM-denominated
+ * ceiling. The $0.50 NIM budget is therefore PROCEDURAL: the user reads the
+ * host approval screen and aborts when it exceeds the agreed maximum.
+ * Never represent the atomic caps as a NIM-spend guarantee.
+ *
+ * Client feature flags (NEXT_PUBLIC_THENCE_ENABLE_PAYMENT / _CLAIM) stay
+ * OFF independently: this gate alone never authorizes a host payment.
+ * Blocked attempts throw AuthError (403 PILOT_*, never a zero or silent pass).
+ */
+import { eq } from "drizzle-orm";
+import { AuthError } from "@/lib/auth";
+import { getDb } from "@/lib/db";
+import { transfers, users } from "@/db/schema";
+import { normalizeNimiqAddress } from "@/lib/nimiq";
+
+// F8 pilot: proposed first-test $0.30 USDC (live quotes 2026-10-31: $0.28
+// technical minimum at 368 sats vs 356 floor; $0.30 at 393 sats is the
+// smallest with margin). Single attempt, single allowlisted wallet.
+// Max total first-test spend stays $0.50 USD-equiv in NIM incl fees
+// (procedural, host-screen enforced — see SCOPE LIMIT above).
+// This code ships DISARMED (kill switch OFF) and moves no funds.
+export const PILOT_ROUTE_ID = "usdc-polygon";
+export const DEFAULT_MAX_TARGET_ATOMIC = "300000"; // 0.30 USDC
+export const DEFAULT_MAX_SPEND_ATOMIC = "300000"; // 0.30 USDC total (single shot)
+export const DEFAULT_MAX_TRANSFERS = 1;
+
+export interface PilotConfig {
+  enabled: boolean;
+  owners: string[];
+  maxTargetAtomic: string;
+  maxSpendAtomic: string;
+  maxTransfers: number;
+}
+
+function parseAtomic(value: string | undefined, fallback: string): string {
+  if (!value || !/^\d+$/.test(value.trim()) || BigInt(value.trim()) <= 0n) return fallback;
+  return value.trim();
+}
+
+function parseOwners(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => {
+      try {
+        return normalizeNimiqAddress(s).replace(/\s+/g, "").toUpperCase();
+      } catch {
+        return s.replace(/\s+/g, "").toUpperCase();
+      }
+    });
+}
+
+export function getPilotConfig(source: Record<string, string | undefined> = process.env): PilotConfig {
+  return {
+    enabled: (source["THENCE_PILOT_ENABLED"] ?? "").trim() === "1",
+    owners: parseOwners(source["THENCE_PILOT_OWNER_NIMIQ_ADDRESSES"]),
+    maxTargetAtomic: parseAtomic(source["THENCE_PILOT_MAX_TARGET_ATOMIC"], DEFAULT_MAX_TARGET_ATOMIC),
+    maxSpendAtomic: parseAtomic(source["THENCE_PILOT_MAX_SPEND_ATOMIC"], DEFAULT_MAX_SPEND_ATOMIC),
+    maxTransfers: (() => {
+      const n = Number((source["THENCE_PILOT_MAX_TRANSFERS"] ?? "").trim());
+      return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_TRANSFERS;
+    })(),
+  };
+}
+
+export function canonicalKey(address: string): string {
+  try {
+    return normalizeNimiqAddress(address).replace(/\s+/g, "").toUpperCase();
+  } catch {
+    return address.replace(/\s+/g, "").toUpperCase();
+  }
+}
+
+/** Owner lookup for server-side allowlist enforcement (null when unknown). */
+export async function getOwnerAddress(userId: string): Promise<string | null> {
+  const rows = await getDb().select({ nimiqAddress: users.nimiqAddress }).from(users).where(eq(users.id, userId)).limit(1);
+  return rows[0]?.nimiqAddress ?? null;
+}
+
+/**
+ * Pure intent check: kill switch, route, allowlist, per-transfer cap.
+ * Throws AuthError on any violation (fail-closed when configured).
+ *
+ * NOT-CONFIGURED SKIP: when no owner allowlist is set AND the kill switch
+ * is OFF, the pilot is not configured and all checks are skipped — legacy
+ * paths keep their existing protections (auth, route-enabled,
+ * single-attempt, swap verification, client payment/claim flags OFF). This
+ * keeps the pre-existing suite and normal quote-only flows working in envs
+ * without pilot variables.
+ *
+ * MISCONFIGURED FAIL-CLOSED: kill switch ON with an empty allowlist is
+ * incomplete configuration and blocks everything — an armed pilot with no
+ * authorized wallets must never permit funded execution.
+ */
+export function assertPilotIntent(
+  input: { routeId: string; targetAmountAtomic: string; ownerAddress: string | null },
+  config: PilotConfig = getPilotConfig(),
+): void {
+  if (config.owners.length === 0) {
+    if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    return;
+  }
+  if (!config.enabled) throw new AuthError(403, "PILOT_DISABLED", "Live pilot is not enabled.");
+  if (input.routeId !== PILOT_ROUTE_ID) {
+    throw new AuthError(403, "PILOT_ROUTE_ONLY", "Pilot is restricted to USDC on Polygon.");
+  }
+  if (!input.ownerAddress || !config.owners.includes(canonicalKey(input.ownerAddress))) {
+    throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "This wallet is not authorized for the live pilot.");
+  }
+  if (!/^\d+$/.test(input.targetAmountAtomic) || BigInt(input.targetAmountAtomic) <= 0n) {
+    throw new AuthError(400, "BAD_AMOUNT", "targetAmountAtomic must be a positive atomic integer string.");
+  }
+  if (BigInt(input.targetAmountAtomic) > BigInt(config.maxTargetAtomic)) {
+    throw new AuthError(403, "PILOT_AMOUNT_EXCEEDS_MAX", "Pilot transfer exceeds the per-transfer maximum.");
+  }
+}
+
+/**
+ * Pilot budget check at creation time: total spend + attempt count across
+ * the owner's pilot-route transfers (excluding idempotent replay of the
+ * same idempotency key, which the caller handles before/after).
+ */
+export async function assertPilotBudget(
+  userId: string,
+  newAtomic: string,
+  config: PilotConfig = getPilotConfig(),
+): Promise<void> {
+  if (config.owners.length === 0) {
+    if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    return;
+  }
+  const rows = await getDb()
+    .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
+    .from(transfers)
+    .where(eq(transfers.ownerUserId, userId));
+  // Only pilot-route transfers count toward spend/attempts.
+  const mine = rows.filter((r) => r.routeId === PILOT_ROUTE_ID && /^\d+$/.test(r.amount));
+  if (mine.length >= config.maxTransfers) {
+    throw new AuthError(403, "PILOT_ATTEMPTS_EXCEEDED", "Pilot attempt limit reached.");
+  }
+  let total = BigInt(newAtomic);
+  for (const r of mine) {
+    if (r.status === "FAILED") continue;
+    total += BigInt(r.amount);
+  }
+  if (total > BigInt(config.maxSpendAtomic)) {
+    throw new AuthError(403, "PILOT_SPEND_EXCEEDED", "Pilot total spend limit reached.");
+  }
+}

@@ -27,6 +27,7 @@ import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import { paymentRequests, recipientDestinations, recipients, transfers } from "@/db/schema";
 
+import { assertPilotBudget, assertPilotIntent, getOwnerAddress } from "@/lib/pilot";
 import { isAtomicAmount, parseAtomicAmount } from "@/domain/money";
 import {
   TRANSFER_STATUSES,
@@ -367,6 +368,14 @@ export async function createTransfer(
   if (!canTransition("DRAFT", "QUOTED")) {
     throw new AuthError(500, "LIFECYCLE_FORBIDDEN", "Transfer preparation is not permitted.");
   }
+  // F8 restricted pilot: server-side allowlist + caps. Placed AFTER the
+  // idempotent replay above so retries of the same key stay deduplicated
+  // and never strand or double-count.
+  {
+    const ownerAddress = await getOwnerAddress(userId);
+    assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress });
+    await assertPilotBudget(userId, intent.targetAmountAtomic);
+  }
   // Live exact-output quote on server-controlled parameters (no second engine).
   const quote = await createQuote({
     routeId: intent.routeId,
@@ -493,6 +502,12 @@ export async function requoteTransfer(
   if (current.status !== "QUOTED") {
     throw new AuthError(409, "NOT_REQUOTEABLE", "Only pre-funding quoted transfers can be re-quoted.");
   }
+  // F8 restricted pilot: re-quote stays inside pilot bounds (no budget recount).
+  assertPilotIntent({
+    routeId: current.routeId,
+    targetAmountAtomic: current.targetAmountAtomic,
+    ownerAddress: await getOwnerAddress(userId),
+  });
   // Resolve the live request public id for snapshot revalidation, if linked.
   let requestPublicId: string | undefined;
   if (current.requestId) {
