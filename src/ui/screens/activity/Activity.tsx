@@ -13,7 +13,7 @@ import { destinationFor, maskAddress } from "@/ui/lib/assets";
 import { useActivityData } from "@/ui/lib/data";
 import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
-import { matchesFilter, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
+import { matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
 import { postReconcile } from "@/ui/lib/settlement-client";
 import styles from "./activity.module.css";
@@ -220,11 +220,19 @@ function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolea
         </Notice>
       )}
       {(stage === "moving" || stage === "ready") && (
-        <Notice tone="info" icon="clock" title={stage === "moving" ? "Still on its way" : "Not paid yet"}>
+        <Notice tone="info" icon="clock" title={stage === "moving" ? "Still on its way" : "Not paid yet — ready when you are"}>
           {stage === "moving"
             ? "Thence is still checking this payment. A receipt appears once delivery is confirmed on their network."
-            : "Nothing has been sent for this payment."}
+            : "Nothing has been sent or approved. You can safely continue where you left off."}
         </Notice>
+      )}
+      {!preview && resumeLabelFor(item.status) !== null && (
+        <div style={{ marginTop: 12 }}>
+          <ButtonLink href={`/app/send?resume=${item.id}`} variant="ink" size="md" icon="arrow-right" block>
+            {resumeLabelFor(item.status)}
+          </ButtonLink>
+          <p className={styles.latest}>Continues the same payment — never starts a new one.</p>
+        </div>
       )}
 
       <div className={styles.timelineCard}>

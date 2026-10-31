@@ -197,6 +197,18 @@ export async function loadRawBinding(transferId: string): Promise<unknown> {
   }
 }
 
+/**
+ * Whether a failed attach proves its bound swap is dead (F8.10). Only a
+ * server-verified expired invoice qualifies: the binding references an
+ * unpayable swap, so dropping it lets the next attempt create a fresh
+ * swap for the SAME transfer and attempt — never a new payment. Every
+ * other failure keeps the binding: a bound or merely unverified swap must
+ * never be silently replaced (attach conflicts surface it instead).
+ */
+export function shouldDiscardBindingOnAttachFailure(code: string | null): boolean {
+  return code === "INVOICE_EXPIRED";
+}
+
 export async function clearBinding(transferId: string): Promise<void> {
   try {
     const db = await openDb();

@@ -31,6 +31,19 @@ export const STAGE_LABEL: Record<Exclude<TransferStage, "closed">, string> = {
 };
 
 /** Short pill label: the stage name, or the backend label for closed states. */
+/** Resume CTA label for activity details (F8.10). Only unpaid pre-approval states offer it; funded, checking, attention and terminal states must not (recovery runs through reconcile/receipt, never a resume). */
+export function resumeLabelFor(status: TransferStatus): string | null {
+  switch (status) {
+    case "QUOTED":
+    case "SWAP_CREATED":
+      return "Resume payment";
+    case "AWAITING_NIM_APPROVAL":
+      return "Continue to approval";
+    default:
+      return null;
+  }
+}
+
 export function pillLabel(status: TransferStatus): string {
   const stage = STAGE_OF[status];
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];

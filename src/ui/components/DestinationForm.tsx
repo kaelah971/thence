@@ -41,6 +41,12 @@ interface DestinationFormProps {
   addressFirst?: boolean;
   /** Offer an opt-in "Save this recipient" toggle (off by default). */
   offerSave?: boolean;
+  /**
+   * Pin the submit button above the iOS keyboard (F8.10). Only enable on
+   * full-page flows with a paper backdrop (the Send flow); sheets and
+   * dialogs keep their natural layout.
+   */
+  stickyCta?: boolean;
 }
 
 export function DestinationForm({
@@ -55,6 +61,7 @@ export function DestinationForm({
   nameOptional = false,
   addressFirst = false,
   offerSave = false,
+  stickyCta = false,
 }: DestinationFormProps): React.JSX.Element {
   const [name, setName] = useState(initial?.name ?? "");
   const [routeId, setRouteId] = useState<RouteId>(initial?.routeId ?? DEFAULT_DESTINATION);
@@ -101,6 +108,13 @@ export function DestinationForm({
       hint={saveMode ? "Choose the currency and network their wallet uses." : "Live availability is checked before you pay."}
     />
   );
+  // Inline confirmation copy (F8.10): validated live, shown once an entry
+  // looks structurally valid. Never claims the address is the *right*
+  // recipient — the user must still inspect it before continuing.
+  const addressHint =
+    !withAddress || addressIssue || address.trim().length === 0
+      ? `Paste the ${destination.asset} address they gave you. Double-check it's for ${destination.network}.`
+      : `Looks like a valid ${destination.network} address. Double-check it matches their wallet.`;
   const addressField = (
     <TextField
       label={lightning ? "Lightning address or invoice" : saveMode ? "Receiving wallet address" : `Their ${destination.network} address`}
@@ -116,8 +130,10 @@ export function DestinationForm({
       autoCorrect="off"
       spellCheck={false}
       inputMode={lightning ? "email" : "text"}
+      // "go" is the closest valid enterKeyHint to the Continue CTA.
+      enterKeyHint="go"
       error={addressError}
-      hint={`Paste the ${destination.asset} address they gave you. Double-check it's for ${destination.network}.`}
+      hint={addressHint}
       inputClassName={styles.mono}
     />
   );
@@ -188,16 +204,18 @@ export function DestinationForm({
           {blockedReason}
         </Notice>
       )}
-      <Button
-        type="submit"
-        variant="ink"
-        block
-        disabled={Boolean(blockedReason) || saving}
-        aria-busy={saving}
-        trailingIcon={blockedReason || saving ? undefined : "arrow-right"}
-      >
-        {saving ? (wantsSave ? "Saving…" : "Checking…") : wantsSave ? "Save and continue" : submitLabel}
-      </Button>
+      <div className={stickyCta ? styles.stickyCta : undefined}>
+        <Button
+          type="submit"
+          variant="ink"
+          block
+          disabled={Boolean(blockedReason) || saving}
+          aria-busy={saving}
+          trailingIcon={blockedReason || saving ? undefined : "arrow-right"}
+        >
+          {saving ? (wantsSave ? "Saving…" : "Checking…") : wantsSave ? "Save and continue" : submitLabel}
+        </Button>
+      </div>
     </form>
   );
 }

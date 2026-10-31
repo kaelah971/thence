@@ -172,3 +172,16 @@
     transform: none;
   }
 }
+
+/* F8.10 — sticky primary action for full-page forms (Send flow). The app
+   viewport resizes with the iOS keyboard (interactive-widget:
+   resizes-content), so a bottom-stuck CTA stays tappable while typing.
+   Paper-tinted backdrop matches the light form surface; safe-area padding
+   keeps it clear of the home indicator. Opt-in per form (stickyCta). */
+.stickyCta {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -4px;
+  padding: 16px 4px calc(env(safe-area-inset-bottom, 0px) + 12px);
+  background: linear-gradient(to bottom, transparent 0, var(--paper) 45%);
+}
