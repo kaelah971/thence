@@ -56,6 +56,28 @@ export const unauthorized = (code = "UNAUTHORIZED", message = "Authentication re
 export const forbidden = (code = "FORBIDDEN", message = "Forbidden.") =>
   new AuthError(403, code, message);
 
+/**
+ * F8.9 — privacy-safe failure code for funded-path logs. Only static
+ * UPPER_SNAKE codes pass through; everything else (messages, bodies,
+ * cookies, URLs, provider internals) collapses to UNKNOWN. Never log
+ * err.message: transport errors can embed hosts, databases or payloads.
+ */
+const FUNDED_LOG_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+export function fundedFailureCode(err: unknown): string {
+  if (err instanceof AuthError && FUNDED_LOG_CODE.test(err.code)) return err.code;
+  return "UNKNOWN";
+}
+
+/**
+ * One static-code line per funded-path failure (create/requote/prepare/
+ * attach/authorize) so production logs show WHICH check failed without
+ * exposing any request data. Call inside route catch blocks; behavior of
+ * the response itself is unchanged.
+ */
+export function logFundedFailure(action: "create" | "requote" | "prepare" | "attach" | "authorize", err: unknown): void {
+  console.warn(`thence funded ${action}: ${fundedFailureCode(err)}`);
+}
+
 /** B2 helper: resource ownership check. Throws 403 on mismatch. */
 export function assertResourceOwner(resourceOwnerId: string, userId: string): void {
   if (resourceOwnerId !== userId) throw forbidden("NOT_OWNER", "Not the owner of this resource.");

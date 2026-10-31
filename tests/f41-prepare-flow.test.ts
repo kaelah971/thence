@@ -248,6 +248,21 @@ describe("network, session and backend gates", () => {
     expect(classifyPreparationFailure({ kind: "rate-limited", code: null }).action).toBe("retry");
   });
 
+  it("F8.9: transient provider failures map to safe same-payment retry", () => {
+    for (const [kind, code] of [
+      ["conflict", "PROVIDER_MALFORMED"],
+      ["conflict", "PROVIDER_TIMEOUT"],
+      ["server", "PROVIDER_UNAVAILABLE"],
+      ["not-found", "SWAP_NOT_FOUND"],
+    ] as const) {
+      const issue = classifyPreparationFailure({ kind, code });
+      expect(issue.action).toBe("retry");
+      expect(issue.retryable).toBe(true);
+      expect(issue.title).toMatch(/safe to retry/i);
+      expect(issue.body).toMatch(/do not start a new one/i);
+    }
+  });
+
   it("prepare conflict converges to resume", async () => {
     const f = mockFetch({ "/api/transfers/t-1/prepare": json(409, { error: "VERSION_CONFLICT", message: "changed" }) });
     const res = await prepareTransfer("t-1", 1, { fetch: f });

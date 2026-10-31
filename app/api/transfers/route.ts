@@ -4,7 +4,7 @@
  * Creation never creates a swap, invoice, approval or payment.
  */
 import { NextResponse } from "next/server";
-import { AuthError, assertSafeOrigin, requireSession } from "@/lib/auth";
+import { AuthError, assertSafeOrigin, logFundedFailure, requireSession } from "@/lib/auth";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { TRANSFER_STATUSES } from "@/domain/transfers";
@@ -44,6 +44,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const { transfer, deduplicated } = await createTransfer(session.userId, body);
     return NextResponse.json({ transfer, deduplicated }, { status: deduplicated ? 200 : 201 });
   } catch (err) {
+    logFundedFailure("create", err);
     return toErrorResponse(err);
   }
 }

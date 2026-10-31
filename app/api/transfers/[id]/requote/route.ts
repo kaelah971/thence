@@ -4,7 +4,7 @@
  * revision never overwrites a newer quote. Pre-funding QUOTED only.
  */
 import { NextResponse } from "next/server";
-import { AuthError, assertSafeOrigin, requireSession } from "@/lib/auth";
+import { AuthError, assertSafeOrigin, logFundedFailure, requireSession } from "@/lib/auth";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { readJsonBody, requoteTransfer } from "@/lib/transfers";
@@ -36,6 +36,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const transfer = await requoteTransfer(session.userId, id, expected);
     return NextResponse.json({ transfer }, { status: 200 });
   } catch (err) {
+    logFundedFailure("requote", err);
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
     }

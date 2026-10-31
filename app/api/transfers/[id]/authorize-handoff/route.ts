@@ -5,7 +5,7 @@
  * SWAP_CREATED → AWAITING_NIM_APPROVAL. Never invokes Nimiq Pay.
  */
 import { NextResponse } from "next/server";
-import { AuthError, assertSafeOrigin, requireSession } from "@/lib/auth";
+import { AuthError, assertSafeOrigin, logFundedFailure, requireSession } from "@/lib/auth";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { readJsonBody } from "@/lib/transfers";
@@ -38,6 +38,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const result = await authorizeHandoff(session.userId, id, attemptToken);
     return NextResponse.json({ handoff: result }, { status: 200 });
   } catch (err) {
+    logFundedFailure("authorize", err);
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
     }
