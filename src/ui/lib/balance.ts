@@ -64,17 +64,35 @@ async function readFromHost(getProvider: () => Promise<HostProvider>, address: s
 
 /**
  * Read the NIM balance (Luna) of the session's verified address.
- * Nimiq Pay is asked first; when it can't answer, Thence's trusted Nimiq
- * node is used. A failed lookup is an error or "unavailable", never a zero.
+ * Nimiq Pay is asked first; only when it can't answer is Thence's Nimiq
+ * node consulted. A failed lookup is an error or "unavailable", never a zero.
+ *
+ * F8.4 LAZY FALLBACK (proven failure it fixes): the public Nimiq RPC is
+ * tightly IP-rate-limited (HTTP 429 under modest concurrency) and Vercel
+ * functions share egress IPs, so every server-side read consumes a shared
+ * throttle budget. The previous code fired the chain read on EVERY page
+ * load in parallel — even when the host was about to answer — wasting that
+ * budget and turning other users' genuine fallbacks into 429s. Starting the
+ * chain read only after a host failure preserves the exact outcome matrix
+ * (provider-first, same sources, same errors) while removing the wasted
+ * reads. Host failure paths are near-synchronous (missing method, rejected
+ * init), so fallback users lose no meaningful latency.
  */
 export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProvider>), address: string): Promise<BalanceState> {
   const { getProvider, readChain, hostNetwork } = typeof deps === "function" ? { getProvider: deps } as BalanceDeps : deps;
-  // Start the server read alongside the host read; it's only used if the host can't answer.
-  const chainPromise = readChain ? readChain().catch((): ChainOutcome => ({ ok: false, reason: "failed" })) : null;
   const host = await readFromHost(getProvider, address);
   if (host.ok) return { status: "loaded", luna: host.luna, source: "host", network: hostNetwork?.() ?? null };
-
-  const chain = chainPromise ? await chainPromise : ({ ok: false, reason: "not-configured" } as ChainOutcome);
+  if (!readChain) {
+    if (host.reason === "network") return { status: "error", reason: "network" };
+    if (host.reason === "failed") return { status: "error", reason: "failed" };
+    return { status: "unavailable", reason: host.reason };
+  }
+  let chain: ChainOutcome;
+  try {
+    chain = await readChain();
+  } catch {
+    chain = { ok: false, reason: "failed" };
+  }
   if (chain.ok) {
     const reported = hostNetwork?.();
     if (reported && reported !== chain.network) return { status: "unavailable", reason: "network-mismatch" };
