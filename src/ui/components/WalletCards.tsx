@@ -19,6 +19,40 @@ interface WalletCardsProps {
 const NETWORK_LABEL: Record<string, string> = { mainnet: "Mainnet", testnet: "Testnet" };
 
 /**
+ * F8.7 NIM card copy: clean consumer language on the card, full detail in
+ * the account sheet. "Wallet balance" names the total without claiming
+ * instant spendability (contract-held vault funds are not proven liquid).
+ * The technical vault breakdown lives in the wallet details sheet, never
+ * on the card.
+ */
+export const NIM_CARD_LABEL = "Wallet balance";
+export const NIM_CARD_FOOT = "Connected through Nimiq Pay";
+
+/** Pure card note: coverage warnings and honest empty/error states only. */
+export function nimCardNote(balance: BalanceState): string | null {
+  switch (balance.status) {
+    case "loaded": {
+      const parts: string[] = [];
+      if (balance.vaultUnknown === true) {
+        parts.push("Vault balance couldn't be fully confirmed — the total may be higher.");
+      }
+      if (formatLuna(balance.luna).isZero && balance.vaultUnknown !== true) {
+        parts.push("This wallet has no NIM yet.");
+      }
+      return parts.length > 0 ? parts.join(" ") : null;
+    }
+    case "unavailable":
+      if (balance.reason === "host-outdated") return "This version of Nimiq Pay can't share your balance yet.";
+      if (balance.reason === "network-mismatch") return "Nimiq Pay is on a different network, so Thence won't show a balance.";
+      return "Open Thence in Nimiq Pay to see your balance.";
+    case "error":
+      return balance.reason === "network" ? "Couldn't reach the Nimiq network." : "Couldn't load your balance.";
+    default:
+      return null;
+  }
+}
+
+/**
  * Two-card wallet: NIM in front, USDT tucked behind. Tapping the exposed
  * card brings it forward. Every number shown is a real, retrieved value —
  * USDT has no readable balance in Thence today, and says so.
@@ -100,7 +134,7 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
       <CardSurface asset="NIM">
         {head}
         <div className={styles.body} aria-busy={checking}>
-          <p className={styles.label}>Available</p>
+          <p className={styles.label}>{NIM_CARD_LABEL}</p>
           {checking ? (
             <span className={styles.amount}>
               <span className={styles.skeleton} />
@@ -112,7 +146,7 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
         </div>
         {!checking && (
           <div className={styles.foot}>
-            <span>Nimiq Pay</span>
+            <span>{NIM_CARD_FOOT}</span>
             <Link href={expired ? "/app/reconnect" : "/app/setup/wallet"} className={styles.connectLink}>
               {expired ? "Reconnect" : "Connect wallet"}
               <Icon name="arrow-right" size={16} strokeWidth={2.4} />
@@ -126,41 +160,16 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
   const loaded = balance.status === "loaded" ? balance : null;
   const formatted = loaded ? formatLuna(loaded.luna) : null;
   const chars = formatted ? formatted.text.length + 3 : 8;
-  const note = (() => {
-    switch (balance.status) {
-      case "loaded": {
-        // F8.6: the headline is the wallet total (basic + managed vaults).
-        // Never claim "no NIM yet" while vault coverage is incomplete.
-        const parts: string[] = [];
-        if (loaded?.vaultLuna !== null && loaded?.vaultLuna !== undefined && loaded.vaultLuna > 0n) {
-          parts.push(`Includes ${formatLuna(loaded.vaultLuna).text} NIM in Nimiq Pay vaults.`);
-        }
-        if (loaded?.vaultUnknown === true) {
-          parts.push("Vault balance couldn't be fully confirmed — the total may be higher.");
-        }
-        if (formatted?.isZero && loaded?.vaultUnknown !== true) {
-          parts.push("This wallet has no NIM yet.");
-        }
-        return parts.length > 0 ? parts.join(" ") : null;
-      }
-      case "unavailable":
-        if (balance.reason === "host-outdated") return "This version of Nimiq Pay can't share your balance yet.";
-        if (balance.reason === "network-mismatch") return "Nimiq Pay is on a different network, so Thence won't show a balance.";
-        return "Open Thence in Nimiq Pay to see your balance.";
-      case "error":
-        return balance.reason === "network" ? "Couldn't reach the Nimiq network." : "Couldn't load your balance.";
-      default:
-        return null;
-    }
-  })();
-  const sourceLabel = loaded ? (loaded.source === "host" ? "Available in Nimiq Pay" : "Confirmed on the Nimiq network") : "Nimiq Pay";
+  // F8.7: card copy comes from the shared helper (tested, no technical vault text on the card).
+  const note = nimCardNote(balance);
+  const sourceLabel = NIM_CARD_FOOT;
   const network = loaded?.network ? NETWORK_LABEL[loaded.network] : null;
 
   return (
     <CardSurface asset="NIM">
       {head}
       <div className={styles.body} aria-busy={balance.status === "loading"} aria-live="polite">
-        <p className={styles.label}>Available</p>
+        <p className={styles.label}>{NIM_CARD_LABEL}</p>
         {balance.status === "loading" ? (
           <span className={styles.amount}>
             <span className={styles.skeleton} />

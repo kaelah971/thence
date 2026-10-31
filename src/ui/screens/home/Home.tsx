@@ -279,7 +279,7 @@ function WalletDiagnostics({ address }: { address: string }): React.JSX.Element 
         Nimiq Pay: {signed.host.state === "loaded" ? `${formatLuna(signed.host.luna!).text} NIM` : signed.host.state}. Server:{" "}
         {signed.chain.state === "loaded" ? `${formatLuna(signed.chain.luna!).text} NIM` : signed.chain.state}.
         {signed.chain.state === "loaded" && signed.chain.vaultLuna != null && signed.chain.vaultLuna > 0n && (
-          <> Includes {formatLuna(signed.chain.vaultLuna).text} NIM held in Nimiq Pay vault contracts (basic account shows the rest).</>
+          <> Basic account {formatLuna(signed.chain.luna! - signed.chain.vaultLuna).text} NIM · Associated contract-held funds {formatLuna(signed.chain.vaultLuna).text} NIM · Verified total {formatLuna(signed.chain.luna!).text} NIM.</>
         )}
         {signed.chain.state === "loaded" && signed.chain.vaultUnknown === true && <> Vault coverage was incomplete — the total may be higher. Try again.</>}
       </p>
