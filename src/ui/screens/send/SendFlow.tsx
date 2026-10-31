@@ -23,7 +23,7 @@ import { amountIssue, evaluate, formatFixed, keyFromKeyboard, type CalcKey } fro
 import { cn } from "@/ui/lib/cn";
 import { useRecipientData } from "@/ui/lib/data";
 import { addPerson } from "@/ui/lib/recipient-actions";
-import { toneFor } from "@/ui/lib/recipients-api";
+import { canSaveNetwork, toneFor } from "@/ui/lib/recipients-api";
 import { checkSendAmount, quoteRows, quoteWarnings, type AmountBlock, type QuoteInput } from "@/ui/lib/quotes-api";
 import { canPayRequest, getPublicRequest, isPublicId, requestRouteId, type ApiOwnerRequest, type ApiPublicRequest } from "@/ui/lib/requests-api";
 import { useApiResource } from "@/ui/lib/resource";
@@ -133,9 +133,7 @@ export function SendFlow(): React.JSX.Element {
   const [payee, setPayee] = useState<Payee | null>(null);
   const [fixed, setFixed] = useState<FixedTerms | null>(null);
   const [requestRoute, setRequestRoute] = useState<RouteId>(DEFAULT_DESTINATION);
-  const [newOpen, setNewOpen] = useState(false);
-  // A recipient created by "Save this recipient" whose wallet step failed: retry the wallet only.
-  const [savedDraftId, setSavedDraftId] = useState<string | null>(null);
+  const newFormRef = useRef<HTMLDivElement>(null);
   const savedRef = useRef<HTMLDivElement>(null);
   const [routeSheetOpen, setRouteSheetOpen] = useState(false);
   const [walletSheet, setWalletSheet] = useState<{ recipientId: string; name: string; thenAmount: boolean } | null>(null);
@@ -217,6 +215,30 @@ export function SendFlow(): React.JSX.Element {
     setStep("amount");
   };
 
+  // Retry pointer for a "Save this recipient" whose wallet step failed.
+  // Scoped to the exact address+route so an edited form starts fresh.
+  const lastDraftRef = useRef<{ address: string; routeId: RouteId; recipientId: string } | null>(null);
+  const submitNewAddress = async (draft: DestinationDraft) => {
+    const retryId =
+      lastDraftRef.current !== null &&
+      lastDraftRef.current.address === draft.address &&
+      lastDraftRef.current.routeId === draft.routeId
+        ? lastDraftRef.current.recipientId
+        : null;
+    if (draft.save) {
+      const { recipientId, error } = await addPerson(draft, retryId);
+      if (error || !recipientId) {
+        if (recipientId) lastDraftRef.current = { address: draft.address, routeId: draft.routeId, recipientId };
+        return error ?? { field: "form", message: "Couldn't save this recipient. Untick “Save this recipient” to pay without saving." };
+      }
+      lastDraftRef.current = null;
+      choosePayee({ id: recipientId, name: draft.name, tone: toneFor(recipientId), routeId: draft.routeId, address: draft.address, walletVerified: false, isNew: false, destinationId: null, walletCount: 1 });
+      return null;
+    }
+    choosePayee({ id: null, name: draft.name, tone: "sand", routeId: draft.routeId, address: draft.address, walletVerified: false, isNew: true, destinationId: null, walletCount: 1 });
+    return null;
+  };
+
   const chooseWallet = (wallet: ChosenWallet) => {
     const thenAmount = walletSheet?.thenAmount ?? false;
     setPayee((p) => (p ? { ...p, routeId: wallet.routeId, address: wallet.address, walletVerified: wallet.verified, destinationId: wallet.destinationId } : p));
@@ -282,20 +304,21 @@ export function SendFlow(): React.JSX.Element {
   })();
 
   const canSaveRecipients = session.status === "valid" && !preview;
-  const savedSummary =
-    recipients.status === "ready"
-      ? recipients.items.length === 0
-        ? "No one saved yet"
-        : `${recipients.items.length}${recipients.hasMore ? "+" : ""} saved`
-      : recipients.status === "loading"
-        ? "Loading your people…"
-        : recipients.status === "error"
-          ? "Couldn't load them"
-          : "Connect your wallet to see them";
-  const showSaved = () => {
+  // Receipt save offer: one-off sends only (saved payees and fixed requests
+  // already have a home). Shown on the successful receipt when appropriate.
+  const receiptSaveOffer =
+    payee !== null &&
+    payee.id === null &&
+    payee.isNew &&
+    fixed === null &&
+    session.status === "valid" &&
+    !preview &&
+    canSaveNetwork(payee.routeId)
+      ? { address: payee.address, routeId: payee.routeId }
+      : null;
+  const scrollToNewForm = () => {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    savedRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-    document.getElementById("saved-recipients")?.focus({ preventScroll: true });
+    newFormRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
   };
 
   const filtered =
@@ -469,21 +492,8 @@ export function SendFlow(): React.JSX.Element {
             </div>
           )}
 
-          <div className={styles.choices} role="group" aria-label="Who are you paying?">
-            <button type="button" className={styles.choice} data-primary="true" onClick={() => setNewOpen(true)} aria-haspopup="dialog">
-              <span className={styles.choiceIcon}>
-                <Icon name="plus" size={22} strokeWidth={2.2} />
-              </span>
-              <span className={styles.choiceTitle}>New recipient</span>
-              <span className={styles.choiceSub}>Enter or paste their wallet address</span>
-            </button>
-            <button type="button" className={styles.choice} onClick={showSaved}>
-              <span className={styles.choiceIcon}>
-                <Icon name="users" size={22} strokeWidth={2} />
-              </span>
-              <span className={styles.choiceTitle}>Saved recipient</span>
-              <span className={styles.choiceSub}>{savedSummary}</span>
-            </button>
+          <div ref={newFormRef}>
+            <DestinationForm submitLabel="Continue" nameOptional addressFirst offerSave={canSaveRecipients} onSubmit={submitNewAddress} />
           </div>
 
           {recipients.status === "ready" && recipients.items.length > 0 && (
@@ -530,7 +540,7 @@ export function SendFlow(): React.JSX.Element {
               title="Your people will appear here"
               body="Once your wallet is connected, everyone you save shows up here with what they receive."
               action={
-                <Button variant="ink" size="md" icon="plus" onClick={() => setNewOpen(true)}>
+                <Button variant="ink" size="md" icon="plus" onClick={scrollToNewForm}>
                   Pay someone new
                 </Button>
               }
@@ -711,6 +721,7 @@ export function SendFlow(): React.JSX.Element {
               routeId={handoffInput.payee.routeId}
               asset={destinationFor(handoffInput.payee.routeId).asset}
               requestPublicId={handoffInput.fixed?.publicId ?? null}
+              saveOffer={receiptSaveOffer}
               preparation={preparation.state}
               handoff={handoff}
               ownerUserId={ownerUserId}
@@ -754,33 +765,6 @@ export function SendFlow(): React.JSX.Element {
         </section>
       )}
 
-      <Sheet
-        open={newOpen}
-        onClose={() => {
-          setNewOpen(false);
-          setSavedDraftId(null);
-        }}
-        title="New recipient"
-      >
-        <DestinationForm
-          submitLabel="Continue"
-          nameOptional
-          offerSave={canSaveRecipients}
-          onSubmit={async (draft: DestinationDraft) => {
-            if (draft.save) {
-              const { recipientId, error } = await addPerson(draft, savedDraftId);
-              setSavedDraftId(error ? recipientId : null);
-              if (error || !recipientId) return error ?? { field: "form", message: "Couldn't save this recipient. Untick “Save this recipient” to pay without saving." };
-              setNewOpen(false);
-              choosePayee({ id: recipientId, name: draft.name, tone: toneFor(recipientId), routeId: draft.routeId, address: draft.address, walletVerified: false, isNew: false, destinationId: null, walletCount: 1 });
-              return null;
-            }
-            setNewOpen(false);
-            choosePayee({ id: null, name: draft.name, tone: "sand", routeId: draft.routeId, address: draft.address, walletVerified: false, isNew: true, destinationId: null, walletCount: 1 });
-            return null;
-          }}
-        />
-      </Sheet>
 
       <Sheet open={routeSheetOpen} onClose={() => setRouteSheetOpen(false)} title="You receive">
         <DestinationPicker
@@ -1044,6 +1028,7 @@ function HandoffStep({
   routeId,
   asset,
   requestPublicId,
+  saveOffer,
   preparation,
   handoff,
   ownerUserId,
@@ -1059,6 +1044,8 @@ function HandoffStep({
   routeId: import("@/domain/routes").RouteId;
   asset: string;
   requestPublicId: string | null;
+  /** One-off payee worth offering to save on the receipt; null when N/A. */
+  saveOffer: { address: string; routeId: import("@/domain/routes").RouteId } | null;
   preparation: PreparationState;
   handoff: ReturnType<typeof useHandoff>;
   ownerUserId: string | null;
@@ -1181,6 +1168,7 @@ function HandoffStep({
             previewMode={previewMode}
             routeId={routeId}
             asset={asset}
+            saveOffer={saveOffer}
           />
         )}
 

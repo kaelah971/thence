@@ -37,6 +37,8 @@ interface DestinationFormProps {
   blockedReason?: string | undefined;
   /** One-off payments: the name is optional and asked for after the address. */
   nameOptional?: boolean;
+  /** Show the address field before the currency picker (default false). */
+  addressFirst?: boolean;
   /** Offer an opt-in "Save this recipient" toggle (off by default). */
   offerSave?: boolean;
 }
@@ -51,6 +53,7 @@ export function DestinationForm({
   initial,
   blockedReason,
   nameOptional = false,
+  addressFirst = false,
   offerSave = false,
 }: DestinationFormProps): React.JSX.Element {
   const [name, setName] = useState(initial?.name ?? "");
@@ -86,6 +89,38 @@ export function DestinationForm({
     }
   };
 
+  const pickerField = (
+    <DestinationPicker
+      label={saveMode ? "Preferred currency" : "They receive"}
+      value={routeId}
+      onChange={(next) => {
+        setRouteId(next);
+        setServerError(null);
+      }}
+      mode={mode}
+      hint={saveMode ? "Choose the currency and network their wallet uses." : "Live availability is checked before you pay."}
+    />
+  );
+  const addressField = (
+    <TextField
+      label={lightning ? "Lightning address or invoice" : saveMode ? "Receiving wallet address" : `Their ${destination.network} address`}
+      value={address}
+      onChange={(event) => {
+        setAddress(event.target.value);
+        setServerError(null);
+      }}
+      onBlur={() => setTouched((t) => ({ ...t, address: true }))}
+      placeholder={lightning ? "name@wallet.com" : "0x…"}
+      autoComplete="off"
+      autoCapitalize="none"
+      autoCorrect="off"
+      spellCheck={false}
+      inputMode={lightning ? "email" : "text"}
+      error={addressError}
+      hint={`Paste the ${destination.asset} address they gave you. Double-check it's for ${destination.network}.`}
+      inputClassName={styles.mono}
+    />
+  );
   const nameField = (
     <TextField
       label={nameRequired ? "Their name" : "Their name (optional)"}
@@ -106,38 +141,17 @@ export function DestinationForm({
   return (
     <form className={styles.form} onSubmit={(event) => void submit(event)} noValidate>
       {withName && !nameOptional && nameField}
-      {withAddress && (
+      {withAddress && (addressFirst ? (
         <>
-          <DestinationPicker
-            label={saveMode ? "Preferred currency" : "They receive"}
-            value={routeId}
-            onChange={(next) => {
-              setRouteId(next);
-              setServerError(null);
-            }}
-            mode={mode}
-            hint={saveMode ? "Choose the currency and network their wallet uses." : "Live availability is checked before you pay."}
-          />
-          <TextField
-            label={lightning ? "Lightning address or invoice" : saveMode ? "Receiving wallet address" : `Their ${destination.network} address`}
-            value={address}
-            onChange={(event) => {
-              setAddress(event.target.value);
-              setServerError(null);
-            }}
-            onBlur={() => setTouched((t) => ({ ...t, address: true }))}
-            placeholder={lightning ? "name@wallet.com" : "0x…"}
-            autoComplete="off"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            inputMode={lightning ? "email" : "text"}
-            error={addressError}
-            hint={`Paste the ${destination.asset} address they gave you. Double-check it's for ${destination.network}.`}
-            inputClassName={styles.mono}
-          />
+          {addressField}
+          {pickerField}
         </>
-      )}
+      ) : (
+        <>
+          {pickerField}
+          {addressField}
+        </>
+      ))}
       {withName && nameOptional && nameField}
       {offerSave && (
         <label className={styles.checkRow} data-disabled={!canSaveNetwork(destination.network) || undefined}>
