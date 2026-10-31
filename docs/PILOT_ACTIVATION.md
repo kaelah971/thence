@@ -34,6 +34,15 @@ seeded DISABLED by migration `0014`, operated via
 
 New funded execution requires BOTH keys. Either key alone stops it.
 
+F8.3 PRODUCTION RULE: a production runtime (`NODE_ENV === "production"`)
+never skips the pilot for missing configuration. Non-production keeps the
+legacy not-configured skip (dev/test/CI quote-only flows), but in
+production a missing allowlist throws `PILOT_NOT_AUTHORIZED` on every
+funded path (create, requote, prepare, attach, authorize) — even with the
+database switch ON. An enabled route plus a payment-capable client can
+never bypass ownership checks by omission. Production must always carry
+an explicit allowlist (disarmed via KEY 1 OFF + KEY 2 FALSE).
+
 | Key | What | Where | Takes effect |
 |-----|------|-------|--------------|
 | KEY 1 — deployed env | `THENCE_PILOT_ENABLED=1` + owner allowlist + caps (`src/lib/pilot.ts`) | Vercel project settings | **Next deployment only** |

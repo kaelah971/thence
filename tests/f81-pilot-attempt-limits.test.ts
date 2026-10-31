@@ -317,3 +317,42 @@ describe.skipIf(!LIVE)("F8.2 database kill switch (isolated TEST database)", () 
     }
   });
 });
+
+/**
+ * F8.3 live section — same file ON PURPOSE (see F8.2 note above): the
+ * production-mandatory rule is proven end-to-end against the isolated
+ * TEST database with NODE_ENV=production: a production runtime with an
+ * enabled route, a payment-capable client posture, and NO allowlist must
+ * fail closed (PILOT_NOT_AUTHORIZED) even with the database switch ON.
+ */
+describe.skipIf(!LIVE)("F8.3 production-mandatory allowlist (isolated TEST database)", () => {
+  it("production without allowlist blocks creation (missing-allowlist bypass closed)", async () => {
+    const saved = snapshotEnv();
+    const env = process.env as Record<string, string | undefined>;
+    const savedNodeEnv = env["NODE_ENV"];
+    const savedOrigin = env["THENCE_APP_ORIGIN"];
+    try {
+      // Production runtime posture with no allowlist configured.
+      env["NODE_ENV"] = "production";
+      env["THENCE_APP_ORIGIN"] = "https://pilot-test.invalid";
+      env["THENCE_ENABLED_ROUTES"] = "usdc-polygon";
+      delete env["THENCE_PILOT_ENABLED"];
+      delete env["THENCE_PILOT_OWNER_NIMIQ_ADDRESSES"];
+      // Database switch ON proves it cannot compensate for the missing allowlist.
+      await setPilotDb(true);
+      const me = await login("prod-norow");
+      const res = await createDirect(me.cookie, "prod-norow", "prod-missing-allowlist", "300000");
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("PILOT_NOT_AUTHORIZED");
+      const rows = await getDb().select({ id: transfers.id }).from(transfers).where(eq(transfers.ownerUserId, me.userId));
+      expect(rows).toHaveLength(0);
+    } finally {
+      if (savedNodeEnv === undefined) delete env["NODE_ENV"];
+      else env["NODE_ENV"] = savedNodeEnv;
+      if (savedOrigin === undefined) delete env["THENCE_APP_ORIGIN"];
+      else env["THENCE_APP_ORIGIN"] = savedOrigin;
+      restoreEnv(saved);
+      await disarmDb();
+    }
+  });
+});

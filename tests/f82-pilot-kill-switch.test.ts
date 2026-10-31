@@ -21,7 +21,9 @@
 import { describe, expect, it } from "vitest";
 import { AuthError } from "@/lib/auth";
 import {
+  assertPilotBudget,
   assertPilotDbEnabled,
+  assertPilotIntent,
   getPilotConfig,
   isPilotDbEnabled,
 } from "@/lib/pilot";
@@ -58,6 +60,60 @@ function throwingDb(): { select: () => unknown } {
     },
   };
 }
+
+describe("F8.3 production-mandatory allowlist (pure, no DB)", () => {
+  const prodBase = { NODE_ENV: "production" };
+
+  it("production with a missing allowlist fails closed on every gate", async () => {
+    // Disarmed production without allowlist: the legacy skip must NOT apply.
+    const disarmed = getPilotConfig({ ...prodBase, THENCE_PILOT_ENABLED: "0" });
+    expect(disarmed.production).toBe(true);
+    expect(disarmed.owners).toEqual([]);
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, disarmed),
+    ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
+    // Null (signed-out) owner is blocked too — never a silent pass.
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: null }, disarmed),
+    ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
+    // Budget and database gates fail closed without touching the database.
+    await expect(assertPilotBudget("user-1", "300000", disarmed, throwingDb() as never)).rejects.toMatchObject({
+      code: "PILOT_NOT_AUTHORIZED",
+    });
+    await expect(assertPilotDbEnabled(disarmed, throwingDb() as never)).rejects.toMatchObject({
+      code: "PILOT_NOT_AUTHORIZED",
+    });
+    await expect(isPilotDbEnabled(disarmed, throwingDb() as never)).resolves.toBe(false);
+  });
+
+  it("production armed without allowlist stays misconfigured fail-closed", async () => {
+    const armed = getPilotConfig({ ...prodBase, THENCE_PILOT_ENABLED: "1" });
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, armed),
+    ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
+    await expect(assertPilotBudget("user-1", "300000", armed, throwingDb() as never)).rejects.toMatchObject({
+      code: "PILOT_NOT_AUTHORIZED",
+    });
+    await expect(assertPilotDbEnabled(armed, throwingDb() as never)).rejects.toMatchObject({
+      code: "PILOT_NOT_AUTHORIZED",
+    });
+  });
+
+  it("non-production keeps the legacy not-configured skip (dev/test/CI flows)", async () => {
+    const dev = getPilotConfig({ NODE_ENV: "development" });
+    expect(dev.production).toBe(false);
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-arbitrum", targetAmountAtomic: "999", ownerAddress: null }, dev),
+    ).not.toThrow();
+    await expect(assertPilotBudget("user-1", "300000", dev, throwingDb() as never)).resolves.toBeUndefined();
+    await expect(assertPilotDbEnabled(dev, throwingDb() as never)).resolves.toBeUndefined();
+    const unset = getPilotConfig({});
+    expect(unset.production).toBe(false);
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: null }, unset),
+    ).not.toThrow();
+  });
+});
 
 describe("F8.2 database kill switch (pure, no DB)", () => {
   it("no-ops for unconfigured envs without touching the database", async () => {
