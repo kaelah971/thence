@@ -16,6 +16,12 @@
  *   instantaneous emergency stop: set it FALSE to halt NEW funding while
  *   recovery keeps working.
  *
+ * F8.3 PRODUCTION RULE: a production runtime never skips for missing
+ * configuration. With no allowlist, non-production keeps legacy skip
+ * behavior (dev/test/CI quote-only flows), but production throws
+ * PILOT_NOT_AUTHORIZED on every funded path — an enabled route plus a
+ * payment-capable client can never bypass ownership checks by omission.
+ *
  * When configured (allowlist set), all funded execution paths require:
  * - Both kill switches armed (env AND database; default OFF, fail-closed)
  * - Strict route: usdc-polygon only
@@ -58,6 +64,14 @@ export interface PilotConfig {
   maxTargetAtomic: string;
   maxSpendAtomic: string;
   maxTransfers: number;
+  /**
+   * F8.3: true when the source env is a production runtime
+   * (NODE_ENV === "production"). Production NEVER skips the pilot for
+   * missing configuration — an enabled route plus a payment-capable
+   * client must always hit the allowlist, or fail closed. The legacy
+   * not-configured skip below applies to development/test only.
+   */
+  production: boolean;
 }
 
 function parseAtomic(value: string | undefined, fallback: string): string {
@@ -83,6 +97,7 @@ function parseOwners(raw: string | undefined): string[] {
 export function getPilotConfig(source: Record<string, string | undefined> = process.env): PilotConfig {
   return {
     enabled: (source["THENCE_PILOT_ENABLED"] ?? "").trim() === "1",
+    production: (source["NODE_ENV"] ?? "").trim() === "production",
     owners: parseOwners(source["THENCE_PILOT_OWNER_NIMIQ_ADDRESSES"]),
     maxTargetAtomic: parseAtomic(source["THENCE_PILOT_MAX_TARGET_ATOMIC"], DEFAULT_MAX_TARGET_ATOMIC),
     maxSpendAtomic: parseAtomic(source["THENCE_PILOT_MAX_SPEND_ATOMIC"], DEFAULT_MAX_SPEND_ATOMIC),
@@ -123,12 +138,19 @@ export async function getOwnerAddress(userId: string): Promise<string | null> {
  * Pure intent check: kill switch, route, allowlist, per-transfer cap.
  * Throws AuthError on any violation (fail-closed when configured).
  *
- * NOT-CONFIGURED SKIP: when no owner allowlist is set AND the kill switch
- * is OFF, the pilot is not configured and all checks are skipped — legacy
- * paths keep their existing protections (auth, route-enabled,
- * single-attempt, swap verification, client payment/claim flags OFF). This
- * keeps the pre-existing suite and normal quote-only flows working in envs
- * without pilot variables.
+ * NOT-CONFIGURED SKIP (non-production only): when no owner allowlist is
+ * set AND the kill switch is OFF, the pilot is not configured and all
+ * checks are skipped — legacy paths keep their existing protections
+ * (auth, route-enabled, single-attempt, swap verification, client
+ * payment/claim flags OFF). This keeps the pre-existing suite and normal
+ * quote-only flows working in envs without pilot variables.
+ *
+ * F8.3 PRODUCTION RULE: a production runtime (NODE_ENV === "production")
+ * NEVER skips for missing configuration. An enabled route plus a
+ * payment-capable client must always hit the allowlist — a missing
+ * allowlist in production throws PILOT_NOT_AUTHORIZED instead of
+ * silently permitting funded execution. Misconfiguration fails closed
+ * everywhere; production additionally fails closed on absence.
  *
  * MISCONFIGURED FAIL-CLOSED: kill switch ON with an empty allowlist is
  * incomplete configuration and blocks everything — an armed pilot with no
@@ -140,6 +162,11 @@ export function assertPilotIntent(
 ): void {
   if (config.owners.length === 0) {
     if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    // F8.3: production must be explicitly allowlisted. Missing allowlist
+    // with an enabled route and payment-capable client must never skip.
+    if (config.production) {
+      throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    }
     return;
   }
   if (!config.enabled) throw new AuthError(403, "PILOT_DISABLED", "Live pilot is not enabled.");
@@ -210,10 +237,20 @@ export async function assertPilotDbEnabled(
   config: PilotConfig = getPilotConfig(),
   db: KillSwitchDb = getDb(),
 ): Promise<void> {
-  // Unconfigured envs skip the pilot entirely (legacy/quote-only flows);
-  // disarmed envs already failed closed in assertPilotIntent. Only an
-  // armed-with-allowlist env consults the database switch.
-  if (config.owners.length === 0 || !config.enabled) return;
+  // F8.3: production with a missing allowlist fails closed here too, so a
+  // caller that reaches the database gate first can never slip through.
+  // (Normal ordering runs assertPilotIntent first, which throws first.)
+  if (config.owners.length === 0) {
+    if (config.production) {
+      throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    }
+    return;
+  }
+  // Unconfigured non-production envs skip the pilot entirely
+  // (legacy/quote-only flows); disarmed envs already failed closed in
+  // assertPilotIntent. Only an armed-with-allowlist env consults the
+  // database switch.
+  if (!config.enabled) return;
   if (!(await isPilotDbEnabled(config, db))) {
     throw new AuthError(403, "PILOT_DISABLED", "Live pilot is stopped (database kill switch). No new funding is permitted.");
   }
@@ -232,6 +269,11 @@ export async function assertPilotBudget(
 ): Promise<void> {
   if (config.owners.length === 0) {
     if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    // F8.3: production with a missing allowlist fails closed (see
+    // assertPilotIntent); non-production keeps the legacy skip.
+    if (config.production) {
+      throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+    }
     return;
   }
   const rows = await db

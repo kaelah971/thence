@@ -133,6 +133,11 @@ effective on the next funded request, no redeploy. Emergency stop =
 receipt, outcome reports, settlement verification) never reads the
 switch and stays available for already-funded transfers.
 
+F8.3 production rule: production never skips the pilot for missing
+configuration — a missing allowlist fails closed (`PILOT_NOT_AUTHORIZED`)
+on every funded path even with the database switch ON. Non-production
+keeps the legacy skip for dev/test/CI flows.
+
 Full ordered sequence — activation, pre-flight verification, emergency
 stop, first-test procedure, blockers: `docs/PILOT_ACTIVATION.md`.
 Do not activate from this section alone.
