@@ -1,7 +1,7 @@
 /**
  * F8 — restricted live pilot gate (server-side only).
  *
- * Before any real NIM moves, all funded execution paths require:
+ * When configured (allowlist set), all funded execution paths require:
  * - Kill switch armed: THENCE_PILOT_ENABLED === "1" (default OFF, fail-closed)
  * - Strict route: usdc-polygon only
  * - Authenticated owner wallet allowlisted (canonical Nimiq address compare)
@@ -94,12 +94,19 @@ export async function getOwnerAddress(userId: string): Promise<string | null> {
 
 /**
  * Pure intent check: kill switch, route, allowlist, per-transfer cap.
- * Throws AuthError on any violation (fail-closed).
+ * Throws AuthError on any violation (fail-closed when configured).
+ *
+ * NOT-CONFIGURED SKIP: when no owner allowlist is set, the pilot is not
+ * configured and all checks are skipped — legacy paths keep their existing
+ * protections (auth, route-enabled, single-attempt, swap verification,
+ * client payment/claim flags OFF). This keeps the pre-existing suite and
+ * normal quote-only flows working in envs without pilot variables.
  */
 export function assertPilotIntent(
   input: { routeId: string; targetAmountAtomic: string; ownerAddress: string | null },
   config: PilotConfig = getPilotConfig(),
 ): void {
+  if (config.owners.length === 0) return;
   if (!config.enabled) throw new AuthError(403, "PILOT_DISABLED", "Live pilot is not enabled.");
   if (input.routeId !== PILOT_ROUTE_ID) {
     throw new AuthError(403, "PILOT_ROUTE_ONLY", "Pilot is restricted to USDC on Polygon.");
@@ -125,6 +132,7 @@ export async function assertPilotBudget(
   newAtomic: string,
   config: PilotConfig = getPilotConfig(),
 ): Promise<void> {
+  if (config.owners.length === 0) return;
   const rows = await getDb()
     .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)

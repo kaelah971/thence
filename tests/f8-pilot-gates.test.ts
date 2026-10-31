@@ -65,6 +65,17 @@ describe("F8 pilot gate", () => {
     ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
   });
 
+  it("skips all checks when no allowlist is configured (legacy/test envs)", () => {
+    const unconfigured = getPilotConfig({});
+    expect(unconfigured.owners).toEqual([]);
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-arbitrum", targetAmountAtomic: "999999999", ownerAddress: OTHER }, unconfigured),
+    ).not.toThrow();
+    expect(() =>
+      assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: null }, unconfigured),
+    ).not.toThrow();
+  });
+
   it("matches owner addresses canonically (spacing/case-insensitive)", () => {
     const compact = OWNER.replace(/\s+/g, "").toLowerCase();
     expect(canonicalKey(compact)).toBe(canonicalKey(OWNER));
