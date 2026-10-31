@@ -27,6 +27,7 @@ import {
   isVaultAvailable,
   loadBinding,
   saveAndVerifyBinding,
+  shouldDiscardBindingOnAttachFailure,
   type RecoveryBinding,
   type VaultLike,
 } from "@/ui/lib/recovery-vault";
@@ -494,6 +495,18 @@ async function attachAndAuthorize(args: {
   if (!attached.ok) {
     // Idempotent edge: same swap already bound elsewhere surfaces as resume,
     // never as a second payment.
+    // F8.10: a server-verified expired invoice proves the bound swap is dead.
+    // Drop it so the next attempt creates a fresh swap for the SAME transfer
+    // and attempt instead of re-attaching the dead one forever.
+    if (attached.code !== null && shouldDiscardBindingOnAttachFailure(attached.code)) {
+      const injected = vaultForTests();
+      if (injected) {
+        await injected.clear(tid);
+      } else {
+        const { clearBinding } = await import("@/ui/lib/recovery-vault");
+        await clearBinding(tid);
+      }
+    }
     fail(classifyPreparationFailure(attached), "attaching", tid);
     return;
   }

@@ -443,6 +443,20 @@ export function SendFlow(): React.JSX.Element {
     await preparation.resume(transferId, ownerUserId);
   };
 
+  // Deep link from Activity ("Resume payment"): continue the SAME transfer.
+  // Server-validated (unknown/foreign ids are a silent no-op); never creates.
+  const resumeParam = initialMode === "send" ? params.get("resume") : null;
+  const resumedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!resumeParam || session.status !== "valid" || !ownerUserId) return;
+    if (resumedRef.current === resumeParam) return;
+    resumedRef.current = resumeParam;
+    router.replace("/app/send", { scroll: false });
+    void continuePendingPayment(resumeParam);
+    // Intentionally runs once per link; resume is idempotent server-side.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeParam, session.status, ownerUserId]);
+
   return (
     <div className={styles.flow} data-sheet={sheetUp}>
       {/* Step 1 — Who are you paying? */}
@@ -493,7 +507,7 @@ export function SendFlow(): React.JSX.Element {
           )}
 
           <div ref={newFormRef}>
-            <DestinationForm submitLabel="Continue" nameOptional addressFirst offerSave={canSaveRecipients} onSubmit={submitNewAddress} />
+            <DestinationForm submitLabel="Continue" nameOptional addressFirst offerSave={canSaveRecipients} stickyCta onSubmit={submitNewAddress} />
           </div>
 
           {recipients.status === "ready" && recipients.items.length > 0 && (
