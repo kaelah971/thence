@@ -67,6 +67,8 @@ const VAULT_READ_TIMEOUT_MS = 15_000;
  * authorization after the deadline.
  */
 export const RUN_TIMEOUT_MS = 90_000;
+/** Gateway network calls (fetch status, prepare): fail fast, the run deadline stays the backstop. */
+export const NETWORK_TIMEOUT_MS = 30_000;
 
 const STEP_COPY: Record<PreparationStep, string> = {
   creating: "Creating your payment…",
@@ -217,7 +219,8 @@ export function usePreparation(): {
           setState({ phase: "working", step: "creating", message: STEP_COPY.creating, transferId });
         } else {
           // Resume path: authoritative transfer state first, never assume.
-          const current = await fetchTransfer(transferId);
+          // Bounded: a hanging status read must fail fast, not stall the run.
+          const current = await withTimeout(fetchTransfer(transferId), NETWORK_TIMEOUT_MS, "transfer status");
           if (!current.ok) {
             fail(classifyPreparationFailure(current), "creating", transferId);
             return;
@@ -277,7 +280,7 @@ export function usePreparation(): {
         // 3 — prepare (server revalidates quote, route, request linkage).
         setState({ phase: "working", step: "preparing", message: STEP_COPY.preparing, transferId: tid });
         if (!attemptToken) {
-          const prepared = await prepareTransfer(tid, quoteRevision);
+          const prepared = await withTimeout(prepareTransfer(tid, quoteRevision), NETWORK_TIMEOUT_MS, "prepare handoff");
           if (!prepared.ok) {
             // Quote expired pre-prepare is a normal path: surface requote.
             fail(classifyPreparationFailure(prepared), "preparing", tid);
@@ -410,6 +413,9 @@ export function usePreparation(): {
         }
 
         // 5 — browser-side swap (exact receive; secrets never leave the device).
+        // Never create a swap after the deadline: it would be a new provider-side
+        // obligation superseded before the user ever sees it.
+        if (!alive()) return;
         setState({ phase: "working", step: "swapping", message: STEP_COPY.swapping, transferId: tid });
         let swap: { satoraSwapId: string; bolt11Invoice: string; paymentHash: string; sourceSats: string; targetAtomic: string };
         try {
@@ -578,12 +584,14 @@ async function attachAndAuthorize(args: {
   const { tid, attemptToken, quoteRevision, satoraSwapId, setState, fail, input, isAlive } = args;
   setState({ phase: "working", step: "attaching", message: STEP_COPY.attaching, transferId: tid });
   if (!isAlive()) return;
-  const attached = await attachTransferSwap(tid, {
+  // Bounded like every other network hop: a late completion converges via
+  // the idempotent attach path instead of racing the timeout UI.
+  const attached = await withTimeout(attachTransferSwap(tid, {
     attemptToken,
     expectedQuoteRevision: quoteRevision,
     satoraSwapId,
     recoveryAcknowledged: true,
-  });
+  }), NETWORK_TIMEOUT_MS, "attach swap");
   if (!attached.ok) {
     // Idempotent edge: same swap already bound elsewhere surfaces as resume,
     // never as a second payment.
@@ -604,11 +612,13 @@ async function attachAndAuthorize(args: {
   }
   setState({ phase: "working", step: "authorizing", message: STEP_COPY.authorizing, transferId: tid });
   if (!isAlive()) return;
-  const authorized = await authorizeTransferHandoff(tid, attemptToken);
+  // Bounded like every other network hop: a late success converges through
+  // ALREADY_AUTHORIZED instead of racing the timeout UI.
+  const authorized = await withTimeout(authorizeTransferHandoff(tid, attemptToken), NETWORK_TIMEOUT_MS, "authorize handoff");
   if (!authorized.ok) {
     // 409 ALREADY_AUTHORIZED converges to ready (single authorization held).
     if (authorized.code === "ALREADY_AUTHORIZED") {
-      const current = await fetchTransfer(tid);
+      const current = await withTimeout(fetchTransfer(tid), NETWORK_TIMEOUT_MS, "transfer status");
       const label = current.ok ? current.data.transfer.statusLabel : "Approve in Nimiq Pay";
       setState({ phase: "ready", transferId: tid, sourceSats: args.sourceSatsHint ?? "", invoiceBolt11: args.invoiceHint ?? null, statusLabel: label });
       savePending({
