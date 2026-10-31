@@ -510,6 +510,48 @@ export const routeObservations = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ */
+/* pilot_controls (F8.2 — database-backed pilot kill switch)              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Singleton row (`id = 'pilot'`) gating NEW funded pilot execution.
+ *
+ * WHY THIS EXISTS: Vercel environment-variable changes only apply to NEW
+ * deployments — even server-side variables. Toggling THENCE_PILOT_ENABLED
+ * in the Vercel dashboard is therefore NOT an instantaneous emergency
+ * switch. This row IS: flipping `enabled` takes effect on the next funded
+ * request with no redeploy, on every already-running deployment.
+ *
+ * TWO-KEY RULE: funded execution requires BOTH the deployed env gate
+ * (THENCE_PILOT_ENABLED=1 + owner allowlist + caps in src/lib/pilot.ts)
+ * AND this row (`enabled = TRUE`). Either key stops new funding alone.
+ *
+ * SCOPE: only the five funded-execution paths read this row (transfer
+ * create, requote, handoff prepare/attach/authorize). Recovery stays
+ * available while stopped: reconcile, reconciliation resume, attempt
+ * status, receipt, handoff outcome reports and settlement verification
+ * never consult it, so an already-funded transfer can always be
+ * recovered, reconciled and verified after an emergency stop.
+ *
+ * FAIL-CLOSED: the gate treats a missing row, missing table (pre-migration
+ * database) or any read error as DISABLED. Unconfigured environments (no
+ * owner allowlist) skip the pilot entirely and never read this table, so
+ * legacy/quote-only flows and old databases keep working.
+ */
+export const pilotControls = pgTable("pilot_controls", {
+  /** Singleton id; only 'pilot' is used. */
+  id: text("id").primaryKey().default("pilot"),
+  /** Database kill switch. FALSE = no new funded pilot execution. */
+  enabled: boolean("enabled").notNull().default(false),
+  /** Session user who last flipped the switch (audit, nullable). */
+  updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+  /** Operator note for the last change (audit, nullable). */
+  note: varchar("note", { length: 280 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Transfer = typeof transfers.$inferSelect;
