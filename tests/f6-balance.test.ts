@@ -311,6 +311,185 @@ describe("server chain reader", () => {
     expect((await readChainBalance(ADDRESS, env)).luna).toBe("9");
     expect(calls).toBe(7); // basic + vault discovery refetch
   });
+
+  it("F8.8: follows an HTLC-to-HTLC rollover and counts only live holdings", async () => {
+    const A = fixtureWallet().address;
+    const B = fixtureWallet().address;
+    const paramsOf = (body: string): string[] => (JSON.parse(body) as { params: string[] }).params;
+    const byMethod = async (_url: string, body: string): Promise<unknown> => {
+      const parsed = JSON.parse(body) as { method: string; params: string[] };
+      if (parsed.method === "getTransactionsByAddress") {
+        if (paramsOf(body)[0] === ADDRESS) {
+          return { jsonrpc: "2.0", result: { data: [{ sender: ADDRESS, recipient: A, toType: 2, value: 100 }] }, id: 1 };
+        }
+        // Contract A's own history shows the rollover leg to B.
+        return { jsonrpc: "2.0", result: { data: [{ sender: A, recipient: B, toType: 2, value: 100 }] }, id: 1 };
+      }
+      const addr = paramsOf(body)[0] ?? "";
+      if (addr === A) return { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 };
+      if (addr === B) return { jsonrpc: "2.0", result: { data: { balance: 100 } }, id: 1 };
+      return { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 };
+    };
+    setNimiqRpcTransportForTests(byMethod);
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("100");
+    expect(balance.vaults).toEqual({ totalLuna: "100", contracts: 1 });
+    expect(balance.vaultsUnknown).toBe(false);
+  });
+
+  it("F8.8: counts both legs of a partial rollover exactly once", async () => {
+    const A = fixtureWallet().address;
+    const B = fixtureWallet().address;
+    const paramsOf = (body: string): string[] => (JSON.parse(body) as { params: string[] }).params;
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      const parsed = JSON.parse(body) as { method: string };
+      if (parsed.method === "getTransactionsByAddress") {
+        if (paramsOf(body)[0] === ADDRESS) {
+          return { jsonrpc: "2.0", result: { data: [{ sender: ADDRESS, recipient: A, toType: 2, value: 100 }] }, id: 1 };
+        }
+        return { jsonrpc: "2.0", result: { data: [{ sender: A, recipient: B, toType: 2, value: 60 }] }, id: 1 };
+      }
+      const addr = paramsOf(body)[0] ?? "";
+      if (addr === A) return { jsonrpc: "2.0", result: { data: { balance: 40 } }, id: 1 };
+      if (addr === B) return { jsonrpc: "2.0", result: { data: { balance: 60 } }, id: 1 };
+      return { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 };
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("100");
+    expect(balance.vaults).toEqual({ totalLuna: "100", contracts: 2 });
+    expect(balance.vaultsUnknown).toBe(false);
+  });
+
+  it("F8.8: ignores unrelated contract-to-contract hops", async () => {
+    const X = fixtureWallet().address;
+    const Y = fixtureWallet().address;
+    let contractReads = 0;
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      const parsed = JSON.parse(body) as { method: string; params: string[] };
+      if (parsed.method === "getTransactionsByAddress") {
+        return { jsonrpc: "2.0", result: { data: [{ sender: X, recipient: Y, toType: 2, value: 500 }] }, id: 1 };
+      }
+      if (parsed.params[0] !== ADDRESS) contractReads += 1;
+      return { jsonrpc: "2.0", result: { data: { balance: 5 } }, id: 1 };
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    expect(balance.luna).toBe("5");
+    expect(balance.vaults).toBeNull();
+    expect(balance.vaultsUnknown).toBe(false);
+    expect(contractReads).toBe(0);
+  });
+
+  it("F8.8: failed rollover follow-up marks unknown but keeps confirmed vaults", async () => {
+    const A = fixtureWallet().address;
+    const C = fixtureWallet().address;
+    setNimiqRpcTransportForTests(async (_url, body) => {
+      const parsed = JSON.parse(body) as { method: string; params: string[] };
+      if (parsed.method === "getTransactionsByAddress") {
+        if (parsed.params[0] === ADDRESS) {
+          return {
+            jsonrpc: "2.0",
+            result: {
+              data: [
+                { sender: ADDRESS, recipient: A, toType: 2, value: 100 },
+                { sender: ADDRESS, recipient: C, toType: 2, value: 50 },
+              ],
+            },
+            id: 1,
+          };
+        }
+        if (parsed.params[0] === A) throw new Error("history down");
+        return { jsonrpc: "2.0", result: { data: [] }, id: 1 };
+      }
+      const addr = parsed.params[0] ?? "";
+      if (addr === A) return { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 };
+      if (addr === C) return { jsonrpc: "2.0", result: { data: { balance: 50 } }, id: 1 };
+      return { jsonrpc: "2.0", result: { data: { balance: 0 } }, id: 1 };
+    });
+    const balance = await readChainBalance(ADDRESS, env);
+    // A is empty with an unexplained 100 outflow, but its history read
+    // fails: C's confirmed 50 still counts, coverage is flagged unknown.
+    expect(balance.luna).toBe("50");
+    expect(balance.vaults).toEqual({ totalLuna: "50", contracts: 1 });
+    expect(balance.vaultsUnknown).toBe(true);
+  });
+});
+
+describe("F8.8 host-zero confirmation (mocked host + chain, no network)", () => {
+  const hostZero = async (): Promise<HostProvider> => ({ sign, getBalance: async () => 0 });
+  const hostSome = async (): Promise<HostProvider> => ({ sign, getBalance: async () => 5 });
+
+  it("confirms a host zero through the vault-aware chain (the reported bug)", async () => {
+    const state = await readNimBalance(
+      {
+        getProvider: hostZero,
+        readChain: chainOk(883734849n, "mainnet", { basicLuna: 0n, vaults: { totalLuna: 883734849n, contracts: 1 }, vaultsUnknown: false }),
+      },
+      ADDRESS,
+    );
+    expect(state).toEqual({
+      status: "loaded",
+      luna: 883734849n,
+      basicLuna: 0n,
+      vaultLuna: 883734849n,
+      vaultUnknown: false,
+      source: "chain",
+      network: "mainnet",
+    });
+  });
+
+  it("keeps a chain-verified zero as zero (verified, not assumed)", async () => {
+    const state = await readNimBalance({ getProvider: hostZero, readChain: chainOk(0n) }, ADDRESS);
+    expect(state).toEqual({
+      status: "loaded",
+      luna: 0n,
+      basicLuna: 0n,
+      vaultLuna: null,
+      vaultUnknown: false,
+      source: "chain",
+      network: "mainnet",
+    });
+  });
+
+  it("marks host zero unknown when no chain can confirm vaults", async () => {
+    const state = await readNimBalance({ getProvider: hostZero }, ADDRESS);
+    expect(state).toEqual({
+      status: "loaded",
+      luna: 0n,
+      basicLuna: 0n,
+      vaultLuna: null,
+      vaultUnknown: true,
+      source: "host",
+      network: null,
+    });
+  });
+
+  it("reports chain failures after a host zero as retryable errors, never zero", async () => {
+    const down = async (): Promise<ChainOutcome> => ({ ok: false, reason: "network" });
+    expect(await readNimBalance({ getProvider: hostZero, readChain: down }, ADDRESS)).toEqual({ status: "error", reason: "network" });
+    const throws = async (): Promise<ChainOutcome> => {
+      throw new Error("boom");
+    };
+    expect(await readNimBalance({ getProvider: hostZero, readChain: throws }, ADDRESS)).toEqual({ status: "error", reason: "failed" });
+  });
+
+  it("keeps the fast path: nonzero host answers never touch the chain", async () => {
+    let chainCalls = 0;
+    const countingChain = async (): Promise<ChainOutcome> => {
+      chainCalls += 1;
+      return { ok: true, luna: 5n, basicLuna: 5n, vaults: null, vaultsUnknown: false, network: "mainnet" };
+    };
+    const state = await readNimBalance({ getProvider: hostSome, readChain: countingChain }, ADDRESS);
+    expect(state).toEqual({
+      status: "loaded",
+      luna: 5n,
+      basicLuna: 5n,
+      vaultLuna: null,
+      vaultUnknown: false,
+      source: "host",
+      network: null,
+    });
+    expect(chainCalls).toBe(0);
+  });
 });
 
 describe("F8.6 wallet-managed vaults (mocked transport, no network)", () => {

@@ -103,16 +103,41 @@ async function readFromHost(getProvider: () => Promise<HostProvider>, address: s
  * (provider-first, same sources, same errors) while removing the wasted
  * reads. Host failure paths are near-synchronous (missing method, rejected
  * init), so fallback users lose no meaningful latency.
+ *
+ * F8.8 HOST-ZERO CONFIRMATION (proven failure it fixes): the lazy rule
+ * above treated a host zero as final, skipping the vault-aware chain read
+ * — but a host zero may be a basic-only view of vault-held funds. A
+ * nonzero host balance still stands on its own (fast path); a host zero
+ * always falls through to the vault-aware chain read, and only a
+ * chain-confirmed zero renders as "no NIM yet".
  */
 export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProvider>), address: string): Promise<BalanceState> {
   const { getProvider, readChain, hostNetwork } = typeof deps === "function" ? { getProvider: deps } as BalanceDeps : deps;
   const host = await readFromHost(getProvider, address);
-  if (host.ok)
+  // Fast path: a nonzero host balance stands on its own (F8.4 saving).
+  if (host.ok && host.luna > 0n)
     return { status: "loaded", luna: host.luna, basicLuna: host.luna, vaultLuna: null, vaultUnknown: false, source: "host", network: hostNetwork?.() ?? null };
+  // F8.8: host failure OR host zero falls through to the vault-aware chain
+  // read. A host zero is never final on its own: the host may only see the
+  // basic account while funds sit in Nimiq Pay-managed vaults, so a zero
+  // must be confirmed on-chain instead of stranding verified holdings.
   if (!readChain) {
-    if (host.reason === "network") return { status: "error", reason: "network" };
-    if (host.reason === "failed") return { status: "error", reason: "failed" };
-    return { status: "unavailable", reason: host.reason };
+    if (!host.ok) {
+      if (host.reason === "network") return { status: "error", reason: "network" };
+      if (host.reason === "failed") return { status: "error", reason: "failed" };
+      return { status: "unavailable", reason: host.reason };
+    }
+    // Host answered zero with no chain to confirm against: loaded, but the
+    // total is explicitly unverified (never "no NIM yet" on this path).
+    return {
+      status: "loaded",
+      luna: 0n,
+      basicLuna: 0n,
+      vaultLuna: null,
+      vaultUnknown: true,
+      source: "host",
+      network: hostNetwork?.() ?? null,
+    };
   }
   let chain: ChainOutcome;
   try {
@@ -137,10 +162,30 @@ export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProv
       network: chain.network,
     };
   }
-  if (host.reason === "network" || chain.reason === "network") return { status: "error", reason: "network" };
-  if (chain.reason === "failed") return { status: "error", reason: "failed" };
-  if (host.reason === "failed") return { status: "error", reason: "failed" };
-  return { status: "unavailable", reason: host.reason };
+  if (!host.ok) {
+    // Legacy host-failure matrix, unchanged: the host failure decides with
+    // chain confirmation where available.
+    if (host.reason === "network" || chain.reason === "network") return { status: "error", reason: "network" };
+    if (host.reason === "failed" || chain.reason === "failed") return { status: "error", reason: "failed" };
+    return { status: "unavailable", reason: host.reason };
+  }
+  // Host answered zero: confirm on-chain before rendering anything.
+  if (chain.reason === "not-configured") {
+    // No chain exists to confirm vaults against: show the zero but mark
+    // coverage unknown (never "no NIM yet" on this path).
+    return {
+      status: "loaded",
+      luna: 0n,
+      basicLuna: 0n,
+      vaultLuna: null,
+      vaultUnknown: true,
+      source: "host",
+      network: hostNetwork?.() ?? null,
+    };
+  }
+  // Chain read failed (network or failed error): retryable error with Try
+  // again. A host zero behind it is never presented as a confirmed zero.
+  return { status: "error", reason: chain.reason === "network" ? "network" : "failed" };
 }
 
 /** Browser read of GET /api/me/balance. */
