@@ -58,6 +58,16 @@ export interface PreparationInput {
  */
 const VAULT_READ_TIMEOUT_MS = 15_000;
 
+/**
+ * F8.12 — end-to-end preparation deadline (independent of individual awaits).
+ * The whole run must resolve within this budget or fail loudly with retry;
+ * a newer run or the deadline invalidates the generation, and every later
+ * dispatch (progress UI, retries, attach, authorize) becomes a no-op so a
+ * late completion can neither overwrite the timeout state nor trigger
+ * authorization after the deadline.
+ */
+export const RUN_TIMEOUT_MS = 90_000;
+
 const STEP_COPY: Record<PreparationStep, string> = {
   creating: "Creating your payment…",
   preparing: "Preparing your payment…",
@@ -105,12 +115,17 @@ export function usePreparation(): {
   reset: () => void;
   pendingFor: (ownerUserId: string | null) => PendingPointer | null;
 } {
-  const [state, setState] = useState<PreparationPhase>({ phase: "idle" });
+  const [state, setPreparationState] = useState<PreparationPhase>({ phase: "idle" });
   const inflight = useRef(false);
   const lastInput = useRef<PreparationInput | null>(null);
+  /** F8.12: run generation. Bumped on every run start, timeout, and reset —
+   * late async completions compare against it and become no-ops. */
+  const generationRef = useRef(0);
+  /** F8.12: end-to-end deadline timer, cleared on settle or reset. */
+  const deadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fail = useCallback((issue: PreparationIssue, step: PreparationStep, transferId: string | null) => {
-    setState({ phase: "failed", issue, step, transferId });
+  const baseFail = useCallback((issue: PreparationIssue, step: PreparationStep, transferId: string | null) => {
+    setPreparationState({ phase: "failed", issue, step, transferId });
   }, []);
 
   const run = useCallback(
@@ -122,6 +137,35 @@ export function usePreparation(): {
       // Tracked for the catch-all below: any unexpected throw or hang must
       // surface as a bounded, retryable failure — never an endless spinner.
       let activeTransferId: string | null = resumeTransferId ?? null;
+      // F8.12: generation-guarded dispatch. `alive` gates every dispatch
+      // below (progress UI, retries, attach, authorize): a newer run, a
+      // reset, or the end-to-end deadline invalidates this generation, so
+      // late completions can neither overwrite the timeout state nor
+      // trigger authorization after the deadline. These shadow the outer
+      // setters within this run only; reset/outer logic is untouched.
+      const runGen = ++generationRef.current;
+      const alive = (): boolean => generationRef.current === runGen;
+      const setState = (next: PreparationPhase): void => {
+        if (alive()) setPreparationState(next);
+      };
+      const fail = (issue: PreparationIssue, step: PreparationStep, transferId: string | null): void => {
+        if (alive()) baseFail(issue, step, transferId);
+      };
+      const deadline = setTimeout(() => {
+        generationRef.current += 1;
+        inflight.current = false;
+        baseFail(
+          {
+            title: "Couldn't continue",
+            body: "This is taking too long. Nothing was sent or approved. Try again when your connection is stable.",
+            retryable: true,
+            action: "retry",
+          },
+          "preparing",
+          activeTransferId,
+        );
+      }, RUN_TIMEOUT_MS);
+      deadlineRef.current = deadline;
       try {
         if (!input.tokenAddress || !input.evmChainId) {
           fail(
@@ -289,6 +333,7 @@ export function usePreparation(): {
                 setState,
                 fail,
                 input,
+                isAlive: alive,
               });
               return;
             }
@@ -358,6 +403,7 @@ export function usePreparation(): {
               setState,
               fail,
               input,
+              isAlive: alive,
             });
             return;
           }
@@ -441,6 +487,7 @@ export function usePreparation(): {
           fail,
           input,
           invoiceHint: swap.bolt11Invoice,
+          isAlive: alive,
         });
       } catch {
         // F8.11: any unexpected throw (or timed-out storage read below) must
@@ -458,10 +505,18 @@ export function usePreparation(): {
           activeTransferId,
         );
       } finally {
-        inflight.current = false;
+        // Only release the lock if no newer run claimed it (a retry started
+        // after a timeout must not be unlocked by the stale run finishing).
+        if (generationRef.current === runGen) {
+          inflight.current = false;
+        }
+        if (deadlineRef.current === deadline) {
+          clearTimeout(deadline);
+          deadlineRef.current = null;
+        }
       }
     },
-    [fail],
+    [baseFail],
   );
 
   const retry = useCallback(async () => {
@@ -492,7 +547,13 @@ export function usePreparation(): {
 
   const reset = useCallback(() => {
     lastInput.current = null;
-    setState({ phase: "idle" });
+    // Invalidate any in-flight run: its late completions become no-ops.
+    generationRef.current += 1;
+    if (deadlineRef.current !== null) {
+      clearTimeout(deadlineRef.current);
+      deadlineRef.current = null;
+    }
+    setPreparationState({ phase: "idle" });
   }, []);
 
   const pendingFor = useCallback((ownerUserId: string | null) => loadPending(ownerUserId), []);
@@ -510,9 +571,13 @@ async function attachAndAuthorize(args: {
   fail: (issue: PreparationIssue, step: PreparationStep, transferId: string | null) => void;
   input: PreparationInput;
   invoiceHint?: string;
+  /** F8.12: checked before attach and authorize so a superseded or timed-out
+   * run can never bind a swap or authorize a handoff after the deadline. */
+  isAlive: () => boolean;
 }): Promise<void> {
-  const { tid, attemptToken, quoteRevision, satoraSwapId, setState, fail, input } = args;
+  const { tid, attemptToken, quoteRevision, satoraSwapId, setState, fail, input, isAlive } = args;
   setState({ phase: "working", step: "attaching", message: STEP_COPY.attaching, transferId: tid });
+  if (!isAlive()) return;
   const attached = await attachTransferSwap(tid, {
     attemptToken,
     expectedQuoteRevision: quoteRevision,
@@ -538,6 +603,7 @@ async function attachAndAuthorize(args: {
     return;
   }
   setState({ phase: "working", step: "authorizing", message: STEP_COPY.authorizing, transferId: tid });
+  if (!isAlive()) return;
   const authorized = await authorizeTransferHandoff(tid, attemptToken);
   if (!authorized.ok) {
     // 409 ALREADY_AUTHORIZED converges to ready (single authorization held).
