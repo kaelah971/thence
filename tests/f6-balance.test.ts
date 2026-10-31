@@ -80,6 +80,31 @@ describe("client balance: host first, then trusted node", () => {
     expect(state).toEqual({ status: "unavailable", reason: "network-mismatch" });
   });
 
+  it("F8.4: never consults the chain when the host answers (lazy fallback)", async () => {
+    let chainCalls = 0;
+    const countingChain = async (): Promise<ChainOutcome> => {
+      chainCalls += 1;
+      return { ok: true, luna: 1n, network: "mainnet" };
+    };
+    const state = await readNimBalance(
+      { getProvider: async () => ({ sign, getBalance: async () => 35_260_449 }), readChain: countingChain },
+      ADDRESS,
+    );
+    expect(state).toEqual({ status: "loaded", luna: 35_260_449n, source: "host", network: null });
+    expect(chainCalls).toBe(0);
+  });
+
+  it("F8.4: consults the chain exactly once after a host failure", async () => {
+    let chainCalls = 0;
+    const countingChain = async (): Promise<ChainOutcome> => {
+      chainCalls += 1;
+      return { ok: true, luna: 5n, network: "mainnet" };
+    };
+    const state = await readNimBalance({ getProvider: outdatedHost, readChain: countingChain }, ADDRESS);
+    expect(state).toEqual({ status: "loaded", luna: 5n, source: "chain", network: "mainnet" });
+    expect(chainCalls).toBe(1);
+  });
+
   it("reports node failures as retryable errors, never as zero", async () => {
     const down = async (): Promise<ChainOutcome> => ({ ok: false, reason: "network" });
     expect(await readNimBalance({ getProvider: outdatedHost, readChain: down }, ADDRESS)).toEqual({ status: "error", reason: "network" });
