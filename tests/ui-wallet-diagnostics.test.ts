@@ -26,6 +26,9 @@ const sign: HostProvider["sign"] = async () => ({ publicKey: "", signature: "" }
 const chainOk = (luna: bigint, network: "mainnet" | "testnet" = "mainnet") => async (): Promise<ChainOutcome> => ({
   ok: true,
   luna,
+  basicLuna: luna,
+  vaults: null,
+  vaultsUnknown: false,
   network,
 });
 const chainOff = async (): Promise<ChainOutcome> => ({ ok: false, reason: "not-configured" });

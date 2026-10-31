@@ -128,8 +128,21 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
   const chars = formatted ? formatted.text.length + 3 : 8;
   const note = (() => {
     switch (balance.status) {
-      case "loaded":
-        return formatted?.isZero ? "This wallet has no NIM yet." : null;
+      case "loaded": {
+        // F8.6: the headline is the wallet total (basic + managed vaults).
+        // Never claim "no NIM yet" while vault coverage is incomplete.
+        const parts: string[] = [];
+        if (loaded?.vaultLuna !== null && loaded?.vaultLuna !== undefined && loaded.vaultLuna > 0n) {
+          parts.push(`Includes ${formatLuna(loaded.vaultLuna).text} NIM in Nimiq Pay vaults.`);
+        }
+        if (loaded?.vaultUnknown === true) {
+          parts.push("Vault balance couldn't be fully confirmed — the total may be higher.");
+        }
+        if (formatted?.isZero && loaded?.vaultUnknown !== true) {
+          parts.push("This wallet has no NIM yet.");
+        }
+        return parts.length > 0 ? parts.join(" ") : null;
+      }
       case "unavailable":
         if (balance.reason === "host-outdated") return "This version of Nimiq Pay can't share your balance yet.";
         if (balance.reason === "network-mismatch") return "Nimiq Pay is on a different network, so Thence won't show a balance.";

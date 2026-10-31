@@ -12,7 +12,19 @@ export type BalanceSource = "host" | "chain";
 export type BalanceState =
   | { status: "disconnected" }
   | { status: "loading" }
-  | { status: "loaded"; luna: bigint; source: BalanceSource; network: string | null }
+  | {
+      status: "loaded";
+      /** Wallet total the user expects: basic plus active managed vaults. */
+      luna: bigint;
+      /** Basic-account-only portion (pre-F8.6 figure). */
+      basicLuna: bigint;
+      /** Active Nimiq Pay vault portion, or null when no vault holds funds. */
+      vaultLuna: bigint | null;
+      /** True when vault discovery was incomplete: the total may understate. */
+      vaultUnknown: boolean;
+      source: BalanceSource;
+      network: string | null;
+    }
   | { status: "unavailable"; reason: "not-in-host" | "host-outdated" | "network-mismatch" }
   | { status: "error"; reason: "network" | "failed" };
 
@@ -20,8 +32,22 @@ type HostOutcome =
   | { ok: true; luna: bigint }
   | { ok: false; reason: "not-in-host" | "host-outdated" | "network" | "failed" };
 
+export interface ChainVaults {
+  totalLuna: bigint;
+  contracts: number;
+}
+
 export type ChainOutcome =
-  | { ok: true; luna: bigint; network: "mainnet" | "testnet" }
+  | {
+      ok: true;
+      /** Wallet total (basic + active vaults) as read by the server. */
+      luna: bigint;
+      basicLuna: bigint;
+      vaults: ChainVaults | null;
+      /** Absent means unknown (fail-closed): the total may understate. */
+      vaultsUnknown?: boolean;
+      network: "mainnet" | "testnet";
+    }
   | { ok: false; reason: "not-configured" | "network" | "failed" };
 
 export interface BalanceDeps {
@@ -81,7 +107,8 @@ async function readFromHost(getProvider: () => Promise<HostProvider>, address: s
 export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProvider>), address: string): Promise<BalanceState> {
   const { getProvider, readChain, hostNetwork } = typeof deps === "function" ? { getProvider: deps } as BalanceDeps : deps;
   const host = await readFromHost(getProvider, address);
-  if (host.ok) return { status: "loaded", luna: host.luna, source: "host", network: hostNetwork?.() ?? null };
+  if (host.ok)
+    return { status: "loaded", luna: host.luna, basicLuna: host.luna, vaultLuna: null, vaultUnknown: false, source: "host", network: hostNetwork?.() ?? null };
   if (!readChain) {
     if (host.reason === "network") return { status: "error", reason: "network" };
     if (host.reason === "failed") return { status: "error", reason: "failed" };
@@ -96,7 +123,19 @@ export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProv
   if (chain.ok) {
     const reported = hostNetwork?.();
     if (reported && reported !== chain.network) return { status: "unavailable", reason: "network-mismatch" };
-    return { status: "loaded", luna: chain.luna, source: "chain", network: chain.network };
+    // Absent vault fields mean unknown (fail-closed): never present a
+    // possibly partial total as complete.
+    const vaultsUnknown = chain.vaultsUnknown ?? chain.vaults === undefined;
+    const vaults = chain.vaults ?? null;
+    return {
+      status: "loaded",
+      luna: chain.luna,
+      basicLuna: chain.basicLuna ?? chain.luna,
+      vaultLuna: vaults ? vaults.totalLuna : null,
+      vaultUnknown: vaultsUnknown,
+      source: "chain",
+      network: chain.network,
+    };
   }
   if (host.reason === "network" || chain.reason === "network") return { status: "error", reason: "network" };
   if (chain.reason === "failed") return { status: "error", reason: "failed" };
@@ -106,7 +145,15 @@ export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProv
 
 /** Browser read of GET /api/me/balance. */
 export async function readChainBalanceFromApi(): Promise<ChainOutcome> {
-  const result = await apiRequest<{ balance: { luna: string; network: "mainnet" | "testnet" } }>("/api/me/balance");
+  const result = await apiRequest<{
+    balance: {
+      luna: string;
+      basicLuna?: string;
+      vaults?: { totalLuna: string; contracts: number } | null;
+      vaultsUnknown?: boolean;
+      network: "mainnet" | "testnet";
+    };
+  }>("/api/me/balance");
   if (!result.ok) {
     if (result.code === "BALANCE_NOT_CONFIGURED") return { ok: false, reason: "not-configured" };
     return { ok: false, reason: result.kind === "network" || result.code === "BALANCE_READ_FAILED" ? "network" : "failed" };
@@ -114,7 +161,24 @@ export async function readChainBalanceFromApi(): Promise<ChainOutcome> {
   const raw = result.data?.balance;
   if (!raw || typeof raw.luna !== "string" || !/^\d{1,24}$/.test(raw.luna)) return { ok: false, reason: "failed" };
   if (raw.network !== "mainnet" && raw.network !== "testnet") return { ok: false, reason: "failed" };
-  return { ok: true, luna: BigInt(raw.luna), network: raw.network };
+  const basicLuna = typeof raw.basicLuna === "string" && /^\d{1,24}$/.test(raw.basicLuna) ? BigInt(raw.basicLuna) : BigInt(raw.luna);
+  // Absent unknown-flag means unknown (fail-closed against shape drift).
+  const vaultsUnknown = typeof raw.vaultsUnknown === "boolean" ? raw.vaultsUnknown : true;
+  let vaults: ChainVaults | null = null;
+  if (raw.vaults !== null && raw.vaults !== undefined) {
+    if (
+      typeof raw.vaults !== "object" ||
+      typeof raw.vaults.totalLuna !== "string" ||
+      !/^\d{1,24}$/.test(raw.vaults.totalLuna) ||
+      typeof raw.vaults.contracts !== "number" ||
+      !Number.isSafeInteger(raw.vaults.contracts) ||
+      raw.vaults.contracts < 0
+    ) {
+      return { ok: false, reason: "failed" };
+    }
+    vaults = { totalLuna: BigInt(raw.vaults.totalLuna), contracts: raw.vaults.contracts };
+  }
+  return { ok: true, luna: BigInt(raw.luna), basicLuna, vaults, vaultsUnknown, network: raw.network };
 }
 
 const liveDeps: BalanceDeps = { getProvider: getHostProvider, readChain: readChainBalanceFromApi, hostNetwork: getHostNetwork };
