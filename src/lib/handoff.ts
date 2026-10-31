@@ -42,6 +42,7 @@ import {
   transfers,
 } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
+import { assertPilotIntent, getOwnerAddress } from "@/lib/pilot";
 import { canTransition, transition } from "@/domain/transfers";
 import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
@@ -177,6 +178,12 @@ export async function prepareHandoff(
     if (transfer.status !== "QUOTED") {
       throw new AuthError(409, "NOT_PREPARABLE", "Only pre-funding quoted transfers can be prepared.");
     }
+    // F8 restricted pilot: prepare is a funded-execution path.
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     if (transfer.quoteRevision !== expectedQuoteRevision) {
       throw new AuthError(409, "VERSION_CONFLICT", "Quote revision changed; re-read the transfer before preparing.");
     }
@@ -307,6 +314,12 @@ export async function attachSwap(
     if (transfer.status !== "QUOTED") {
       throw new AuthError(409, "NOT_ATTACHABLE", "Only pre-funding quoted transfers can bind a swap.");
     }
+    // F8 restricted pilot: attach binds a live swap (funded-execution path).
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     const attempts = await tx
       .select()
       .from(handoffAttempts)
@@ -444,6 +457,12 @@ export async function authorizeHandoff(
     if (transfer.status !== "SWAP_CREATED") {
       throw new AuthError(409, "NOT_AUTHORIZABLE", "Only swap-bound pre-funding transfers can authorize handoff.");
     }
+    // F8 restricted pilot: authorization is the last server gate before host payment.
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    });
     const attempts = await tx
       .select()
       .from(handoffAttempts)

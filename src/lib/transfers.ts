@@ -27,6 +27,7 @@ import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import { paymentRequests, recipientDestinations, recipients, transfers } from "@/db/schema";
 
+import { assertPilotBudget, assertPilotIntent, getOwnerAddress } from "@/lib/pilot";
 import { isAtomicAmount, parseAtomicAmount } from "@/domain/money";
 import {
   TRANSFER_STATUSES,
@@ -329,6 +330,12 @@ export async function createTransfer(
   if (!parsed.success) throw new AuthError(400, "BAD_BODY", parsed.error.issues[0]?.message ?? "Invalid transfer request.");
   const db = getDb();
   const intent = await resolveIntent(userId, parsed.data);
+  // F8 restricted pilot: server-side allowlist + caps before any live quote binds.
+  {
+    const ownerAddress = await getOwnerAddress(userId);
+    assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress });
+    await assertPilotBudget(userId, intent.targetAmountAtomic);
+  }
   const fingerprint = fingerprintTransfer({
     routeId: intent.routeId,
     asset: intent.asset,
@@ -493,6 +500,12 @@ export async function requoteTransfer(
   if (current.status !== "QUOTED") {
     throw new AuthError(409, "NOT_REQUOTEABLE", "Only pre-funding quoted transfers can be re-quoted.");
   }
+  // F8 restricted pilot: re-quote stays inside pilot bounds (no budget recount).
+  assertPilotIntent({
+    routeId: current.routeId,
+    targetAmountAtomic: current.targetAmountAtomic,
+    ownerAddress: await getOwnerAddress(userId),
+  });
   // Resolve the live request public id for snapshot revalidation, if linked.
   let requestPublicId: string | undefined;
   if (current.requestId) {
