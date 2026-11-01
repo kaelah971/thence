@@ -115,6 +115,7 @@ export function usePreparation(): {
   state: PreparationPhase;
   start: (input: PreparationInput) => Promise<void>;
   resume: (transferId: string, ownerUserId: string) => Promise<void>;
+  resumeWithInput: (input: PreparationInput, transferId: string) => Promise<void>;
   retry: () => Promise<void>;
   reset: () => void;
   pendingFor: (ownerUserId: string | null) => PendingPointer | null;
@@ -560,10 +561,27 @@ export function usePreparation(): {
     [run],
   );
 
+  // Deep-link resume from Activity on a fresh page load: there is no
+  // in-memory prior run, so resume() would silently no-op and leave the
+  // handoff step on its idle spinner. The caller rebuilt the exact input
+  // from the authoritative transfer, so run with the SAME transfer id.
+  // Never creates a new transfer: resumeTransferId skips creation.
+  const resumeWithInput = useCallback(
+    async (input: PreparationInput, transferId: string) => {
+      await run(input, transferId);
+    },
+    [run],
+  );
+
   const reset = useCallback(() => {
     lastInput.current = null;
     // Invalidate any in-flight run: its late completions become no-ops.
     generationRef.current += 1;
+    // Free the duplicate-swipe lock too: the retired run's own finally can
+    // no longer unlock a future run (generation mismatch), so leaving it
+    // set would brick explicit retries after an orphaned run stalls short
+    // of its own timeout. Continue-after-interruption depends on this.
+    inflight.current = false;
     if (deadlineRef.current !== null) {
       clearTimeout(deadlineRef.current);
       deadlineRef.current = null;
@@ -573,7 +591,7 @@ export function usePreparation(): {
 
   const pendingFor = useCallback((ownerUserId: string | null) => loadPending(ownerUserId), []);
 
-  return { state, start: run, resume, retry, reset, pendingFor };
+  return { state, start: run, resume, resumeWithInput, retry, reset, pendingFor };
 }
 
 async function attachAndAuthorize(args: {
