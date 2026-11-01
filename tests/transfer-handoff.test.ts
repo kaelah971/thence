@@ -540,4 +540,57 @@ describe.skipIf(!LIVE)("single handoff authorization", () => {
       restoreRoutes(previous);
     }
   }, 120_000);
+
+  it("proves an expired attached attempt strands the transfer (d3debd19 verdict)", async () => {    // Production d3debd19: prepared hours before resume, attempt TTL lapsed.
+    // A fresh handle cannot take over: the bound swap replays idempotently
+    // without confirming the new attempt, and authorize requires a live
+    // attach-confirmed handle. Nothing here moves funds or forks payment.
+    const previous = setRoutes(ROUTES);
+    try {
+      const { cookie } = await login("strand");
+      const { id } = await createQuotedTransfer(cookie, "strand", "s1");
+      const prep = await prepare(cookie, "strand", id);
+      const token = prep.body.attemptToken as string;
+      const swapId = uniqSwap("swap-strand");
+      setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ id: sid }) });
+      try {
+        const attached = await attachPost(
+          postJson(`http://localhost/api/transfers/${id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: swapId, recoveryAcknowledged: true }, { cookie, ...withClient("strand") }),
+          { params: Promise.resolve({ id }) },
+        );
+        expect(attached.status).toBe(201);
+        // Age the attached attempt past its TTL, as on the real payment.
+        await getDb().update(handoffAttempts).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(handoffAttempts.transferId, id));
+        // Old handle: dead (unknown/expired), nothing moves.
+        const dead = await authorizePost(postJson(`http://localhost/api/transfers/${id}/authorize-handoff`, { attemptToken: token }, { cookie, ...withClient("strand") }), { params: Promise.resolve({ id }) });
+        expect(dead.status).toBe(409);
+        expect(((await dead.json()) as { error: string }).error).toBe("ATTEMPT_INVALID");
+        // Fresh handle impossible: once bound, re-prepare is refused (no new
+        // attempt can fork beside the bound swap).
+        const re = await prepare(cookie, "strand", id);
+        expect(re.status).toBe(409);
+        expect(re.body.error).toBe("NOT_PREPARABLE");
+        // Same bound swap replays idempotently (no duplicate binding)...
+        const again = await attachPost(
+          postJson(`http://localhost/api/transfers/${id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: swapId, recoveryAcknowledged: true }, { cookie, ...withClient("strand") }),
+          { params: Promise.resolve({ id }) },
+        );
+        expect(again.status).toBe(200);
+        expect(((await again.json()) as { deduplicated: boolean }).deduplicated).toBe(true);
+        // ...but the only handle is expired: authorize refuses, forever.
+        const stuck = await authorizePost(postJson(`http://localhost/api/transfers/${id}/authorize-handoff`, { attemptToken: token }, { cookie, ...withClient("strand") }), { params: Promise.resolve({ id }) });
+        expect(stuck.status).toBe(409);
+        expect(((await stuck.json()) as { error: string }).error).toBe("ATTEMPT_INVALID");
+        // Transfer unchanged and pre-funding; exactly one transfer exists.
+        const detail = (await (await getTransfer(new Request(`http://localhost/api/transfers/${id}`, { headers: { cookie } }), { params: Promise.resolve({ id }) })).json()) as {
+          transfer: { status: string };
+        };
+        expect(detail.transfer.status).toBe("SWAP_CREATED");
+      } finally {
+        setSatoraFetchersForTests(null);
+      }
+    } finally {
+      restoreRoutes(previous);
+    }
+  }, 120_000);
 });

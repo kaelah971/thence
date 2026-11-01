@@ -25,6 +25,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import {
+  handoffAttempts,
   paymentRequests,
   reconciliationObservations,
   swapAttachments,
@@ -527,6 +528,21 @@ export async function reportHandoffOutcome(
     // entering terminal USER_CANCELLED, where delayed funding would be
     // unrecoverable. Truly unbound / never-authorized transfers (QUOTED, or
     // SWAP_CREATED below the authorization gate) keep terminal cancellation.
+    //
+    // Causal no-funding proof: Nimiq Pay approval (and hence any invoice
+    // payment) requires a HANDOFF_AUTHORIZED attempt, whose invoice the
+    // client only ever shows at approval. When no such attempt ever existed
+    // for this transfer, funding is impossible regardless of invoice
+    // ambiguity — safe to retire with history preserved, no new payment.
+    const authorized = await tx
+      .select({ id: handoffAttempts.id })
+      .from(handoffAttempts)
+      .where(and(eq(handoffAttempts.transferId, transfer.id), eq(handoffAttempts.status, "HANDOFF_AUTHORIZED")))
+      .limit(1);
+    if (authorized.length === 0) {
+      const next = await applyPath(["USER_CANCELLED"]);
+      return { transferId, status: next, deduplicated: false };
+    }
     if (current === "AWAITING_NIM_APPROVAL") {
       const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"]);
       return { transferId, status: next, deduplicated: false };

@@ -109,6 +109,17 @@ export function postReconcile(id: string, opts: Opts = {}): Promise<ApiResult<{ 
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/reconcile`, { ...opts, method: "POST", body: {} });
 }
 
+/**
+ * Report a cancelled-before-submit outcome for a definitively unpaid
+ * payment (F8.12 retirement). The server only honors cancellation when no
+ * funding could have moved (pre-handoff, never authorized); funded or
+ * uncertain payments stay open and must reconcile instead. Never claims
+ * success — funded/claimed/delivered reports are rejected server-side.
+ */
+export function postHandoffCancel(id: string, opts: Opts = {}): Promise<ApiResult<{ handoff: { transferId: string; status: TransferStatus; deduplicated: boolean } }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/handoff-result`, { ...opts, method: "POST", body: { outcome: "cancelled" } });
+}
+
 /** No body is sent: the server derives the swap and claim tx itself. */
 export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiResult<{ settlement: SettlementResult }>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/verify-settlement`, { ...opts, method: "POST", body: {} });
