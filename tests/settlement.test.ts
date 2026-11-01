@@ -130,7 +130,7 @@ function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, un
     target_amount: "5000000",
     evm_chain_id: 137,
     target_evm_address: EVM_A,
-    target_token: { address: USDC_POLYGON, chain_id: 137, kind: "evm" },
+    target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: USDC_POLYGON },
     status: "pending",
     invoice_expires_at: Math.floor(Date.now() / 1000) + 3600,
     fee_sats: 35,

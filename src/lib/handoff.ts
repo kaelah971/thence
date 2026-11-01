@@ -123,7 +123,9 @@ export function verifySwapMatch(args: {
   swap: VerifiedSwapFacts;
 }): void {
   const { asset, network, chainId, tokenAddress, destination, targetAmountAtomic, swap } = args;
-  // Direction is mandatory: without it the route identity is unverifiable.
+  // Direction pins the swap family. The provider schema carries it as a
+  // per-variant literal, and silent absence must not pass: without it the
+  // route identity is unverifiable.
   if (swap.direction !== "lightning_to_evm") {
     throw new AuthError(409, "SWAP_MISMATCH", "Provider swap is not a Lightning to EVM swap.");
   }
