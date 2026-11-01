@@ -16,6 +16,7 @@ import {
   type PreparationPhase,
 } from "@/ui/screens/send/usePreparation";
 import type { PreparationIssue, PreparationStep } from "@/ui/lib/prepare-flow";
+import { refreshQuoteForResume } from "@/ui/lib/prepare-flow";
 
 interface Scripted {
   method: string;
@@ -129,7 +130,7 @@ describe("attach with a stale attempt handle recovers once on the same payment",
     }
   });
 
-  it("fails boundedly without looping when the re-prepare is refused", async () => {
+  it("surfaces a refused re-prepare instead of masking it", async () => {
     const h = harness();
     stubFetch(
       [
@@ -147,9 +148,9 @@ describe("attach with a stale attempt handle recovers once on the same payment",
       isAlive: () => true,
     });
     // Exactly one attach and one prepare: no retry loop, no authorize.
-    // The original attach failure surfaces (retryable resume): it preserves
-    // the retry path once the pilot is re-armed, instead of aborting the
-    // screen on the transient re-prepare refusal.
+    // A refused re-prepare (disarmed pilot) keeps the original retryable
+    // failure so Try again self-heals once gates re-arm; only a stale
+    // quote is surfaced (it alone offers the unblocking refresh action).
     expect(h.log).toHaveLength(2);
     expect(h.log.some((l) => l.includes("authorize-handoff"))).toBe(false);
     const failure = h.failed();
@@ -173,5 +174,92 @@ describe("attach with a stale attempt handle recovers once on the same payment",
     });
     expect(h.log).toHaveLength(1);
     expect(h.failed()?.issue.title).toBe("Checking payment — do not resend");
+  });
+
+  it("surfaces a stale quote from the recovery re-prepare as refresh-the-price", async () => {
+    // Production d3debd19: attach 410 on the expired handle, re-prepare
+    // refused with QUOTE_STALE. The UI must offer refresh-the-price
+    // (action requote), not the dead stale-handle message.
+    const h = harness();
+    stubFetch(
+      [
+        { method: "POST", path: "/api/transfers/t-1/attach", status: 410, body: { error: "ATTEMPT_INVALID", message: "expired" } },
+        { method: "POST", path: "/api/transfers/t-1/prepare", status: 409, body: { error: "QUOTE_STALE", message: "stale" } },
+      ],
+      h.log,
+    );
+    await attachAndAuthorize({
+      ...baseArgs,
+      attemptToken: "stale-tok",
+      setState: h.setState,
+      fail: h.fail,
+      input: INPUT,
+      isAlive: () => true,
+    });
+    expect(h.log).toHaveLength(2);
+    const failure = h.failed();
+    expect(failure?.issue.title).toBe("That price has expired");
+    expect(failure?.issue.action).toBe("requote");
+    expect(failure?.step).toBe("attaching");
+  });
+});
+
+describe("refreshQuoteForResume re-quotes the same transfer at its current revision", () => {
+  const transferBody = (over: Record<string, unknown> = {}) => ({
+    transfer: {
+      id: "t-1",
+      status: "QUOTED",
+      statusLabel: "Ready to pay",
+      routeId: "usdc-polygon",
+      recipientName: "T",
+      asset: "USDC",
+      network: "Polygon",
+      destination: "0xabc",
+      targetAmountAtomic: "300000",
+      recipientDestinationId: null,
+      quote: { revision: 7 },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...over,
+    },
+  });
+
+  it("reads the revision from the transfer and re-quotes it (no new transfer)", async () => {
+    const log: Array<string> = [];
+    stubFetch(
+      [
+        { method: "GET", path: "/api/transfers/t-1", status: 200, body: transferBody() },
+        { method: "POST", path: "/api/transfers/t-1/requote", status: 200, body: transferBody({ quote: { revision: 8 } }) },
+      ],
+      log,
+    );
+    const res = await refreshQuoteForResume("t-1");
+    expect(res.ok).toBe(true);
+    expect(log).toHaveLength(2);
+    expect(log[1]).toContain('"expectedQuoteRevision":7');
+    expect(log[0]).toContain("GET /api/transfers/t-1");
+  });
+
+  it("passes a missing transfer through without re-quoting", async () => {
+    const log: Array<string> = [];
+    stubFetch([{ method: "GET", path: "/api/transfers/t-9", status: 404, body: { error: "NOT_FOUND", message: "gone" } }], log);
+    const res = await refreshQuoteForResume("t-9");
+    expect(res.ok).toBe(false);
+    expect(log).toHaveLength(1);
+  });
+
+  it("passes a refused re-quote through without inventing terms", async () => {
+    const log: Array<string> = [];
+    stubFetch(
+      [
+        { method: "GET", path: "/api/transfers/t-1", status: 200, body: transferBody() },
+        { method: "POST", path: "/api/transfers/t-1/requote", status: 403, body: { error: "PILOT_DISABLED", message: "stopped" } },
+      ],
+      log,
+    );
+    const res = await refreshQuoteForResume("t-1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe("PILOT_DISABLED");
+    expect(log).toHaveLength(2);
   });
 });
