@@ -252,9 +252,31 @@ function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolea
               setClosing(true);
               setClosedNote(null);
               void postHandoffCancel(item.id)
-                .then((result) => {
-                  if (!result.ok && result.kind === "unauthorized") setClosedNote("Your session has ended. Sign in again.");
-                  else if (!result.ok) setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
+                .then(async (result) => {
+                  if (!result.ok && result.kind === "unauthorized") {
+                    setClosedNote("Your session has ended. Sign in again.");
+                    return;
+                  }
+                  if (!result.ok && result.kind === "network") {
+                    // The response was lost: the server may still have closed
+                    // it. Re-read authoritative state instead of guessing — a
+                    // blind success must surface as closed, never as failure.
+                    const fresh = await getTransfer(item.id).catch(() => null);
+                    if (fresh === null || !fresh.ok) {
+                      setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
+                      invalidateData();
+                      return;
+                    }
+                    const freshItem = toActivityItem(fresh.data.transfer);
+                    if (freshItem !== null && freshItem.status === "USER_CANCELLED") {
+                      setClosedNote("Closed. Nothing was paid or approved — you can start a fresh payment.");
+                    } else {
+                      setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
+                    }
+                    invalidateData();
+                    return;
+                  }
+                  if (!result.ok) setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
                   else if (result.data.handoff.status === "USER_CANCELLED") setClosedNote("Closed. Nothing was paid or approved — you can start a fresh payment.");
                   else setClosedNote("Checked just now: still open. Nothing was paid.");
                   invalidateData();
