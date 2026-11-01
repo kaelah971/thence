@@ -210,6 +210,20 @@ export function commit(tokens: CalcTokens, decimals: number): CalcTokens {
   return [result.value];
 }
 
+/**
+ * Token list for restoring an authoritative decimal amount (resume recovery).
+ * Calculator tokens are operand strings ("0.30", not chars), so a valid
+ * decimal restores as a single operand — exactly what typing it would hold.
+ * Strict: digits with one optional fraction, bounded length — anything else
+ * yields null and the caller keeps the current input untouched, so a
+ * zero-valued or empty local form is never fabricated from bad data.
+ */
+export function seedTokens(value: string): CalcTokens | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 20) return null;
+  if (!/^\d+(\.\d+)?$/.test(value)) return null;
+  return [value];
+}
+
 /** Group an operand's integer digits for display: "1234.5" → "1,234.5". */
 export function groupOperand(operand: string): string {
   const negative = operand.startsWith("-");

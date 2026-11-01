@@ -8,6 +8,7 @@ import {
   groupOperand,
   keyFromKeyboard,
   press,
+  seedTokens,
   type CalcKey,
   type CalcTokens,
 } from "@/ui/lib/calculator";
@@ -132,5 +133,21 @@ describe("display helpers", () => {
     expect(keyFromKeyboard("*")).toBe("×");
     expect(keyFromKeyboard("Backspace")).toBe("back");
     expect(keyFromKeyboard("a")).toBeNull();
+  });
+});
+
+describe("resume seeding from authoritative terms", () => {
+  it("restores saved amounts as key-equivalent tokens", () => {
+    expect(seedTokens("0.30")).toEqual(["0.30"]);
+    expect(seedTokens("25")).toEqual(["25"]);
+    // Seeded tokens evaluate exactly like typed keys (resume review path).
+    expect(evaluate(seedTokens("0.30") ?? [], 2)).toEqual(evaluate(type("0.30").tokens, 2));
+  });
+
+  it("refuses anything that is not a plain non-negative decimal", () => {
+    for (const bad of ["", "-", "-1.5", "1.2.3", "12a", " 3", "$5", "1,000", "NaN", "0x10", ".", "1e3"]) {
+      expect(seedTokens(bad)).toBeNull();
+    }
+    expect(seedTokens("0".repeat(21))).toBeNull();
   });
 });

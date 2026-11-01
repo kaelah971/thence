@@ -1,7 +1,7 @@
 "use client";
 
 import { useReducer } from "react";
-import { commit, press, type CalcKey, type CalcRejection, type CalcTokens } from "@/ui/lib/calculator";
+import { commit, press, seedTokens, type CalcKey, type CalcRejection, type CalcTokens } from "@/ui/lib/calculator";
 
 interface CalcState {
   tokens: CalcTokens;
@@ -11,7 +11,11 @@ interface CalcState {
   rejection: CalcRejection | null;
 }
 
-type CalcAction = { type: "key"; key: CalcKey; decimals: number } | { type: "commit"; decimals: number } | { type: "reset" };
+type CalcAction =
+  | { type: "key"; key: CalcKey; decimals: number }
+  | { type: "commit"; decimals: number }
+  | { type: "seed"; value: string }
+  | { type: "reset" };
 
 const INITIAL: CalcState = { tokens: [], inputNonce: 0, shakeNonce: 0, animateLast: false, rejection: null };
 
@@ -19,6 +23,13 @@ function reducer(state: CalcState, action: CalcAction): CalcState {
   switch (action.type) {
     case "reset":
       return { ...INITIAL, inputNonce: state.inputNonce };
+    case "seed": {
+      // Restore authoritative terms (resume recovery): invalid values keep
+      // the current input untouched instead of fabricating an amount.
+      const tokens = seedTokens(action.value);
+      if (!tokens) return state;
+      return { ...state, tokens, rejection: null, animateLast: false, inputNonce: state.inputNonce + 1 };
+    }
     case "commit":
       return { ...state, tokens: commit(state.tokens, action.decimals), animateLast: false, rejection: null };
     case "key": {
