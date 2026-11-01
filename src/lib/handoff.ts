@@ -123,11 +123,10 @@ export function verifySwapMatch(args: {
   swap: VerifiedSwapFacts;
 }): void {
   const { asset, network, chainId, tokenAddress, destination, targetAmountAtomic, swap } = args;
-  // Direction is mandatory when the provider reports it. Some GetSwap
-  // shapes omit it while chain/token/destination/amount/status below still
-  // pin the swap to this payment — so only a contradicting direction
-  // rejects (an absent one must not fail closed the way token identity did).
-  if (swap.direction !== "" && swap.direction !== "lightning_to_evm") {
+  // Direction pins the swap family. The provider schema carries it as a
+  // per-variant literal, and silent absence must not pass: without it the
+  // route identity is unverifiable.
+  if (swap.direction !== "lightning_to_evm") {
     throw new AuthError(409, "SWAP_MISMATCH", "Provider swap is not a Lightning to EVM swap.");
   }
   if (String(swap.evmChainId) !== chainId) {

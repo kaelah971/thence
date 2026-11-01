@@ -65,7 +65,7 @@ function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, un
     target_amount: "5000000",
     evm_chain_id: 137,
     target_evm_address: EVM_A,
-    target_token: { address: USDC_POLYGON, chain_id: 137, kind: "evm" },
+    target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: USDC_POLYGON },
     status: "pending",
     invoice_expires_at: futureUnix(),
     fee_sats: 35,
@@ -324,7 +324,7 @@ describe.skipIf(!LIVE)("swap attachment (mocked provider)", () => {
         [{ ...base, satoraSwapId: "x-unknown" }, 404, "SWAP_NOT_FOUND"],
       ];
       const fixtures: Record<string, Record<string, unknown>> = {
-        "x-wrong-token": fixtureSwap({ id: "x-wrong-token", target_token: { address: "0x0000000000000000000000000000000000000002", chain_id: 137, kind: "evm" } }),
+        "x-wrong-token": fixtureSwap({ id: "x-wrong-token", target_token: { chain: "137", decimals: 6, name: "X", symbol: "X", token_id: "0x0000000000000000000000000000000000000002" } }),
         "x-wrong-addr": fixtureSwap({ id: "x-wrong-addr", target_evm_address: "0x0000000000000000000000000000000000000009" }),
         "x-wrong-amount": fixtureSwap({ id: "x-wrong-amount", target_amount: "4999999" }),
         "x-funded": fixtureSwap({ id: "x-funded", status: "clientfunded" }),

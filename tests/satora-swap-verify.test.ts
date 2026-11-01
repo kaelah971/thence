@@ -100,8 +100,14 @@ describe("verifySwapMatch pins the swap without requiring direction", () => {
     expect(() => verifySwapMatch({ ...args, swap: facts() })).not.toThrow();
   });
 
-  it("accepts an absent direction (other checks still pin the swap)", () => {
-    expect(() => verifySwapMatch({ ...args, swap: facts({ direction: "" }) })).not.toThrow();
+  it("still rejects an absent direction discriminator", () => {
+    try {
+      verifySwapMatch({ ...args, swap: facts({ direction: "" }) });
+      expect.unreachable("must throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AuthError);
+      expect((error as AuthError).code).toBe("SWAP_MISMATCH");
+    }
   });
 
   it("rejects a contradicting direction", () => {
