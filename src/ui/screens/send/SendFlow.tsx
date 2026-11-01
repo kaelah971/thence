@@ -33,6 +33,7 @@ import { timelineFor } from "@/ui/lib/status";
 import { usePreviewMode } from "@/ui/lib/stores";
 import { RequestDetailsStep, RequestSharedStep } from "./RequestSteps";
 import { useCalculator } from "./useCalculator";
+import { humanAmount } from "@/ui/lib/transfers-api";
 import { useLiveQuote } from "./useLiveQuote";
 import { useHandoff } from "./useHandoff";
 import { SettlementProgress } from "./SettlementProgress";
@@ -444,6 +445,12 @@ export function SendFlow(): React.JSX.Element {
       destinationId: t.recipientDestinationId ?? null,
       walletCount: 1,
     });
+    // Seed the calculator from the authoritative saved terms so review and
+    // quoting derive from the real 0.30 (or whatever was saved) instead of
+    // the empty local form — a zero-valued form is never the payment.
+    // Unrepresentable terms keep the current input (never fabricate).
+    const authored = humanAmount(t.targetAmountAtomic, destinationFor(routeId).asset);
+    if (authored !== null) dispatch({ type: "seed", value: authored });
     setStep("handoff");
     await preparation.resumeWithInput(input, transferId);
   };
