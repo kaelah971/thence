@@ -35,12 +35,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (typeof attemptToken !== "string") {
       throw new AuthError(400, "BAD_BODY", "attemptToken is required.");
     }
-    const result = await authorizeHandoff(session.userId, id, attemptToken);
+    // Optional explicit price acceptance (see authorizeHandoff): the exact
+    // live sats figure the owner already reviewed. Absent otherwise.
+    const acceptRepricedSourceSats =
+      typeof body === "object" && body !== null && "acceptRepricedSourceSats" in body
+        ? (body as { acceptRepricedSourceSats?: unknown }).acceptRepricedSourceSats
+        : undefined;
+    const result = await authorizeHandoff(session.userId, id, attemptToken, { acceptRepricedSourceSats });
     return NextResponse.json({ handoff: result }, { status: 200 });
   } catch (err) {
     logFundedFailure("authorize", err);
     if (err instanceof AuthError) {
-      return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
+      return NextResponse.json(
+        { error: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) },
+        { status: err.status },
+      );
     }
     return NextResponse.json({ error: "AUTHORIZE_FAILED", message: "Could not authorize handoff." }, { status: 500 });
   }

@@ -63,13 +63,17 @@ export type PreparationAction =
   | "resume"
   | "reauth"
   | "abort"
-  | "wait";
+  | "wait"
+  | "accept-reprice";
 
 export interface PreparationIssue {
   title: string;
   body: string;
   retryable: boolean;
   action: PreparationAction;
+  /** Owner-reviewed price figures for an explicit accept-the-new-price step.
+   * Present only on REPRICED failures whose response carried both figures. */
+  reprice?: { quotedSourceSats: string; liveSourceSats: string };
 }
 
 export type PreparationStep =
@@ -251,7 +255,7 @@ export function isQuoteFresh(validUntil: string | null | undefined, now: number 
 }
 
 /** Map backend failure codes to everyday language + safe next action. */
-export function classifyPreparationFailure(failure: { kind: string; code: string | null }): PreparationIssue {
+export function classifyPreparationFailure(failure: { kind: string; code: string | null; details?: Record<string, string> | null }): PreparationIssue {
   const { kind, code } = failure;
   if (kind === "unauthorized") {
     return { title: "Your session has ended", body: "Sign in again to continue. Nothing was created or paid.", retryable: false, action: "reauth" };
@@ -288,8 +292,27 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "SWAP_STATE_UNEXPECTED":
     case "INVOICE_EXPIRED":
       return { title: "Couldn't verify the swap", body: "The swap doesn't match this payment any more. Do not approve anything.", retryable: false, action: "abort" };
-    case "REPRICED_NEEDS_CONFIRMATION":
+    case "REPRICED_NEEDS_CONFIRMATION": {
+      // Owner-explicit acceptance path: the response carries both figures so
+      // the UI can show old vs new cost. Without figures there is nothing
+      // safe to accept — stay on the generic bounded failure instead.
+      const quoted = failure.details?.quotedSourceSats;
+      const live = failure.details?.liveSourceSats;
+      if (
+        typeof quoted === "string" && /^[1-9][0-9]*$/.test(quoted) &&
+        typeof live === "string" && /^[1-9][0-9]*$/.test(live) &&
+        BigInt(live) > BigInt(quoted)
+      ) {
+        return {
+          title: "The price moved",
+          body: "Review the new cost before anything continues. Your recipient still receives exactly the agreed amount.",
+          retryable: true,
+          action: "accept-reprice",
+          reprice: { quotedSourceSats: quoted, liveSourceSats: live },
+        };
+      }
       return { title: "The price moved", body: "The swap now costs more than the quoted price. Stopping here — nothing was approved.", retryable: false, action: "abort" };
+    }
     case "RECOVERY_NOT_CONFIRMED":
       return { title: "Not saved — do not pay", body: "Recovery information wasn't confirmed. Nothing was attached or approved.", retryable: true, action: "retry" };
     case "ALREADY_AUTHORIZED":
@@ -404,11 +427,14 @@ export async function attachTransferSwap(
 export async function authorizeTransferHandoff(
   transferId: string,
   attemptToken: string,
-  opts: { fetch?: FetchFn } = {},
+  opts: { fetch?: FetchFn; acceptRepricedSourceSats?: string } = {},
 ): Promise<ApiResult<{ handoff: { attemptId: string; invoiceBolt11: string; sourceSats: string; authorizedAt: string } }>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(transferId)}/authorize-handoff`, {
     method: "POST",
-    body: { attemptToken },
+    body:
+      opts.acceptRepricedSourceSats === undefined
+        ? { attemptToken }
+        : { attemptToken, acceptRepricedSourceSats: opts.acceptRepricedSourceSats },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
   });
 }

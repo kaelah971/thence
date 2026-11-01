@@ -43,11 +43,15 @@ const CHALLENGE_APP = "thence";
 export class AuthError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  /** Optional structured figures for the owner-bound response body (never
+   * logged: logFundedFailure emits the static code only). */
+  readonly details?: Record<string, string>;
+  constructor(status: number, code: string, message: string, details?: Record<string, string>) {
     super(message);
     this.name = "AuthError";
     this.status = status;
     this.code = code;
+    if (details !== undefined) this.details = details;
   }
 }
 

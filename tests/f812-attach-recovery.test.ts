@@ -12,11 +12,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachAndAuthorize,
+  authorizeWithReviewedPrice,
   type PreparationInput,
   type PreparationPhase,
 } from "@/ui/screens/send/usePreparation";
 import type { PreparationIssue, PreparationStep } from "@/ui/lib/prepare-flow";
-import { refreshQuoteForResume } from "@/ui/lib/prepare-flow";
+import { classifyPreparationFailure, refreshQuoteForResume } from "@/ui/lib/prepare-flow";
 
 interface Scripted {
   method: string;
@@ -261,5 +262,115 @@ describe("refreshQuoteForResume re-quotes the same transfer at its current revis
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.code).toBe("PILOT_DISABLED");
     expect(log).toHaveLength(2);
+  });
+});
+
+describe("explicit refreshed-price acceptance (no silent cost increase)", () => {
+  it("maps a figured reprice failure to the accept action with figures", () => {
+    const issue = classifyPreparationFailure({
+      kind: "conflict",
+      code: "REPRICED_NEEDS_CONFIRMATION",
+      details: { quotedSourceSats: "393", liveSourceSats: "411" },
+    });
+    expect(issue.action).toBe("accept-reprice");
+    expect(issue.retryable).toBe(true);
+    expect(issue.reprice).toEqual({ quotedSourceSats: "393", liveSourceSats: "411" });
+  });
+
+  it("keeps a figureless reprice failure on the safe abort path", () => {
+    const issue = classifyPreparationFailure({ kind: "conflict", code: "REPRICED_NEEDS_CONFIRMATION", details: null });
+    expect(issue.action).toBe("abort");
+    expect(issue.retryable).toBe(false);
+    expect(issue.reprice).toBeUndefined();
+  });
+
+  it("authorizes with the exact accepted figure and reaches ready", async () => {
+    const h = harness();
+    stubFetch(
+      [
+        {
+          method: "POST",
+          path: "/api/transfers/t-1/authorize-handoff",
+          status: 200,
+          body: { handoff: { attemptId: "a-1", invoiceBolt11: "inv-1", sourceSats: "411", authorizedAt: new Date().toISOString() } },
+        },
+      ],
+      h.log,
+    );
+    await authorizeWithReviewedPrice({
+      tid: "t-1",
+      attemptToken: "tok-1",
+      acceptedSourceSats: "411",
+      input: INPUT,
+      setState: h.setState,
+      fail: h.fail,
+      isAlive: () => true,
+    });
+    expect(h.log).toHaveLength(1);
+    expect(h.log[0]).toContain('"acceptRepricedSourceSats":"411"');
+    expect(h.failed()).toBeNull();
+    const last = h.states[h.states.length - 1];
+    expect(last?.phase).toBe("ready");
+    if (last?.phase === "ready") {
+      expect(last.transferId).toBe("t-1");
+      expect(last.sourceSats).toBe("411");
+    }
+  });
+
+  it("re-surfaces moved-again figures instead of authorizing past acceptance", async () => {
+    const h = harness();
+    stubFetch(
+      [
+        {
+          method: "POST",
+          path: "/api/transfers/t-1/authorize-handoff",
+          status: 409,
+          body: { error: "REPRICED_NEEDS_CONFIRMATION", message: "moved", details: { quotedSourceSats: "393", liveSourceSats: "422" } },
+        },
+      ],
+      h.log,
+    );
+    await authorizeWithReviewedPrice({
+      tid: "t-1",
+      attemptToken: "tok-1",
+      acceptedSourceSats: "411",
+      input: INPUT,
+      setState: h.setState,
+      fail: h.fail,
+      isAlive: () => true,
+    });
+    expect(h.log).toHaveLength(1);
+    const failure = h.failed();
+    expect(failure?.issue.action).toBe("accept-reprice");
+    expect(failure?.issue.reprice).toEqual({ quotedSourceSats: "393", liveSourceSats: "422" });
+    expect(failure?.step).toBe("authorizing");
+  });
+
+  it("carries server figures from attach-time authorize failures", async () => {
+    const h = harness();
+    stubFetch(
+      [
+        { method: "POST", path: "/api/transfers/t-1/attach", status: 200, body: { attachment: { satoraSwapId: "swap-1" }, transferStatus: "QUOTED", deduplicated: false } },
+        {
+          method: "POST",
+          path: "/api/transfers/t-1/authorize-handoff",
+          status: 409,
+          body: { error: "REPRICED_NEEDS_CONFIRMATION", message: "moved", details: { quotedSourceSats: "393", liveSourceSats: "411" } },
+        },
+      ],
+      h.log,
+    );
+    await attachAndAuthorize({
+      ...baseArgs,
+      attemptToken: "tok-1",
+      setState: h.setState,
+      fail: h.fail,
+      input: INPUT,
+      isAlive: () => true,
+    });
+    const failure = h.failed();
+    expect(failure?.issue.action).toBe("accept-reprice");
+    expect(failure?.issue.reprice).toEqual({ quotedSourceSats: "393", liveSourceSats: "411" });
+    expect(failure?.step).toBe("authorizing");
   });
 });

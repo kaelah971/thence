@@ -121,6 +121,10 @@ export function usePreparation(): {
   /** Explicit refresh-the-price recovery: re-quote the SAME failed transfer
    * (no new transfer, no budget impact) and continue it with fresh terms. */
   requoteAndRetry: () => Promise<void>;
+  /** Explicit accept-the-new-price recovery: authorize the SAME failed
+   * transfer with the exact reviewed live sats. The server re-reads live
+   * state and refuses anything above the accepted figure. */
+  acceptReprice: (acceptedSourceSats: string) => Promise<void>;
   retry: () => Promise<void>;
   reset: () => void;
   pendingFor: (ownerUserId: string | null) => PendingPointer | null;
@@ -573,6 +577,24 @@ export function usePreparation(): {
     await run(input, tid);
   }, [run, state, baseFail]);
 
+  const acceptReprice = useCallback(async (acceptedSourceSats: string) => {
+    const tid = state.phase === "failed" ? state.transferId : null;
+    const input = lastInput.current;
+    const pending = loadPending(input?.ownerUserId ?? null);
+    const token = pending !== null && tid !== null && pending.transferId === tid ? pending.attemptToken : null;
+    if (!tid || !input || !token) return;
+    if (!/^[1-9][0-9]*$/.test(acceptedSourceSats)) return;
+    await authorizeWithReviewedPrice({
+      tid,
+      attemptToken: token,
+      acceptedSourceSats,
+      input,
+      setState: setPreparationState,
+      fail: baseFail,
+      isAlive: () => true,
+    });
+  }, [state, baseFail]);
+
   const resume = useCallback(
     async (transferId: string, ownerUserId: string) => {
       const input = lastInput.current;
@@ -612,7 +634,7 @@ export function usePreparation(): {
 
   const pendingFor = useCallback((ownerUserId: string | null) => loadPending(ownerUserId), []);
 
-  return { state, start: run, resume, resumeWithInput, requoteAndRetry, retry, reset, pendingFor };
+  return { state, start: run, resume, resumeWithInput, requoteAndRetry, acceptReprice, retry, reset, pendingFor };
 }
 
 export async function attachAndAuthorize(args: {
@@ -729,6 +751,51 @@ export async function attachAndAuthorize(args: {
     transferId: tid,
     sourceSats: authorized.data.handoff.sourceSats,
     invoiceBolt11: authorized.data.handoff.invoiceBolt11,
+    statusLabel: "Approve in Nimiq Pay",
+  });
+}
+
+/**
+ * Owner-explicit price acceptance (F8.12): authorize the SAME transfer +
+ * attempt with the exact reviewed live sats. The server re-reads live swap
+ * state inside the authorization transaction and refuses any figure above
+ * the accepted one, so cost can never silently increase here. Nothing new
+ * is created: same transfer, same attempt, same swap.
+ */
+export async function authorizeWithReviewedPrice(args: {
+  tid: string;
+  attemptToken: string;
+  acceptedSourceSats: string;
+  input: PreparationInput;
+  setState: (s: PreparationPhase) => void;
+  fail: (issue: PreparationIssue, step: PreparationStep, transferId: string | null) => void;
+  isAlive: () => boolean;
+}): Promise<void> {
+  const { tid, attemptToken, acceptedSourceSats, input, setState, fail, isAlive } = args;
+  setState({ phase: "working", step: "authorizing", message: STEP_COPY.authorizing, transferId: tid });
+  if (!isAlive()) return;
+  const res = await withTimeout(
+    authorizeTransferHandoff(tid, attemptToken, { acceptRepricedSourceSats: acceptedSourceSats }),
+    NETWORK_TIMEOUT_MS,
+    "authorize handoff",
+  );
+  if (!res.ok) {
+    fail(classifyPreparationFailure(res), "authorizing", tid);
+    return;
+  }
+  savePending({
+    transferId: tid,
+    idempotencyKey: loadPending(input.ownerUserId)?.idempotencyKey ?? newIdempotencyKey(),
+    attemptToken,
+    ownerUserId: input.ownerUserId,
+    routeId: input.payee.routeId,
+    targetAmountAtomic: input.targetAmountAtomic,
+  });
+  setState({
+    phase: "ready",
+    transferId: tid,
+    sourceSats: res.data.handoff.sourceSats,
+    invoiceBolt11: res.data.handoff.invoiceBolt11,
     statusLabel: "Approve in Nimiq Pay",
   });
 }

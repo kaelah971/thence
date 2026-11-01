@@ -751,6 +751,7 @@ export function SendFlow(): React.JSX.Element {
               onRetry={() => void preparation.retry()}
               onBack={() => setStep("review")}
               onRequote={() => void preparation.requoteAndRetry()}
+              onAcceptReprice={(accepted) => void preparation.acceptReprice(accepted)}
               onDone={() => {
                 preparation.reset();
                 handoff.reset();
@@ -1059,6 +1060,7 @@ function HandoffStep({
   onRetry,
   onBack,
   onRequote,
+  onAcceptReprice,
   onDone,
 }: {
   payeeName: string;
@@ -1077,6 +1079,7 @@ function HandoffStep({
   onRetry: () => void;
   onBack: () => void;
   onRequote: () => void;
+  onAcceptReprice: (acceptedSourceSats: string) => void;
   onDone: () => void;
 }): React.JSX.Element {
   const router = useRouter();
@@ -1209,6 +1212,15 @@ function HandoffStep({
               <Button variant="soft" size="md" icon="refresh" block onClick={onRequote}>
                 Refresh the price &amp; continue
               </Button>
+            ) : preparation.issue.action === "accept-reprice" && preparation.issue.reprice ? (
+              <RepriceAcceptance
+                payeeName={payeeName}
+                amount={amount}
+                assetLabel={assetLabel}
+                quotedSourceSats={preparation.issue.reprice.quotedSourceSats}
+                liveSourceSats={preparation.issue.reprice.liveSourceSats}
+                onAccept={() => onAcceptReprice(preparation.issue.reprice?.liveSourceSats ?? "")}
+              />
             ) : preparation.issue.retryable ? (
               <Button variant="soft" size="md" icon="refresh" block onClick={onRetry}>
                 Try again
@@ -1230,6 +1242,55 @@ function HandoffStep({
         </Button>
         <Button variant="ink" onClick={onDone}>
           Done
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Explicit refreshed-price acceptance (F8.12): the swap now costs more
+ * sats than locked. Shows old vs new cost and the unchanged recipient
+ * amount, and continues only on an explicit tap with the exact reviewed
+ * figure. Nimiq Pay still shows the final NIM debit before approval.
+ */
+function RepriceAcceptance({
+  payeeName,
+  amount,
+  assetLabel,
+  quotedSourceSats,
+  liveSourceSats,
+  onAccept,
+}: {
+  payeeName: string;
+  amount: string;
+  assetLabel: string;
+  quotedSourceSats: string;
+  liveSourceSats: string;
+  onAccept: () => void;
+}): React.JSX.Element {
+  let delta: string | null = null;
+  try {
+    const d = BigInt(liveSourceSats) - BigInt(quotedSourceSats);
+    if (d > 0n) delta = d.toString();
+  } catch {
+    delta = null;
+  }
+  return (
+    <div className={styles.quoteBox}>
+      <p className={styles.quoteLine}>
+        Quoted cost: <span className="tabular">{quotedSourceSats} sats</span>
+      </p>
+      <p className={styles.quoteLine} data-tone="ok">
+        New cost: <span className="tabular">{liveSourceSats} sats</span>
+        {delta !== null ? <span> (+{delta} sats in network fees)</span> : null}
+      </p>
+      <p className={styles.ctaNote}>
+        {payeeName} still receives exactly {amount} {assetLabel} — only the Lightning cost moved. Nimiq Pay shows the exact NIM debit before you approve.
+      </p>
+      <div style={{ marginTop: 8 }}>
+        <Button variant="ink" block onClick={onAccept}>
+          Accept {liveSourceSats} sats &amp; continue
         </Button>
       </div>
     </div>
