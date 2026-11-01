@@ -69,6 +69,8 @@ const VAULT_READ_TIMEOUT_MS = 15_000;
 export const RUN_TIMEOUT_MS = 90_000;
 /** Gateway network calls (fetch status, prepare): fail fast, the run deadline stays the backstop. */
 export const NETWORK_TIMEOUT_MS = 30_000;
+/** Browser-side swap creation via the provider SDK (unfunded until approved). */
+export const SWAP_CREATE_TIMEOUT_MS = 60_000;
 
 const STEP_COPY: Record<PreparationStep, string> = {
   creating: "Creating your payment…",
@@ -113,6 +115,7 @@ export function usePreparation(): {
   state: PreparationPhase;
   start: (input: PreparationInput) => Promise<void>;
   resume: (transferId: string, ownerUserId: string) => Promise<void>;
+  resumeWithInput: (input: PreparationInput, transferId: string) => Promise<void>;
   retry: () => Promise<void>;
   reset: () => void;
   pendingFor: (ownerUserId: string | null) => PendingPointer | null;
@@ -372,7 +375,7 @@ export function usePreparation(): {
         // attach conflict path surfaces it instead.
 
         // Freshness gate: don't build a swap on a locally-expired quote.
-        const transferNow = await fetchTransfer(tid);
+        const transferNow = await withTimeout(fetchTransfer(tid), NETWORK_TIMEOUT_MS, "freshness check");
         if (transferNow.ok) {
           const expiresAt = transferNow.data.transfer.quoteExpiresAt ?? transferNow.data.transfer.quote?.validUntil ?? null;
           void isQuoteFresh;
@@ -419,12 +422,19 @@ export function usePreparation(): {
         setState({ phase: "working", step: "swapping", message: STEP_COPY.swapping, transferId: tid });
         let swap: { satoraSwapId: string; bolt11Invoice: string; paymentHash: string; sourceSats: string; targetAtomic: string };
         try {
-          swap = await createExactReceiveSwap({
-            targetAddress: transferDestination,
-            tokenAddress: input.tokenAddress as string,
-            evmChainId: input.evmChainId as number,
-            targetAmountAtomic: transferTargetAtomic,
-          });
+          // Bounded like every other network call: an unresponsive provider SDK
+          // must surface as a retryable error instead of an endless spinner.
+          // A late success is harmless: the swap is unfunded until approved.
+          swap = await withTimeout(
+            createExactReceiveSwap({
+              targetAddress: transferDestination,
+              tokenAddress: input.tokenAddress as string,
+              evmChainId: input.evmChainId as number,
+              targetAmountAtomic: transferTargetAtomic,
+            }),
+            SWAP_CREATE_TIMEOUT_MS,
+            "create swap",
+          );
         } catch (error) {
           fail(
             {
@@ -464,7 +474,7 @@ export function usePreparation(): {
           storedAt: new Date().toISOString(),
           verifiedAt: null,
         };
-        const saved = await saveBindingDurable(binding);
+        const saved = await withTimeout(saveBindingDurable(binding), VAULT_READ_TIMEOUT_MS, "recovery vault save");
         if (!saved.ok) {
           fail(
             { title: "Not saved — do not pay", body: `${saved.reason ?? "Recovery information couldn't be saved."} Nothing was attached or approved. Browser storage isn't automatically secure against clearing or device loss.`, retryable: false, action: "abort" },
@@ -551,10 +561,27 @@ export function usePreparation(): {
     [run],
   );
 
+  // Deep-link resume from Activity on a fresh page load: there is no
+  // in-memory prior run, so resume() would silently no-op and leave the
+  // handoff step on its idle spinner. The caller rebuilt the exact input
+  // from the authoritative transfer, so run with the SAME transfer id.
+  // Never creates a new transfer: resumeTransferId skips creation.
+  const resumeWithInput = useCallback(
+    async (input: PreparationInput, transferId: string) => {
+      await run(input, transferId);
+    },
+    [run],
+  );
+
   const reset = useCallback(() => {
     lastInput.current = null;
     // Invalidate any in-flight run: its late completions become no-ops.
     generationRef.current += 1;
+    // Free the duplicate-swipe lock too: the retired run's own finally can
+    // no longer unlock a future run (generation mismatch), so leaving it
+    // set would brick explicit retries after an orphaned run stalls short
+    // of its own timeout. Continue-after-interruption depends on this.
+    inflight.current = false;
     if (deadlineRef.current !== null) {
       clearTimeout(deadlineRef.current);
       deadlineRef.current = null;
@@ -564,7 +591,7 @@ export function usePreparation(): {
 
   const pendingFor = useCallback((ownerUserId: string | null) => loadPending(ownerUserId), []);
 
-  return { state, start: run, resume, retry, reset, pendingFor };
+  return { state, start: run, resume, resumeWithInput, retry, reset, pendingFor };
 }
 
 async function attachAndAuthorize(args: {

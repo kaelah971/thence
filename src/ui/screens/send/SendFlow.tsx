@@ -393,6 +393,11 @@ export function SendFlow(): React.JSX.Element {
 
   const continuePendingPayment = async (transferId: string): Promise<void> => {
     if (!ownerUserId) return;
+    // Explicit resume (deep link or banner tap) abandons any same-mount run
+    // stuck short of its own timeout: reset frees its lock and retires its
+    // generation so late completions stay inert. Same transfer, idempotent
+    // server paths — never a new payment. Fresh mounts: harmless no-op.
+    preparation.reset();
     const current = await fetchTransfer(transferId);
     if (!current.ok) return;
     const t = current.data.transfer;
@@ -440,7 +445,7 @@ export function SendFlow(): React.JSX.Element {
       walletCount: 1,
     });
     setStep("handoff");
-    await preparation.resume(transferId, ownerUserId);
+    await preparation.resumeWithInput(input, transferId);
   };
 
   // Deep link from Activity ("Resume payment"): continue the SAME transfer.
@@ -448,14 +453,16 @@ export function SendFlow(): React.JSX.Element {
   const resumeParam = initialMode === "send" ? params.get("resume") : null;
   const resumedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!resumeParam || session.status !== "valid" || !ownerUserId) return;
+    if (!resumeParam || session.status !== "valid" || !ownerUserId || !catalogue) return;
     if (resumedRef.current === resumeParam) return;
     resumedRef.current = resumeParam;
     router.replace("/app/send", { scroll: false });
     void continuePendingPayment(resumeParam);
     // Intentionally runs once per link; resume is idempotent server-side.
+    // Waits for the route catalogue so token/chain mapping cannot silently
+    // no-op on a cold load; the guard above retries via these deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resumeParam, session.status, ownerUserId]);
+  }, [resumeParam, session.status, ownerUserId, catalogue]);
 
   return (
     <div className={styles.flow} data-sheet={sheetUp}>
