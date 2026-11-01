@@ -25,6 +25,7 @@ import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import {
+  handoffAttempts,
   paymentRequests,
   reconciliationObservations,
   swapAttachments,
@@ -539,10 +540,28 @@ export async function reportHandoffOutcome(
       const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
       throw new AuthError(503, code, "Route provider is temporarily unavailable; cancellation cannot be verified.");
     }
+    // Independent provider facts win over any local theory: observed
+    // activity (or an unreadable provider) never resolves to terminal
+    // cancellation.
     if (facts.status !== "pending") {
       throw new AuthError(409, "NOT_CANCELLABLE", "Provider shows activity for this swap; cancellation is not safe — reconcile instead.");
     }
     if (!facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now()) {
+      // Causal no-funding proof for the ambiguous-invoice case only: Nimiq
+      // Pay approval (and hence any invoice payment) requires a
+      // HANDOFF_AUTHORIZED attempt, whose invoice the client only ever
+      // shows at approval. When no such attempt ever existed for this
+      // transfer, funding is impossible regardless of invoice ambiguity —
+      // safe to retire with history preserved, no new payment.
+      const authorized = await tx
+        .select({ id: handoffAttempts.id })
+        .from(handoffAttempts)
+        .where(and(eq(handoffAttempts.transferId, transfer.id), eq(handoffAttempts.status, "HANDOFF_AUTHORIZED")))
+        .limit(1);
+      if (authorized.length === 0) {
+        const next = await applyPath(["USER_CANCELLED"]);
+        return { transferId, status: next, deduplicated: false };
+      }
       throw new AuthError(409, "NOT_CANCELLABLE", "Invoice state is ambiguous; cancellation is not safe — reconcile instead.");
     }
     const next = await applyPath(["USER_CANCELLED"]);

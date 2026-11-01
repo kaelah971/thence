@@ -15,7 +15,8 @@ import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
 import { matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
-import { postReconcile } from "@/ui/lib/settlement-client";
+import { postHandoffCancel, postReconcile } from "@/ui/lib/settlement-client";
+import { invalidateData } from "@/ui/lib/resource";
 import styles from "./activity.module.css";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -189,6 +190,11 @@ function LiveTransferDetail({ initial }: { initial: ActivityItem }): React.JSX.E
 function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolean }): React.JSX.Element {
   const destination = destinationFor(item.routeId);
   const stage = STAGE_OF[item.status];
+  const [closing, setClosing] = useState(false);
+  const [closedNote, setClosedNote] = useState<string | null>(null);
+  // Only definitively-unpaid states offer retirement; the server re-verifies
+  // (never authorized, never funded) and keeps funded/uncertain payments open.
+  const canRetire = !preview && (item.status === "QUOTED" || item.status === "SWAP_CREATED");
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>
@@ -232,6 +238,33 @@ function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolea
             {resumeLabelFor(item.status)}
           </ButtonLink>
           <p className={styles.latest}>Continues the same payment — never starts a new one.</p>
+        </div>
+      )}
+      {canRetire && (
+        <div style={{ marginTop: 12 }}>
+          <Button
+            variant="soft"
+            size="md"
+            icon="close"
+            block
+            disabled={closing}
+            onClick={() => {
+              setClosing(true);
+              setClosedNote(null);
+              void postHandoffCancel(item.id)
+                .then((result) => {
+                  if (!result.ok && result.kind === "unauthorized") setClosedNote("Your session has ended. Sign in again.");
+                  else if (!result.ok) setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
+                  else if (result.data.handoff.status === "USER_CANCELLED") setClosedNote("Closed. Nothing was paid or approved — you can start a fresh payment.");
+                  else setClosedNote("Checked just now: still open. Nothing was paid.");
+                  invalidateData();
+                })
+                .finally(() => setClosing(false));
+            }}
+          >
+            {closing ? "Closing…" : "Close this payment"}
+          </Button>
+          {closedNote ? <p className={styles.latest}>{closedNote}</p> : <p className={styles.latest}>Only for payments that never reached approval. History is kept.</p>}
         </div>
       )}
 

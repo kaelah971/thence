@@ -46,6 +46,7 @@ import { AuthError } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { pilotControls, transfers, users } from "@/db/schema";
 import { normalizeNimiqAddress } from "@/lib/nimiq";
+import { isTerminal, type TransferStatus } from "@/domain/transfers";
 
 // F8 pilot: proposed first-test $0.30 USDC (live quotes 2026-10-31: $0.28
 // technical minimum at 368 sats vs 356 floor; $0.30 at 393 sats is the
@@ -280,14 +281,19 @@ export async function assertPilotBudget(
     .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)
     .where(eq(transfers.ownerUserId, userId));
-  // Only pilot-route transfers count toward spend/attempts.
+  // Only pilot-route transfers count toward spend/attempts. Terminal
+  // transfers occupy no attempt slot (their run is over), and verified-
+  // unfunded terminals (cancelled/failed/expired-before-quote) never
+  // spent a sat — but DELIVERED keeps counting toward total spend, so the
+  // one-funded-at-a-time restriction and the spend ceiling both hold.
   const mine = rows.filter((r) => r.routeId === PILOT_ROUTE_ID && /^\d+$/.test(r.amount));
-  if (mine.length >= config.maxTransfers) {
+  const live = mine.filter((r) => !isTerminal(r.status as TransferStatus));
+  if (live.length >= config.maxTransfers) {
     throw new AuthError(403, "PILOT_ATTEMPTS_EXCEEDED", "Pilot attempt limit reached.");
   }
   let total = BigInt(newAtomic);
   for (const r of mine) {
-    if (r.status === "FAILED") continue;
+    if (r.status === "FAILED" || r.status === "USER_CANCELLED" || r.status === "QUOTE_EXPIRED") continue;
     total += BigInt(r.amount);
   }
   if (total > BigInt(config.maxSpendAtomic)) {
