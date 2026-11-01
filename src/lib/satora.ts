@@ -394,8 +394,14 @@ export async function getProviderSwap(swapId: string): Promise<VerifiedSwapFacts
     throw new SatoraError("SWAP_NOT_FOUND", "Provider has no such swap.");
   }
   const targetToken = s["target_token"] as Record<string, unknown> | undefined;
-  const tokenAddress = typeof targetToken?.["address"] === "string" ? (targetToken["address"] as string) : null;
-  const tokenChainId = typeof targetToken?.["chain_id"] === "number" ? (targetToken["chain_id"] as number) : null;
+  // Provider schema (lendaswap OpenAPI TokenInfo): { chain, decimals, name,
+  // symbol, token_id } — there are NO address/chain_id fields. Token identity
+  // is token_id ("btc" or the 0x contract address) + chain ("137", …).
+  // Reading address/chain_id here rejected EVERY swap as malformed (P0).
+  // The numeric chain id also echoes at response level; prefer it.
+  const tokenId = typeof targetToken?.["token_id"] === "string" ? (targetToken["token_id"] as string) : null;
+  const tokenAddress = tokenId !== null && tokenId !== "btc" && tokenId.length > 0 ? tokenId : null;
+  const tokenChainId = typeof s["evm_chain_id"] === "number" ? (s["evm_chain_id"] as number) : null;
   if (!tokenAddress || tokenChainId === null) {
     throw new SatoraError("PROVIDER_MALFORMED", "Route provider returned a swap without token identity.");
   }
