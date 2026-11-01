@@ -453,6 +453,7 @@ export async function authorizeHandoff(
   userId: string,
   transferId: string,
   attemptToken: string,
+  opts: { acceptRepricedSourceSats?: unknown } = {},
 ): Promise<{ attemptId: string; invoiceBolt11: string; sourceSats: string; authorizedAt: string }> {
   if (typeof attemptToken !== "string" || attemptToken.length === 0) {
     throw new AuthError(400, "BAD_BODY", "attemptToken is required.");
@@ -522,9 +523,23 @@ export async function authorizeHandoff(
     if (!facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now()) {
       throw new AuthError(409, "INVOICE_EXPIRED", "Provider swap invoice is missing or expired.");
     }
-    // Repricing guard: never silently approve a larger obligation.
-    if (!transfer.quotedSourceSats || BigInt(facts.sourceSats) > BigInt(transfer.quotedSourceSats)) {
-      throw new AuthError(409, "REPRICED_NEEDS_CONFIRMATION", "Swap source exceeds the quoted amount; explicit renewed confirmation is required.");
+    // Repricing guard: never silently approve a larger obligation. The owner
+    // may explicitly accept the live figure (acceptRepricedSourceSats must
+    // cover it exactly); without that, any increase fails closed here.
+    // locked may be absent on legacy rows — treated as unquotable.
+    const lockedRaw = transfer.quotedSourceSats;
+    const locked = typeof lockedRaw === "string" && /^[1-9][0-9]*$/.test(lockedRaw) ? BigInt(lockedRaw) : null;
+    const live = BigInt(facts.sourceSats);
+    const acceptedRaw = opts.acceptRepricedSourceSats;
+    const accepted = typeof acceptedRaw === "string" && /^[1-9][0-9]*$/.test(acceptedRaw) ? BigInt(acceptedRaw) : null;
+    const figures = {
+      quotedSourceSats: locked?.toString() ?? "",
+      liveSourceSats: live.toString(),
+    };
+    if (locked === null || live > locked) {
+      if (accepted === null || live > accepted) {
+        throw new AuthError(409, "REPRICED_NEEDS_CONFIRMATION", "Swap source exceeds the quoted amount; explicit renewed confirmation is required.", figures);
+      }
     }
     const authorized = await tx
       .update(handoffAttempts)

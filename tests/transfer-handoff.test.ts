@@ -488,4 +488,56 @@ describe.skipIf(!LIVE)("single handoff authorization", () => {
       restoreRoutes(previous);
     }
   }, 120_000);
+
+  it("authorizes at exactly the accepted repriced figure and nothing above", async () => {
+    const previous = setRoutes(ROUTES);
+    try {
+      const { cookie } = await login("accept-reprice");
+      const { id } = await createQuotedTransfer(cookie, "accept-reprice", "a1");
+      const prep = await prepare(cookie, "accept-reprice", id);
+      const token = prep.body.attemptToken as string;
+      const quoted = (await (await getTransfer(new Request(`http://localhost/api/transfers/${id}`, { headers: { cookie } }), { params: Promise.resolve({ id }) })).json()) as {
+        transfer: { quote: { sourceSats: string } };
+      };
+      const locked = quoted.transfer.quote.sourceSats;
+      // Deterministic drift regardless of market: live costs exactly 100 sats more.
+      const live = (BigInt(locked) + 100n).toString();
+      setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ id: sid, source_amount: live }) });
+      try {
+        const attached = await attachPost(
+          postJson(`http://localhost/api/transfers/${id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: uniqSwap("swap-accept-reprice"), recoveryAcknowledged: true }, { cookie, ...withClient("accept-reprice") }),
+          { params: Promise.resolve({ id }) },
+        );
+        expect(attached.status).toBe(201);
+        const authz = (extra: Record<string, unknown>) =>
+          authorizePost(postJson(`http://localhost/api/transfers/${id}/authorize-handoff`, { attemptToken: token, ...extra }, { cookie, ...withClient("accept-reprice") }), { params: Promise.resolve({ id }) });
+        // No acceptance: 409 with both figures for owner review.
+        const denied = await authz({});
+        expect(denied.status).toBe(409);
+        const deniedBody = (await denied.json()) as { error: string; details?: Record<string, string> };
+        expect(deniedBody.error).toBe("REPRICED_NEEDS_CONFIRMATION");
+        expect(deniedBody.details).toEqual({ quotedSourceSats: locked, liveSourceSats: live });
+        // Below-live acceptance: 409 again, never a partial approval.
+        const short = await authz({ acceptRepricedSourceSats: locked });
+        expect(short.status).toBe(409);
+        expect(((await short.json()) as { error: string }).error).toBe("REPRICED_NEEDS_CONFIRMATION");
+        // Malformed acceptance: 409, treated as absent.
+        const garbage = await authz({ acceptRepricedSourceSats: "lots" });
+        expect(garbage.status).toBe(409);
+        // Exact acceptance: 200 with the live sats; single advancement.
+        const ok = await authz({ acceptRepricedSourceSats: live });
+        expect(ok.status).toBe(200);
+        const handoff = ((await ok.json()) as { handoff: { sourceSats: string } }).handoff;
+        expect(handoff.sourceSats).toBe(live);
+        const after = (await (await getTransfer(new Request(`http://localhost/api/transfers/${id}`, { headers: { cookie } }), { params: Promise.resolve({ id }) })).json()) as {
+          transfer: { status: string };
+        };
+        expect(after.transfer.status).toBe("AWAITING_NIM_APPROVAL");
+      } finally {
+        setSatoraFetchersForTests(null);
+      }
+    } finally {
+      restoreRoutes(previous);
+    }
+  }, 120_000);
 });

@@ -21,7 +21,7 @@ export type ApiFailureKind =
 
 export type ApiResult<T> =
   | { ok: true; status: number; data: T }
-  | { ok: false; status: number; kind: ApiFailureKind; code: string | null };
+  | { ok: false; status: number; kind: ApiFailureKind; code: string | null; details?: Record<string, string> | null };
 
 export interface ApiOptions {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
@@ -79,7 +79,17 @@ export async function apiRequest<T>(path: string, options: ApiOptions = {}): Pro
       : null;
   const kind = kindFor(response.status);
   if (kind === "unauthorized") onUnauthorized();
-  return { ok: false, status: response.status, kind, code };
+  // Structured owner-bound figures (e.g. reprice amounts): string map only,
+  // never logged anywhere — codes stay the logging identity.
+  const rawDetails = payload !== null && typeof payload === "object" ? (payload as { details?: unknown }).details : null;
+  const details =
+    rawDetails !== null &&
+    typeof rawDetails === "object" &&
+    !Array.isArray(rawDetails) &&
+    Object.values(rawDetails as Record<string, unknown>).every((v) => typeof v === "string")
+      ? (rawDetails as Record<string, string>)
+      : null;
+  return { ok: false, status: response.status, kind, code, details };
 }
 
 const CODE_MESSAGES: Record<string, string> = {
