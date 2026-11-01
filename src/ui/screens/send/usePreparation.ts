@@ -594,7 +594,7 @@ export function usePreparation(): {
   return { state, start: run, resume, resumeWithInput, retry, reset, pendingFor };
 }
 
-async function attachAndAuthorize(args: {
+export async function attachAndAuthorize(args: {
   tid: string;
   attemptToken: string;
   quoteRevision: number;
@@ -608,17 +608,43 @@ async function attachAndAuthorize(args: {
    * run can never bind a swap or authorize a handoff after the deadline. */
   isAlive: () => boolean;
 }): Promise<void> {
-  const { tid, attemptToken, quoteRevision, satoraSwapId, setState, fail, input, isAlive } = args;
+  const { tid, quoteRevision, satoraSwapId, setState, fail, input, isAlive } = args;
+  let attemptToken = args.attemptToken;
   setState({ phase: "working", step: "attaching", message: STEP_COPY.attaching, transferId: tid });
   if (!isAlive()) return;
   // Bounded like every other network hop: a late completion converges via
   // the idempotent attach path instead of racing the timeout UI.
-  const attached = await withTimeout(attachTransferSwap(tid, {
-    attemptToken,
-    expectedQuoteRevision: quoteRevision,
-    satoraSwapId,
-    recoveryAcknowledged: true,
-  }), NETWORK_TIMEOUT_MS, "attach swap");
+  const attachOnce = (token: string) =>
+    withTimeout(attachTransferSwap(tid, {
+      attemptToken: token,
+      expectedQuoteRevision: quoteRevision,
+      satoraSwapId,
+      recoveryAcknowledged: true,
+    }), NETWORK_TIMEOUT_MS, "attach swap");
+  let attached = await attachOnce(attemptToken);
+  if (!attached.ok && attached.code === "ATTEMPT_INVALID") {
+    // Stale handle: this run holds a token the server no longer honors
+    // (prepared before an interruption window, since expired server-side;
+    // raw tokens are hash-stored, never re-issued). Re-prepare the SAME
+    // transfer + revision ONCE for a fresh handle and retry the SAME swap:
+    // never a new transfer, never a new swap here. A failed or token-less
+    // re-prepare falls through to the normal bounded failure below.
+    const re = await withTimeout(prepareTransfer(tid, quoteRevision), NETWORK_TIMEOUT_MS, "prepare handoff");
+    if (re.ok && typeof re.data.attemptToken === "string" && re.data.attemptToken.length > 0) {
+      attemptToken = re.data.attemptToken;
+      savePending({
+        transferId: tid,
+        idempotencyKey: loadPending(input.ownerUserId)?.idempotencyKey ?? newIdempotencyKey(),
+        attemptToken,
+        ownerUserId: input.ownerUserId,
+        routeId: input.payee.routeId,
+        targetAmountAtomic: input.targetAmountAtomic,
+      });
+      setState({ phase: "working", step: "attaching", message: STEP_COPY.attaching, transferId: tid });
+      if (!isAlive()) return;
+      attached = await attachOnce(attemptToken);
+    }
+  }
   if (!attached.ok) {
     // Idempotent edge: same swap already bound elsewhere surfaces as resume,
     // never as a second payment.
