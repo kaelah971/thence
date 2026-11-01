@@ -420,6 +420,22 @@ export async function fetchTransfer(
   return apiRequest(`/api/transfers/${encodeURIComponent(transferId)}`, { ...(opts.fetch ? { fetch: opts.fetch } : {}) });
 }
 
+/**
+ * Refresh-the-price recovery for a stale-quoted transfer (F8.12): re-read
+ * the transfer for its current revision, then re-quote the SAME transfer.
+ * Creates nothing (QUOTED-only, revision-checked server-side); failures pass
+ * through classified by the caller. Never invents terms: the revision comes
+ * from the authoritative transfer record.
+ */
+export async function refreshQuoteForResume(
+  transferId: string,
+  opts: { fetch?: FetchFn } = {},
+): Promise<ApiResult<{ transfer: TransferRecord }>> {
+  const cur = await fetchTransfer(transferId, opts);
+  if (!cur.ok) return cur;
+  return requoteTransfer(transferId, cur.data.transfer.quote?.revision ?? 1, opts);
+}
+
 export async function fetchAttempt(
   transferId: string,
   opts: { fetch?: FetchFn } = {},

@@ -750,6 +750,7 @@ export function SendFlow(): React.JSX.Element {
               previewMode={preview}
               onRetry={() => void preparation.retry()}
               onBack={() => setStep("review")}
+              onRequote={() => void preparation.requoteAndRetry()}
               onDone={() => {
                 preparation.reset();
                 handoff.reset();
@@ -1057,6 +1058,7 @@ function HandoffStep({
   previewMode,
   onRetry,
   onBack,
+  onRequote,
   onDone,
 }: {
   payeeName: string;
@@ -1074,6 +1076,7 @@ function HandoffStep({
   previewMode: boolean;
   onRetry: () => void;
   onBack: () => void;
+  onRequote: () => void;
   onDone: () => void;
 }): React.JSX.Element {
   const router = useRouter();
@@ -1203,8 +1206,8 @@ function HandoffStep({
                 Sign in again
               </Button>
             ) : preparation.issue.action === "requote" ? (
-              <Button variant="soft" size="md" icon="refresh" block onClick={onBack}>
-                Back to review for a fresh price
+              <Button variant="soft" size="md" icon="refresh" block onClick={onRequote}>
+                Refresh the price &amp; continue
               </Button>
             ) : preparation.issue.retryable ? (
               <Button variant="soft" size="md" icon="refresh" block onClick={onRetry}>

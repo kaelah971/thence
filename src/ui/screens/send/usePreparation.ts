@@ -15,6 +15,8 @@ import {
   loadPending,
   newIdempotencyKey,
   prepareTransfer,
+  refreshQuoteForResume,
+  requoteTransfer,
   savePending,
   withTimeout,
   type FixedTerms,
@@ -116,6 +118,9 @@ export function usePreparation(): {
   start: (input: PreparationInput) => Promise<void>;
   resume: (transferId: string, ownerUserId: string) => Promise<void>;
   resumeWithInput: (input: PreparationInput, transferId: string) => Promise<void>;
+  /** Explicit refresh-the-price recovery: re-quote the SAME failed transfer
+   * (no new transfer, no budget impact) and continue it with fresh terms. */
+  requoteAndRetry: () => Promise<void>;
   retry: () => Promise<void>;
   reset: () => void;
   pendingFor: (ownerUserId: string | null) => PendingPointer | null;
@@ -552,6 +557,22 @@ export function usePreparation(): {
     await run(input, state.phase === "failed" ? (state.transferId ?? undefined) : undefined);
   }, [run, state]);
 
+  const requoteAndRetry = useCallback(async () => {
+    const tid = state.phase === "failed" ? state.transferId : null;
+    const input = lastInput.current;
+    if (!tid || !input) return;
+    // Same transfer, fresh price: the server re-locks terms without creating
+    // anything (QUOTED-only, revision-checked). The resumed run below then
+    // re-reads the new revision from the transfer itself.
+    setPreparationState({ phase: "working", step: "preparing", message: STEP_COPY.preparing, transferId: tid });
+    const rq = await withTimeout(refreshQuoteForResume(tid), NETWORK_TIMEOUT_MS, "requote");
+    if (!rq.ok) {
+      baseFail(classifyPreparationFailure(rq), "preparing", tid);
+      return;
+    }
+    await run(input, tid);
+  }, [run, state, baseFail]);
+
   const resume = useCallback(
     async (transferId: string, ownerUserId: string) => {
       const input = lastInput.current;
@@ -591,7 +612,7 @@ export function usePreparation(): {
 
   const pendingFor = useCallback((ownerUserId: string | null) => loadPending(ownerUserId), []);
 
-  return { state, start: run, resume, resumeWithInput, retry, reset, pendingFor };
+  return { state, start: run, resume, resumeWithInput, requoteAndRetry, retry, reset, pendingFor };
 }
 
 export async function attachAndAuthorize(args: {
@@ -627,8 +648,7 @@ export async function attachAndAuthorize(args: {
     // (prepared before an interruption window, since expired server-side;
     // raw tokens are hash-stored, never re-issued). Re-prepare the SAME
     // transfer + revision ONCE for a fresh handle and retry the SAME swap:
-    // never a new transfer, never a new swap here. A failed or token-less
-    // re-prepare falls through to the normal bounded failure below.
+    // never a new transfer, never a new swap here.
     const re = await withTimeout(prepareTransfer(tid, quoteRevision), NETWORK_TIMEOUT_MS, "prepare handoff");
     if (re.ok && typeof re.data.attemptToken === "string" && re.data.attemptToken.length > 0) {
       attemptToken = re.data.attemptToken;
@@ -643,6 +663,14 @@ export async function attachAndAuthorize(args: {
       setState({ phase: "working", step: "attaching", message: STEP_COPY.attaching, transferId: tid });
       if (!isAlive()) return;
       attached = await attachOnce(attemptToken);
+    } else if (!re.ok) {
+      // Recovery itself refused: surface the error whose action unblocks
+      // the user. A stale quote offers refresh-the-price (retrying the
+      // dead handle would loop forever); anything else keeps the original
+      // retryable failure so Try again self-heals once gates re-arm.
+      const reIssue = classifyPreparationFailure(re);
+      fail(reIssue.action === "requote" ? reIssue : classifyPreparationFailure(attached), "attaching", tid);
+      return;
     }
   }
   if (!attached.ok) {
