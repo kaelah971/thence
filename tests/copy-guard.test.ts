@@ -53,10 +53,10 @@ describe("pause language (Slice 0 C4)", () => {
     expect(decision.reasons.join(" ")).toMatch(/paused in this preview/i);
   });
 
-  it("distinguishes approval (nothing sent) from finishing (status unknown)", () => {
+  it("distinguishes pre-invocation pause from finishing (status unknown)", () => {
     const payment = evaluatePaymentGate({ ...paymentOpen, flagEnabled: false });
-    // Pre-invocation: safe to say nothing was sent.
-    expect(payment.reasons.join(" ")).toMatch(/nothing was sent/i);
+    // Pre-invocation: the gate proves the native method was not called.
+    expect(payment.reasons.join(" ")).toMatch(/no native payment call was made/i);
     const claim = evaluateClaimEligibility({ ...claimOpen, flagEnabled: false });
     // Post-approval: must NOT claim nothing moved — point at Activity instead.
     expect(claim.reasons.join(" ")).not.toMatch(/nothing (was sent|moved|can move|can be debited)/i);

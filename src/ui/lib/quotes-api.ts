@@ -161,7 +161,7 @@ export function quoteProblem(failure: { kind: ApiFailureKind; code: string | nul
   if (code === "BAD_AMOUNT" || code === "BAD_BODY") return make("invalid", "Check the amount", "That amount can't be priced. Change it and try again.", false, true);
   if (kind === "unauthorized") return make("session", "Your session has ended", "Sign in again to check the price.");
   if (kind === "rate-limited") return make("busy", "Too many price checks", "Wait a moment, then refresh the price.", true);
-  return make("provider", "Couldn't get a price right now", "Nothing was sent. Try again in a moment.", true);
+  return make("provider", "Couldn't get a price right now", "No native payment call was made for this price check. Try again in a moment.", true);
 }
 
 /* ---------- display ---------- */

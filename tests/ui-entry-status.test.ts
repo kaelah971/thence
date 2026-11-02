@@ -40,10 +40,13 @@ describe("transfer status presentation", () => {
     }
   });
 
-  it("never labels an unresolved outcome as failed", () => {
+  it("never labels an unresolved outcome as failed or approved", () => {
     expect(pillLabel("OUTCOME_UNKNOWN")).toBe("Checking your payment");
     expect(pillLabel("RECONCILING")).toBe("Checking your payment");
+    expect(timelineFor("OUTCOME_UNKNOWN")[1]).toMatchObject({ label: "Nimiq Pay approval", state: "paused" });
+    expect(timelineFor("RECONCILING")[1]?.state).toBe("paused");
     expect(timelineFor("OUTCOME_UNKNOWN")[2]?.detail).toMatch(/Do not resend/);
+    expect(timelineFor("CLIENT_FUNDED")[1]).toMatchObject({ label: "Approved in Nimiq Pay", state: "done" });
   });
 
   it("filters by product stage", () => {

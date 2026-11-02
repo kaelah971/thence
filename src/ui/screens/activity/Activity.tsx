@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ButtonLink, Button } from "@/ui/components/Button";
 import { Icon } from "@/ui/components/Icon";
 import { AssetMark } from "@/ui/components/PaymentCard";
@@ -10,6 +10,7 @@ import { Sheet } from "@/ui/components/Sheet";
 import shell from "@/ui/components/shell.module.css";
 import { Timeline } from "@/ui/components/Timeline";
 import { destinationFor, maskAddress } from "@/ui/lib/assets";
+import { loadActivityArchive, setActivityArchived } from "@/ui/lib/activity-archive";
 import { useActivityData } from "@/ui/lib/data";
 import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
@@ -32,14 +33,25 @@ const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
   { value: "progress", label: "In progress" },
   { value: "delivered", label: "Delivered" },
   { value: "attention", label: "Needs attention" },
+  { value: "archived", label: "Archived" },
 ];
 
 export function Activity(): React.JSX.Element {
   const data = useActivityData();
+  const session = useSession();
+  const ownerUserId = session.status === "valid" ? session.me.user.id : null;
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [selected, setSelected] = useState<ActivityItem | null>(null);
+  const [archiveVersion, setArchiveVersion] = useState(0);
+  const archivedIds = useMemo(() => {
+    void archiveVersion;
+    return loadActivityArchive(ownerUserId);
+  }, [ownerUserId, archiveVersion]);
 
-  const items = data.status === "ready" ? data.items.filter((i) => matchesFilter(i.status, filter)) : [];
+  const showingArchived = filter === "archived";
+  const items = data.status === "ready"
+    ? data.items.filter((i) => (archivedIds.has(i.id) === showingArchived) && (showingArchived || matchesFilter(i.status, filter)))
+    : [];
   const groups = items.reduce<Array<{ day: string; items: ActivityItem[] }>>((acc, item) => {
     const day = item.dayLabel || "Recent";
     const group = acc.find((g) => g.day === day);
@@ -144,7 +156,20 @@ export function Activity(): React.JSX.Element {
       </section>
 
       <Sheet open={selected !== null} onClose={() => setSelected(null)} title="Payment details">
-        {selected && (preview ? <TransferDetail item={selected} preview /> : <LiveTransferDetail key={selected.id} initial={selected} />)}
+        {selected && (preview ? (
+          <TransferDetail item={selected} preview />
+        ) : (
+          <LiveTransferDetail
+            key={selected.id}
+            initial={selected}
+            archived={archivedIds.has(selected.id)}
+            onArchiveChange={(archived) => {
+              setActivityArchived(ownerUserId, selected.id, archived);
+              setArchiveVersion((version) => version + 1);
+              setSelected(null);
+            }}
+          />
+        ))}
       </Sheet>
     </main>
   );
@@ -153,7 +178,15 @@ export function Activity(): React.JSX.Element {
 const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "FAILED"]);
 
 /** Re-reads the transfer so the sheet shows the latest server status. */
-function LiveTransferDetail({ initial }: { initial: ActivityItem }): React.JSX.Element {
+function LiveTransferDetail({
+  initial,
+  archived,
+  onArchiveChange,
+}: {
+  initial: ActivityItem;
+  archived: boolean;
+  onArchiveChange: (archived: boolean) => void;
+}): React.JSX.Element {
   const session = useSession();
   const userId = session.status === "valid" ? session.me.user.id : null;
   const resource = useApiResource(userId ? `transfer:${userId}:${initial.id}` : null, (signal) => getTransfer(initial.id, { signal }));
@@ -217,7 +250,7 @@ function LiveTransferDetail({ initial }: { initial: ActivityItem }): React.JSX.E
             .finally(() => setProviderEvidenceLoading(false));
         }}
       />
-      <TransferDetail item={item} preview={false} providerEvidence={providerEvidence} />
+      <TransferDetail item={item} preview={false} providerEvidence={providerEvidence} archived={archived} onArchiveChange={onArchiveChange} />
     </>
   );
 }
@@ -271,10 +304,14 @@ function TransferDetail({
   item,
   preview,
   providerEvidence = null,
+  archived = false,
+  onArchiveChange,
 }: {
   item: ActivityItem;
   preview: boolean;
   providerEvidence?: ProviderEvidence | null;
+  archived?: boolean;
+  onArchiveChange?: (archived: boolean) => void;
 }): React.JSX.Element {
   const destination = destinationFor(item.routeId);
   const stage = STAGE_OF[item.status];
@@ -302,6 +339,17 @@ function TransferDetail({
         </div>
       </div>
 
+      {!preview && onArchiveChange && (
+        <div style={{ marginBottom: 12 }}>
+          <Button variant="soft" size="md" icon={archived ? "refresh" : "close"} block onClick={() => onArchiveChange(!archived)}>
+            {archived ? "Show in Activity" : "Hide from Activity"}
+          </Button>
+          <p className={styles.latest}>
+            This only changes your Activity view. It does not cancel the payment, release exposure, or confirm settlement.
+          </p>
+        </div>
+      )}
+
       {stage === "checking" && (
         <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
           We can&apos;t confirm the outcome yet. Starting another payment could pay them twice.
@@ -318,10 +366,10 @@ function TransferDetail({
         </Notice>
       )}
       {(stage === "moving" || stage === "ready") && (
-        <Notice tone="info" icon="clock" title={stage === "moving" ? "Still on its way" : "Not paid yet — ready when you are"}>
+        <Notice tone="info" icon="clock" title={stage === "moving" ? "Still on its way" : "Ready to continue"}>
           {stage === "moving"
             ? "Thence is still checking this payment. A receipt appears once delivery is confirmed on their network."
-            : "Nothing has been sent or approved. You can safely continue where you left off."}
+            : "No approval is recorded for this payment yet. You can continue where you left off."}
         </Notice>
       )}
       {!preview && resumeLabelFor(item.status) !== null && evidenceDisposition !== "EXPIRED_UNFUNDED" && (
@@ -355,28 +403,28 @@ function TransferDetail({
                     // blind success must surface as closed, never as failure.
                     const fresh = await getTransfer(item.id).catch(() => null);
                     if (fresh === null || !fresh.ok) {
-                      setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
+                      setClosedNote("Could not safely cancel it. The payment outcome is still unknown; check Activity before starting another.");
                       invalidateData();
                       return;
                     }
                     const freshItem = toActivityItem(fresh.data.transfer);
                     if (freshItem !== null && freshItem.status === "USER_CANCELLED") {
-                      setClosedNote("Closed. Nothing was paid or approved — you can start a fresh payment.");
+                      setClosedNote("Cancelled safely. The server confirmed no payment was approved or funded.");
                     } else {
-                      setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
+                      setClosedNote("Could not safely cancel it. The payment outcome is still unknown; check Activity before starting another.");
                     }
                     invalidateData();
                     return;
                   }
-                  if (!result.ok) setClosedNote("Could not close it right now — it may need checking first. Nothing was paid.");
-                  else if (result.data.handoff.status === "USER_CANCELLED") setClosedNote("Closed. Nothing was paid or approved — you can start a fresh payment.");
-                  else setClosedNote("Checked just now: still open. Nothing was paid.");
+                  if (!result.ok) setClosedNote("Could not safely cancel it. The payment outcome is still unknown; check Activity before starting another.");
+                  else if (result.data.handoff.status === "USER_CANCELLED") setClosedNote("Cancelled safely. The server confirmed no payment was approved or funded.");
+                  else setClosedNote("Still open. The payment outcome is unknown; do not resend.");
                   invalidateData();
                 })
                 .finally(() => setClosing(false));
             }}
           >
-            {closing ? "Closing…" : "Close this payment"}
+            {closing ? "Cancelling…" : "Cancel unpaid payment"}
           </Button>
           {closedNote ? (
             <p className={styles.latest}>{closedNote}</p>

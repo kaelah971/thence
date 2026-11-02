@@ -151,6 +151,16 @@ describe("exact host Lightning API verified (@nimiq/mini-app-sdk 0.2.4)", () => 
     expect(JSON.stringify(diagnostics)).not.toMatch(/secret-hash|secret-swap|known-hash|known-unknown|unknown-swap|already submitted/i);
   });
 
+  it("treats a repeated provider submission as uncertain without resubmitting", async () => {
+    const calls: string[] = [];
+    const result = await payAuthorizedInvoice(
+      mockPaypal(new NimiqProviderError("DUPLICATE_PAYMENT", "already submitted", 409), calls),
+      INVOICE,
+    );
+    expect(result.kind).toBe("unknown");
+    expect(calls).toEqual([INVOICE]);
+  });
+
   it("maps unknown host methods to unsupported (no assumed fallback)", () => {
     expect(mapHostDenial(new NimiqProviderError("UNKNOWN_REQUEST", "no such method", 4200)).kind).toBe("unsupported");
   });

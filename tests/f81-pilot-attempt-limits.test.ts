@@ -172,6 +172,33 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
     }
   });
 
+  it("allows bounded parallel exposure only with an explicit larger test configuration", async () => {
+    const saved = snapshotEnv();
+    try {
+      const me = await login("parallel");
+      await armFor(me.address, { THENCE_PILOT_MAX_TRANSFERS: "2", THENCE_PILOT_MAX_SPEND_ATOMIC: "600000" });
+      const first = await createDirect(me.cookie, "parallel", "p1", "300000");
+      const second = await createDirect(me.cookie, "parallel", "p2", "300000");
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(first.body.transfer.id).not.toBe(second.body.transfer.id);
+
+      const firstPrepared = await preparePost(
+        postJson(`http://localhost/api/transfers/${first.body.transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie: me.cookie, ...withClient("parallel-first") }),
+        { params: Promise.resolve({ id: first.body.transfer.id }) },
+      );
+      const secondPrepared = await preparePost(
+        postJson(`http://localhost/api/transfers/${second.body.transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie: me.cookie, ...withClient("parallel-second") }),
+        { params: Promise.resolve({ id: second.body.transfer.id }) },
+      );
+      expect(firstPrepared.status).toBe(201);
+      expect(secondPrepared.status).toBe(201);
+    } finally {
+      restoreEnv(saved);
+      await disarmDb();
+    }
+  });
+
   it("enforces spend independently after a payment is delivered", async () => {
     const saved = snapshotEnv();
     try {

@@ -45,7 +45,7 @@ function mockFetch(routes: Record<string, () => Response>, seen: Array<{ url: st
 const transfer = (over: Record<string, unknown> = {}) => ({
   id: "t-1",
   status: "LIGHTNING_HANDOFF",
-  statusLabel: "Payment approved",
+  statusLabel: "Nimiq Pay submission — checking",
   routeId: "usdc-polygon",
   asset: "USDC",
   network: "Polygon",
@@ -65,7 +65,7 @@ const reconView = (over: Record<string, unknown> = {}) => ({
   transfer: {
     id: "t-1",
     status: "LIGHTNING_HANDOFF",
-    statusLabel: "Payment approved",
+    statusLabel: "Nimiq Pay submission — checking",
     routeId: "usdc-polygon",
     asset: "USDC",
     network: "Polygon",
@@ -86,7 +86,7 @@ const reconView = (over: Record<string, unknown> = {}) => ({
   latest: {
     transferId: "t-1",
     status: "LIGHTNING_HANDOFF",
-    statusLabel: "Payment approved",
+    statusLabel: "Nimiq Pay submission — checking",
     providerStatus: "serverfunded",
     observedAt: new Date().toISOString(),
     claimReady: false,

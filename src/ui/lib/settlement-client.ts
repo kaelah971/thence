@@ -223,7 +223,7 @@ export function progressForStatus(status: string, opts: { receiptReady?: boolean
 const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
   "waiting-approval": {
     title: "Waiting for approval",
-    body: "Nimiq Pay shows the exact amount before you confirm. Nothing has moved yet.",
+    body: "No approval is recorded yet. Nimiq Pay shows the exact amount before you confirm.",
   },
   "on-its-way": {
     title: "Payment on its way",
@@ -247,7 +247,7 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
   },
   cancelled: {
     title: "Payment cancelled",
-    body: "This payment was cancelled. Nothing moved.",
+    body: "This payment was cancelled. The server confirmed no settlement.",
   },
 };
 

@@ -50,7 +50,7 @@ export interface PaymentGateDecision {
 /** Pure gate: every condition must pass; reasons explain each block. */
 export function evaluatePaymentGate(input: PaymentGateInput): PaymentGateDecision {
   const reasons: string[] = [];
-  if (!input.flagEnabled) reasons.push("Payments are paused in this preview. Nothing was sent.");
+  if (!input.flagEnabled) reasons.push("Payments are paused in this preview. No native payment call was made.");
   if (!input.hostSupported) reasons.push("This version of Nimiq Pay can't pay Lightning invoices.");
   if (!input.hostNetwork || !input.allowedHostNetworks.includes(input.hostNetwork)) {
     reasons.push("Nimiq Pay is on the wrong network for this payment.");

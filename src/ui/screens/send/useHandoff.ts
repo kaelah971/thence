@@ -250,7 +250,7 @@ export function useHandoff(): {
         previewMode: input.previewMode,
       });
       if (!gate.allowed) {
-        setState({ phase: "attention", transferId: input.transferId, message: gate.reasons[0] ?? "Payments are paused in this preview. Nothing was sent." });
+        setState({ phase: "attention", transferId: input.transferId, message: gate.reasons[0] ?? "Payments are paused in this preview. No native payment call was made." });
         return;
       }
 
@@ -286,7 +286,7 @@ export function useHandoff(): {
         setState({
           phase: reported.ok ? "cancelled" : "checking",
           transferId: input.transferId,
-          message: reported.ok ? "Payment cancelled. Nothing moved." : "Checking payment — do not resend.",
+          message: reported.ok ? "Payment cancelled. The server confirmed no settlement." : "Checking payment — do not resend.",
         });
         return;
       }
@@ -345,7 +345,7 @@ export function useHandoff(): {
         return;
       case "cancelled":
         clearPending(ownerUserId, transferId);
-        setState({ phase: "cancelled", transferId, message: "Payment cancelled. Nothing moved." });
+        setState({ phase: "cancelled", transferId, message: "Payment cancelled. The server confirmed no settlement." });
         return;
       case "ready":
         setState({ phase: "ready", transferId });

@@ -135,7 +135,7 @@ export const USER_FACING_LABEL: Record<TransferStatus, string> = {
   SWAP_CREATED: "Ready to pay",
   AWAITING_NIM_APPROVAL: "Approve in Nimiq Pay",
   USER_CANCELLED: "Payment cancelled",
-  LIGHTNING_HANDOFF: "Payment approved",
+  LIGHTNING_HANDOFF: "Nimiq Pay submission — checking",
   OUTCOME_UNKNOWN: "Checking payment — do not resend",
   RECONCILING: "Checking payment — do not resend",
   CLIENT_FUNDED: "Converting",

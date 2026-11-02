@@ -23,6 +23,8 @@ import type { RecoveryBinding } from "./recovery-vault";
 import { humanAmount } from "./transfers-api";
 
 export const PENDING_KEY = "thence.f4.1.pending.v1";
+const PENDING_INDEX_KEY = `${PENDING_KEY}:index`;
+const PENDING_ITEM_PREFIX = `${PENDING_KEY}:item:`;
 
 export interface FixedTerms {
   publicId: string;
@@ -160,18 +162,7 @@ function storage(): Storage | null {
   }
 }
 
-export function savePending(pointer: PendingPointer): void {
-  storage()?.setItem(PENDING_KEY, JSON.stringify(pointer));
-}
-
-export function loadPending(ownerUserId: string | null): PendingPointer | null {
-  if (!ownerUserId) return null;
-  let raw: string | null = null;
-  try {
-    raw = storage()?.getItem(PENDING_KEY) ?? null;
-  } catch {
-    return null;
-  }
+function parsePending(raw: string | null, ownerUserId: string, transferId?: string): PendingPointer | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<PendingPointer>;
@@ -182,11 +173,12 @@ export function loadPending(ownerUserId: string | null): PendingPointer | null {
       typeof parsed.routeId !== "string" ||
       typeof parsed.targetAmountAtomic !== "string" ||
       parsed.transferId.length === 0 ||
-      parsed.idempotencyKey.length < 8
+      parsed.idempotencyKey.length < 8 ||
+      parsed.ownerUserId !== ownerUserId ||
+      (transferId !== undefined && parsed.transferId !== transferId)
     ) {
       return null;
     }
-    if (parsed.ownerUserId !== ownerUserId) return null; // never leak across users
     if (parsed.attemptToken !== null && parsed.attemptToken !== undefined && typeof parsed.attemptToken !== "string") return null;
     return {
       transferId: parsed.transferId,
@@ -201,20 +193,77 @@ export function loadPending(ownerUserId: string | null): PendingPointer | null {
   }
 }
 
-export function clearPending(ownerUserId: string | null, transferId?: string): void {
+function itemKey(ownerUserId: string, transferId: string): string {
+  return `${PENDING_ITEM_PREFIX}${encodeURIComponent(ownerUserId)}:${encodeURIComponent(transferId)}`;
+}
+
+function readIndex(store: Storage): Array<{ ownerUserId: string; transferId: string }> {
+  try {
+    const parsed = JSON.parse(store.getItem(PENDING_INDEX_KEY) ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (item): item is { ownerUserId: string; transferId: string } =>
+          typeof item === "object" && item !== null && typeof (item as { ownerUserId?: unknown }).ownerUserId === "string" && typeof (item as { transferId?: unknown }).transferId === "string",
+      )
+      .slice(-50);
+  } catch {
+    return [];
+  }
+}
+
+function writeIndex(store: Storage, index: Array<{ ownerUserId: string; transferId: string }>): void {
+  store.setItem(PENDING_INDEX_KEY, JSON.stringify(index.slice(-50)));
+}
+
+/** Persist one pointer per transfer; a new intent never overwrites recovery for another. */
+export function savePending(pointer: PendingPointer): void {
   try {
     const store = storage();
     if (!store) return;
-    if (!transferId) {
-      // Only clear our own pointer, never another user's.
-      const existing = ownerUserId ? loadPending(ownerUserId) : null;
-      if (existing) store.removeItem(PENDING_KEY);
-      return;
+    store.setItem(itemKey(pointer.ownerUserId, pointer.transferId), JSON.stringify(pointer));
+    const index = readIndex(store).filter((item) => !(item.ownerUserId === pointer.ownerUserId && item.transferId === pointer.transferId));
+    index.push({ ownerUserId: pointer.ownerUserId, transferId: pointer.transferId });
+    writeIndex(store, index);
+  } catch {
+    /* best-effort; authoritative recovery state is server-side */
+  }
+}
+
+/** Load an exact transfer pointer when resuming; without an id, return the latest owner pointer for the banner. */
+export function loadPending(ownerUserId: string | null, transferId?: string): PendingPointer | null {
+  if (!ownerUserId) return null;
+  try {
+    const store = storage();
+    if (!store) return null;
+    if (transferId !== undefined) {
+      const exact = parsePending(store.getItem(itemKey(ownerUserId, transferId)), ownerUserId, transferId);
+      if (exact) return exact;
+      // Read the v1 single-pointer format once for reload compatibility.
+      return parsePending(store.getItem(PENDING_KEY), ownerUserId, transferId);
     }
-    const raw = store.getItem(PENDING_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Partial<PendingPointer>;
-    if (parsed.ownerUserId === ownerUserId && parsed.transferId === transferId) store.removeItem(PENDING_KEY);
+    const index = readIndex(store);
+    for (const entry of [...index].reverse()) {
+      if (entry.ownerUserId !== ownerUserId) continue;
+      const found = parsePending(store.getItem(itemKey(ownerUserId, entry.transferId)), ownerUserId);
+      if (found) return found;
+    }
+    return parsePending(store.getItem(PENDING_KEY), ownerUserId);
+  } catch {
+    return null;
+  }
+}
+
+export function clearPending(ownerUserId: string | null, transferId?: string): void {
+  try {
+    const store = storage();
+    if (!store || !ownerUserId) return;
+    const index = readIndex(store);
+    const toRemove = transferId === undefined ? index.filter((item) => item.ownerUserId === ownerUserId) : index.filter((item) => item.ownerUserId === ownerUserId && item.transferId === transferId);
+    for (const item of toRemove) store.removeItem(itemKey(item.ownerUserId, item.transferId));
+    writeIndex(store, index.filter((item) => !toRemove.some((remove) => remove.ownerUserId === item.ownerUserId && remove.transferId === item.transferId)));
+    const legacy = parsePending(store.getItem(PENDING_KEY), ownerUserId, transferId);
+    if (legacy && (transferId === undefined || legacy.transferId === transferId)) store.removeItem(PENDING_KEY);
   } catch {
     /* best-effort */
   }
@@ -258,10 +307,10 @@ export function isQuoteFresh(validUntil: string | null | undefined, now: number 
 export function classifyPreparationFailure(failure: { kind: string; code: string | null; details?: Record<string, string> | null }): PreparationIssue {
   const { kind, code } = failure;
   if (kind === "unauthorized") {
-    return { title: "Your session has ended", body: "Sign in again to continue. Nothing was created or paid.", retryable: false, action: "reauth" };
+    return { title: "Your session has ended", body: "Sign in again to continue. The payment outcome is not confirmed; check Activity before retrying.", retryable: false, action: "reauth" };
   }
   if (kind === "rate-limited") {
-    return { title: "Too many tries at once", body: "Wait a moment, then try again. Nothing was paid.", retryable: true, action: "retry" };
+    return { title: "Too many tries at once", body: "Wait a moment, then try again. The payment outcome is not confirmed.", retryable: true, action: "retry" };
   }
   if (kind === "network") {
     return { title: "Couldn't reach Thence", body: "Check your connection. If a step already started, continue it instead of starting over — do not resend.", retryable: true, action: "resume" };
@@ -276,7 +325,7 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "SNAPSHOT_MISMATCH":
       return { title: "These payment terms can't be used", body: "The amount or destination no longer matches. Ask for a new link or start over.", retryable: false, action: "abort" };
     case "VERSION_CONFLICT":
-      return { title: "Something changed", body: "The price was refreshed elsewhere. We'll re-read it and continue — nothing was paid.", retryable: true, action: "resume" };
+      return { title: "Something changed", body: "The price was refreshed elsewhere. We'll re-read it and continue; check Activity before retrying.", retryable: true, action: "resume" };
     case "NOT_PREPARABLE":
     case "NOT_ATTACHABLE":
     case "NOT_AUTHORIZABLE":
@@ -311,10 +360,10 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
           reprice: { quotedSourceSats: quoted, liveSourceSats: live },
         };
       }
-      return { title: "The price moved", body: "The swap now costs more than the quoted price. Stopping here — nothing was approved.", retryable: false, action: "abort" };
+      return { title: "The price moved", body: "The swap now costs more than the quoted price. Stopping here; review the payment in Activity before continuing.", retryable: false, action: "abort" };
     }
     case "RECOVERY_NOT_CONFIRMED":
-      return { title: "Not saved — do not pay", body: "Recovery information wasn't confirmed. Nothing was attached or approved.", retryable: true, action: "retry" };
+      return { title: "Not saved — do not pay", body: "Recovery information wasn't confirmed. Check Activity before retrying.", retryable: true, action: "retry" };
     case "ALREADY_AUTHORIZED":
       return { title: "Already prepared", body: "This payment was already prepared. Continue to approval.", retryable: true, action: "resume" };
     case "ROUTE_DISABLED":
@@ -330,7 +379,7 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "PAYMENT_EXPOSURE_UNCERTAIN":
       return { title: "Another payment is still being checked", body: "This separate payment was not prepared. Starting it now could pay twice, so check the earlier payment in Activity before continuing.", retryable: false, action: "abort" };
     case "PILOT_SPEND_EXCEEDED":
-      return { title: "Pilot exposure limit reached", body: "Nothing was prepared or paid. Resolve the earlier payment or use a separately approved pilot limit before trying again.", retryable: false, action: "abort" };
+      return { title: "Pilot exposure limit reached", body: "No new funding attempt was authorized. Resolve the earlier payment or use a separately approved pilot limit before trying again.", retryable: false, action: "abort" };
     case "PROVIDER_TIMEOUT":
     case "PROVIDER_UNAVAILABLE":
     case "PROVIDER_MALFORMED":
@@ -339,12 +388,12 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
       // an unmapped 409/404/503 behind the generic fallback). Safe to retry
       // the SAME payment (a fresh swap is created for the same attempt) —
       // never start a new one.
-      return { title: "Provider hiccup — safe to retry", body: "The route provider didn't answer cleanly. Nothing was created or paid. Try again to continue the same payment — do not start a new one.", retryable: true, action: "retry" };
+      return { title: "Provider hiccup — safe to retry", body: "The route provider didn't answer cleanly. Check Activity, then retry this same payment only — do not start a new one.", retryable: true, action: "retry" };
     default:
       break;
   }
-  if (kind === "invalid") return { title: "Check the details", body: "Something doesn't match. Nothing was paid.", retryable: false, action: "abort" };
-  return { title: "Couldn't prepare payment", body: "Nothing was sent or paid. Try again, or continue the existing payment.", retryable: true, action: "retry" };
+  if (kind === "invalid") return { title: "Check the details", body: "Something doesn't match. Check Activity before starting another payment.", retryable: false, action: "abort" };
+  return { title: "Couldn't prepare payment", body: "The payment outcome is not confirmed. Check Activity before retrying or continuing the existing payment.", retryable: true, action: "retry" };
 }
 
 /** True when an existing vault binding may be reused (never regenerate blindly). */

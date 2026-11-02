@@ -49,7 +49,7 @@ export function pillLabel(status: TransferStatus): string {
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];
 }
 
-export type ActivityFilter = "all" | "progress" | "delivered" | "attention";
+export type ActivityFilter = "all" | "progress" | "delivered" | "attention" | "archived";
 
 export function matchesFilter(status: TransferStatus, filter: ActivityFilter): boolean {
   const stage = STAGE_OF[status];
@@ -62,6 +62,9 @@ export function matchesFilter(status: TransferStatus, filter: ActivityFilter): b
       return stage === "delivered";
     case "attention":
       return stage === "attention";
+    case "archived":
+      // Archived is a local Activity view, not a transfer status.
+      return false;
   }
 }
 
@@ -83,10 +86,13 @@ function progressIndex(status: TransferStatus): number {
     case "closed":
       return 0;
     case "moving":
+      // A handoff response is not proof that the user approved the NIM debit.
+      // Funding evidence is the first state that can complete approval.
       return status === "LIGHTNING_HANDOFF" ? 1 : 2;
     case "checking":
     case "attention":
-      return 2;
+      // Timeouts and ambiguous recovery must leave approval unresolved.
+      return 1;
     case "delivered":
       return 4;
   }
@@ -97,12 +103,16 @@ export function timelineFor(status: TransferStatus): TimelineStep[] {
   const stage = STAGE_OF[status];
   const index = progressIndex(status);
   const label = USER_FACING_LABEL[status];
+  const approvalConfirmed = status === "CLIENT_FUNDED" || status === "SERVER_FUNDED" || status === "CLAIMING" || status === "DELIVERED";
   const copy: Record<TimelineStep["key"], { label: string; detail: string }> = {
     ready: {
       label: "Preparing payment",
       detail: stage === "approval" ? "Approve the NIM payment in Nimiq Pay." : stage === "closed" ? label : "Recipient, amount and route reviewed.",
     },
-    approved: { label: "Approved in Nimiq Pay", detail: "You approved the NIM payment." },
+    approved: {
+      label: approvalConfirmed ? "Approved in Nimiq Pay" : "Nimiq Pay approval",
+      detail: approvalConfirmed ? "Funding evidence supports the approved payment." : "Approval outcome is not confirmed. Do not resend; check payment status.",
+    },
     moving: {
       label: stage === "checking" ? "Checking your payment" : stage === "attention" ? "Needs your attention" : "On its way",
       detail:

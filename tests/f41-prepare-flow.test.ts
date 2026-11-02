@@ -225,6 +225,28 @@ describe("pending pointer survives reload without leaking across users", () => {
     }
   });
 
+  it("keeps independent transfer pointers and clears only the requested transfer", () => {
+    const store = new Map<string, string>();
+    (globalThis as unknown as { window?: unknown }).window = {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => void store.set(key, value),
+        removeItem: (key: string) => void store.delete(key),
+      },
+    };
+    const first = { transferId: "t-1", idempotencyKey: "k-first-12345678", attemptToken: "tok-1", ownerUserId: "u-1", routeId: "usdc-polygon", targetAmountAtomic: "5" };
+    const second = { transferId: "t-2", idempotencyKey: "k-second-12345678", attemptToken: "tok-2", ownerUserId: "u-1", routeId: "usdc-polygon", targetAmountAtomic: "6" };
+    savePending(first);
+    savePending(second);
+    expect(loadPending("u-1", "t-1")?.idempotencyKey).toBe(first.idempotencyKey);
+    expect(loadPending("u-1", "t-2")?.idempotencyKey).toBe(second.idempotencyKey);
+    expect(loadPending("u-1")?.transferId).toBe("t-2");
+    clearPending("u-1", "t-1");
+    expect(loadPending("u-1", "t-1")).toBeNull();
+    expect(loadPending("u-1", "t-2")?.idempotencyKey).toBe(second.idempotencyKey);
+    delete (globalThis as unknown as { window?: unknown }).window;
+  });
+
   it("offers resume only for known, non-terminal transfers", () => {
     for (const s of ["DRAFT", "QUOTED", "SWAP_CREATED", "AWAITING_NIM_APPROVAL", "LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "NEEDS_ATTENTION"]) {
       expect(isPendingTransferResumable(s), s).toBe(true);

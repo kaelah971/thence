@@ -505,7 +505,7 @@ export function SendFlow(): React.JSX.Element {
           {pending && step === "who" && session.status === "valid" && (
             <div className={styles.requestNotice}>
               <Notice tone="dark" icon="clock" title="Continue an interrupted payment">
-                You started a payment that hasn&apos;t finished preparing. Nothing was paid.
+                You started a payment that hasn&apos;t finished preparing. Its outcome is not confirmed; check Activity before continuing.
               </Notice>
               <div style={{ marginTop: 8 }}>
                 <Button
@@ -1123,11 +1123,11 @@ function HandoffStep({
           </h2>
           <p className={styles.handoffBody}>
             {preparation.phase === "ready"
-              ? payeeName + " will receive exactly " + amount + " " + assetLabel + ". Nothing has been paid yet — Nimiq Pay shows the exact NIM amount before you approve."
+              ? payeeName + " will receive exactly " + amount + " " + assetLabel + ". No approval is recorded yet — Nimiq Pay shows the exact NIM amount before you approve."
               : preparation.phase === "failed"
                 ? recoveryNeedsActivity
                   ? "This payment needs to be checked before continuing. Check Activity for its current status and do not resend it."
-                  : "Nothing was sent or paid. Your recovery information was kept so you can continue safely."
+                  : "No payment outcome is confirmed. Your recovery information was kept so you can continue safely."
                 : payeeName + " will receive exactly " + amount + " " + assetLabel + ". Getting everything ready so Nimiq Pay can ask for approval."}
           </p>
         </div>
@@ -1174,11 +1174,11 @@ function HandoffStep({
             <p className={styles.ctaNote}>
               {(!isPaymentFlagEnabled() || previewMode) ? (
                 <>
-                  <Icon name="lock" size={14} /> Payments are paused in this preview — nothing was sent. Nimiq Pay would show the exact NIM amount before you approve.
+                  <Icon name="lock" size={14} /> Payments are paused in this preview — no native payment call was made. Nimiq Pay would show the exact NIM amount before you approve.
                 </>
               ) : (
                 <>
-                  <Icon name="lock" size={14} /> Nimiq Pay shows the exact NIM amount before you approve. Nothing moves until you confirm there.
+                  <Icon name="lock" size={14} /> Nimiq Pay shows the exact NIM amount before you approve. The debit happens only after you confirm there.
                 </>
               )}
             </p>

@@ -171,7 +171,7 @@ export function usePreparation(): {
         baseFail(
           {
             title: "Couldn't continue",
-            body: "This is taking too long. Nothing was sent or approved. Try again when your connection is stable.",
+            body: "This is taking too long. The payment outcome is not confirmed. Check Activity before retrying.",
             retryable: true,
             action: "retry",
           },
@@ -191,7 +191,9 @@ export function usePreparation(): {
         }
 
         // 1 — idempotency key: stable per intent, survives reload via pending pointer.
-        const existingPending = loadPending(input.ownerUserId);
+        // A new intent must never adopt another transfer's local pointer.
+        // Exact pointers are used only for an explicit same-transfer resume.
+        const existingPending = resumeTransferId ? loadPending(input.ownerUserId, resumeTransferId) : null;
         let idempotencyKey = newIdempotencyKey();
         let transferId: string | null = activeTransferId;
         let attemptToken: string | null = null;
@@ -361,7 +363,7 @@ export function usePreparation(): {
             // must explicitly choose to replace it (retry does that).
             if (lastInput.current) {
               fail(
-                { title: "We couldn't find your saved swap", body: "Nothing was attached or approved. Trying again creates a new swap for this payment.", retryable: true, action: "retry" },
+                { title: "We couldn't find your saved swap", body: "This payment has no confirmed recovery result. Trying again creates a new swap for this payment.", retryable: true, action: "retry" },
                 "swapping",
                 tid,
               );
@@ -370,14 +372,14 @@ export function usePreparation(): {
           }
         } else if (vaultBinding.status === "unavailable") {
           fail(
-            { title: "Not saved — do not pay", body: "Durable storage is unavailable, so this payment was stopped before approval. Nothing was created.", retryable: false, action: "abort" },
+            { title: "Not saved — do not pay", body: "Durable storage is unavailable, so this payment was stopped before approval. Check Activity before retrying.", retryable: false, action: "abort" },
             "saving",
             tid,
           );
           return;
         } else if (vaultBinding.status === "foreign") {
           fail(
-            { title: "Your session has ended", body: "Sign in again to continue. Nothing was paid.", retryable: false, action: "reauth" },
+            { title: "Your session has ended", body: "Sign in again to continue. The payment outcome is not confirmed; check Activity before retrying.", retryable: false, action: "reauth" },
             "saving",
             tid,
           );
@@ -453,7 +455,7 @@ export function usePreparation(): {
           fail(
             {
               title: "Couldn't create the swap",
-              body: error instanceof Error ? `Nothing was attached or approved. ${error.message}` : "Nothing was attached or approved. Try again.",
+              body: error instanceof Error ? `The payment outcome is not confirmed. ${error.message}` : "The payment outcome is not confirmed. Check Activity before retrying.",
               retryable: true,
               action: "retry",
             },
@@ -464,7 +466,7 @@ export function usePreparation(): {
         }
         if (swap.targetAtomic !== transferTargetAtomic || transferDestination.toLowerCase() !== input.destination.toLowerCase()) {
           fail(
-            { title: "Couldn't verify the swap", body: "The swap doesn't match this payment. Nothing was attached or approved.", retryable: false, action: "abort" },
+            { title: "Couldn't verify the swap", body: "The swap doesn't match this payment. Check Activity before trying again.", retryable: false, action: "abort" },
             "swapping",
             tid,
           );
@@ -491,7 +493,7 @@ export function usePreparation(): {
         const saved = await withTimeout(saveBindingDurable(binding), VAULT_READ_TIMEOUT_MS, "recovery vault save");
         if (!saved.ok) {
           fail(
-            { title: "Not saved — do not pay", body: `${saved.reason ?? "Recovery information couldn't be saved."} Nothing was attached or approved. Browser storage isn't automatically secure against clearing or device loss.`, retryable: false, action: "abort" },
+            { title: "Not saved — do not pay", body: `${saved.reason ?? "Recovery information couldn't be saved."} The payment outcome is not confirmed. Browser storage isn't automatically secure against clearing or device loss.`, retryable: false, action: "abort" },
             "saving",
             tid,
           );
@@ -500,7 +502,7 @@ export function usePreparation(): {
         const readback = await withTimeout(readBackSwap(swap.satoraSwapId), VAULT_READ_TIMEOUT_MS, "swap readback");
         if (!readback.ok || !readback.hasRecoveryMaterial) {
           fail(
-            { title: "Not saved — do not pay", body: `${readback.reason ?? "The saved swap couldn't be read back."} Nothing was attached or approved.`, retryable: false, action: "abort" },
+            { title: "Not saved — do not pay", body: `${readback.reason ?? "The saved swap couldn't be read back."} The payment outcome is not confirmed; check Activity before retrying.`, retryable: false, action: "abort" },
             "saving",
             tid,
           );
@@ -527,7 +529,7 @@ export function usePreparation(): {
         fail(
           {
             title: "Couldn't continue",
-            body: "Something interrupted this payment before anything was sent or approved. Try again — nothing was paid.",
+            body: "Something interrupted this payment. The outcome is not confirmed; check Activity before retrying.",
             retryable: true,
             action: "retry",
           },
@@ -585,8 +587,8 @@ export function usePreparation(): {
   const acceptReprice = useCallback(async (acceptedSourceSats: string) => {
     const tid = state.phase === "failed" ? state.transferId : null;
     const input = lastInput.current;
-    const pending = loadPending(input?.ownerUserId ?? null);
-    const token = pending !== null && tid !== null && pending.transferId === tid ? pending.attemptToken : null;
+    const pending = tid ? loadPending(input?.ownerUserId ?? null, tid) : null;
+    const token = pending?.attemptToken ?? null;
     if (!tid || !input || !token) return;
     if (!/^[1-9][0-9]*$/.test(acceptedSourceSats)) return;
     await authorizeWithReviewedPrice({
@@ -681,7 +683,7 @@ export async function attachAndAuthorize(args: {
       attemptToken = re.data.attemptToken;
       savePending({
         transferId: tid,
-        idempotencyKey: loadPending(input.ownerUserId)?.idempotencyKey ?? newIdempotencyKey(),
+        idempotencyKey: loadPending(input.ownerUserId, tid)?.idempotencyKey ?? newIdempotencyKey(),
         attemptToken,
         ownerUserId: input.ownerUserId,
         routeId: input.payee.routeId,
@@ -731,7 +733,7 @@ export async function attachAndAuthorize(args: {
       setState({ phase: "ready", transferId: tid, sourceSats: args.sourceSatsHint ?? "", invoiceBolt11: args.invoiceHint ?? null, statusLabel: label });
       savePending({
         transferId: tid,
-        idempotencyKey: loadPending(input.ownerUserId)?.idempotencyKey ?? newIdempotencyKey(),
+        idempotencyKey: loadPending(input.ownerUserId, tid)?.idempotencyKey ?? newIdempotencyKey(),
         attemptToken,
         ownerUserId: input.ownerUserId,
         routeId: input.payee.routeId,
@@ -745,7 +747,7 @@ export async function attachAndAuthorize(args: {
   // Preserve handoff for F4.2 — DO NOT invoke any payment provider here.
   savePending({
     transferId: tid,
-    idempotencyKey: loadPending(input.ownerUserId)?.idempotencyKey ?? newIdempotencyKey(),
+    idempotencyKey: loadPending(input.ownerUserId, tid)?.idempotencyKey ?? newIdempotencyKey(),
     attemptToken,
     ownerUserId: input.ownerUserId,
     routeId: input.payee.routeId,
@@ -790,7 +792,7 @@ export async function authorizeWithReviewedPrice(args: {
   }
   savePending({
     transferId: tid,
-    idempotencyKey: loadPending(input.ownerUserId)?.idempotencyKey ?? newIdempotencyKey(),
+    idempotencyKey: loadPending(input.ownerUserId, tid)?.idempotencyKey ?? newIdempotencyKey(),
     attemptToken,
     ownerUserId: input.ownerUserId,
     routeId: input.payee.routeId,
