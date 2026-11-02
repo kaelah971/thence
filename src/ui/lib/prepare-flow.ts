@@ -326,6 +326,11 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
       return { title: "Checking payment — do not resend", body: "A different payment already used this reference. Continue it instead of starting over.", retryable: true, action: "resume" };
     case "PILOT_ATTEMPTS_EXCEEDED":
       return { title: "You already have this payment in progress", body: "Continue it from Activity instead of starting over — nothing new was created.", retryable: true, action: "resume" };
+    case "PILOT_EXPOSURE_LIMIT":
+    case "PAYMENT_EXPOSURE_UNCERTAIN":
+      return { title: "Another payment is still being checked", body: "This separate payment was not prepared. Starting it now could pay twice, so check the earlier payment in Activity before continuing.", retryable: false, action: "abort" };
+    case "PILOT_SPEND_EXCEEDED":
+      return { title: "Pilot exposure limit reached", body: "Nothing was prepared or paid. Resolve the earlier payment or use a separately approved pilot limit before trying again.", retryable: false, action: "abort" };
     case "PROVIDER_TIMEOUT":
     case "PROVIDER_UNAVAILABLE":
     case "PROVIDER_MALFORMED":

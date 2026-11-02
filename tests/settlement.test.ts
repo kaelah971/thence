@@ -316,7 +316,6 @@ describe.skipIf(!LIVE)(
     const prevRoutes = setEnv("THENCE_ENABLED_ROUTES", ROUTES);
     const prevRpcs = setEnv("THENCE_EVM_RPCS_JSON", RPCS);
     try {
-      const { cookie } = await login("settle-bad");
       const cases: { name: string; receipt: NonNullable<ChainScript["receipt"]> | null; swap: Record<string, unknown>; reason: RegExp }[] = [
         { name: "wrong-recipient", receipt: goodReceipt(5000000n, "0x0000000000000000000000000000000000000002"), swap: {}, reason: /no Transfer event/i },
         { name: "wrong-token", receipt: { ...goodReceipt(), logs: [transferLog("0x0000000000000000000000000000000000000009", EVM_A, 5000000n, 0)] }, swap: {}, reason: /no Transfer event/i },
@@ -327,8 +326,10 @@ describe.skipIf(!LIVE)(
       ];
       let n = 0;
       for (const c of cases) {
-        const caseTx = claimTxFor(`bad-${n}-${c.name}`);
-        const id = await claimingTransfer(cookie, "settle-bad", `bad-${n++}`, `swap-b44-${c.name}-${RUN}`, "5000000", caseTx);
+        const caseNumber = n++;
+        const { cookie } = await login(`settle-bad-${caseNumber}`);
+        const caseTx = claimTxFor(`bad-${caseNumber}-${c.name}`);
+        const id = await claimingTransfer(cookie, "settle-bad", `bad-${caseNumber}`, `swap-b44-${c.name}-${RUN}`, "5000000", caseTx);
         mockSwap(fixtureSwap({ status: "clientredeemed", evm_claim_txid: caseTx, ...c.swap }));
         setSettlementChainForTests(mockChain({ receipt: c.receipt }));
         try {

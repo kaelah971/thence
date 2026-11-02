@@ -153,6 +153,16 @@ describe("quote expiration blocks preparation", () => {
     expect(issue.action).toBe("resume");
     expect(issue.retryable).toBe(true);
   });
+
+  it("warns before a second payment could create exposure", () => {
+    for (const code of ["PILOT_EXPOSURE_LIMIT", "PAYMENT_EXPOSURE_UNCERTAIN"]) {
+      const issue = classifyPreparationFailure({ kind: "invalid", code });
+      expect(issue.title).toBe("Another payment is still being checked");
+      expect(issue.body).toMatch(/pay twice/i);
+      expect(issue.action).toBe("abort");
+      expect(issue.retryable).toBe(false);
+    }
+  });
 });
 
 describe("wrong wallet, route and amount never proceed", () => {

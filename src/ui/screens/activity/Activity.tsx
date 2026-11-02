@@ -57,6 +57,11 @@ export function Activity(): React.JSX.Element {
         <span className={shell.glow} aria-hidden="true" />
         <h1 className={shell.title}>Activity</h1>
         <p className={styles.lede}>Every payment, from approval to delivery.</p>
+        <div className={styles.newPayment}>
+          <ButtonLink href="/app/send" variant="mint" size="md" icon="arrow-up-right">
+            New payment
+          </ButtonLink>
+        </div>
         <div className={styles.summary}>
           <div className={styles.summaryTile}>
             <Icon name="clock" size={18} />

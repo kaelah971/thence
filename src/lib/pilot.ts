@@ -27,7 +27,7 @@
  * - Strict route: usdc-polygon only
  * - Authenticated owner wallet allowlisted (canonical Nimiq address compare)
  * - Per-transfer RECIPIENT cap (default 0.30 USDC = 300000 atomic)
- * - Pilot spend + attempt caps (default single 0.30 shot, 1 transfer)
+ * - Pilot spend + active-exposure caps (default single 0.30 shot, 1 exposure)
  *
  * SCOPE LIMIT (honest): these caps bind the RECIPIENT USDC amount only.
  * The NIM debit is set inside Nimiq Pay (host converts NIM->Lightning sats
@@ -44,13 +44,13 @@
 import { eq, sql } from "drizzle-orm";
 import { AuthError } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { pilotControls, transfers, users } from "@/db/schema";
+import { handoffAttempts, pilotControls, transfers, users } from "@/db/schema";
 import { normalizeNimiqAddress } from "@/lib/nimiq";
-import { isTerminal, type TransferStatus } from "@/domain/transfers";
+import type { TransferStatus } from "@/domain/transfers";
 
 // F8 pilot: proposed first-test $0.30 USDC (live quotes 2026-10-31: $0.28
 // technical minimum at 368 sats vs 356 floor; $0.30 at 393 sats is the
-// smallest with margin). Single attempt, single allowlisted wallet.
+// smallest with margin). One active funding exposure per allowlisted wallet.
 // Max total first-test spend stays $0.50 USD-equiv in NIM incl fees
 // (procedural, host-screen enforced — see SCOPE LIMIT above).
 // This code ships DISARMED (kill switch OFF) and moves no funds.
@@ -121,10 +121,36 @@ type PilotDb = ReturnType<typeof getDb>;
 /** Minimal handle for the budget count: plain db or a creation transaction. */
 type BudgetDb = Pick<PilotDb, "select">;
 
-/** Per-owner creation mutex: serializes the budget check + insert so two
- * concurrent different-key creates cannot both pass the one-attempt limit.
- * Transaction-scoped (released at commit/rollback), same advisory-lock
- * pattern as handoff attempt locks. */
+/**
+ * A transfer is an exposure once approval could have happened, an outcome
+ * became uncertain, or a provider swap was bound. QUOTED has no provider-side
+ * swap and must not lock an account out of creating another intent; the
+ * SWAP_CREATED reservation remains until it is safely cancelled.
+ */
+const FUNDING_ACTIVE_EXPOSURE: ReadonlySet<TransferStatus> = new Set([
+  "SWAP_CREATED",
+  "AWAITING_NIM_APPROVAL",
+  "LIGHTNING_HANDOFF",
+  "OUTCOME_UNKNOWN",
+  "RECONCILING",
+  "CLIENT_FUNDED",
+  "SERVER_FUNDED",
+  "CLAIMING",
+  "NEEDS_ATTENTION",
+]);
+const ACTUAL_SPEND: ReadonlySet<TransferStatus> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "DELIVERED"]);
+
+export function isFundingExposureStatus(status: string): boolean {
+  return FUNDING_ACTIVE_EXPOSURE.has(status as TransferStatus);
+}
+
+export function isActualSpendStatus(status: string): boolean {
+  return ACTUAL_SPEND.has(status as TransferStatus);
+}
+
+/** Per-owner pilot mutex: serializes creation and exposure reservation
+ * checks across independent intents. Transaction-scoped (released at
+ * commit/rollback), same advisory-lock pattern as handoff attempt locks. */
 export async function lockPilotCreate(tx: { execute: PilotDb["execute"] }, userId: string): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"pilot-create:" + userId}))`);
 }
@@ -258,9 +284,10 @@ export async function assertPilotDbEnabled(
 }
 
 /**
- * Pilot budget check at creation time: total spend + attempt count across
- * the owner's pilot-route transfers (excluding idempotent replay of the
- * same idempotency key, which the caller handles before/after).
+ * Creation-time spend check. This is deliberately not a transfer-count
+ * check: a quoted intent has no funding exposure and must not lock the owner
+ * out of creating another independent intent. Actual exposure is reserved at
+ * prepare time by assertFundingExposure below.
  */
 export async function assertPilotBudget(
   userId: string,
@@ -270,8 +297,6 @@ export async function assertPilotBudget(
 ): Promise<void> {
   if (config.owners.length === 0) {
     if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
-    // F8.3: production with a missing allowlist fails closed (see
-    // assertPilotIntent); non-production keeps the legacy skip.
     if (config.production) {
       throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
     }
@@ -281,22 +306,90 @@ export async function assertPilotBudget(
     .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)
     .where(eq(transfers.ownerUserId, userId));
-  // Only pilot-route transfers count toward spend/attempts. Terminal
-  // transfers occupy no attempt slot (their run is over), and verified-
-  // unfunded terminals (cancelled/failed/expired-before-quote) never
-  // spent a sat — but DELIVERED keeps counting toward total spend, so the
-  // one-funded-at-a-time restriction and the spend ceiling both hold.
   const mine = rows.filter((r) => r.routeId === PILOT_ROUTE_ID && /^\d+$/.test(r.amount));
-  const live = mine.filter((r) => !isTerminal(r.status as TransferStatus));
-  if (live.length >= config.maxTransfers) {
-    throw new AuthError(403, "PILOT_ATTEMPTS_EXCEEDED", "Pilot attempt limit reached.");
-  }
+  // Only provider-confirmed or delivered spend consumes the aggregate spend
+  // ceiling here. Uncertain exposure is checked before preparation, where a
+  // new swap/invoice would otherwise be created.
   let total = BigInt(newAtomic);
   for (const r of mine) {
-    if (r.status === "FAILED" || r.status === "USER_CANCELLED" || r.status === "QUOTE_EXPIRED") continue;
-    total += BigInt(r.amount);
+    if (isActualSpendStatus(r.status)) total += BigInt(r.amount);
   }
   if (total > BigInt(config.maxSpendAtomic)) {
     throw new AuthError(403, "PILOT_SPEND_EXCEEDED", "Pilot total spend limit reached.");
+  }
+}
+
+/**
+ * Reserve funding exposure before creating a handoff attempt. This lifecycle
+ * guard runs even while the pilot is OFF: one unresolved/prepared payment
+ * gets an explicit double-payment warning instead of silently opening a
+ * second funding path. When armed, pilot count and spend caps are applied
+ * independently. Active PREPARED/SWAP_ATTACHED attempts count as
+ * reservations; expired attempts do not. Same-payment replays are handled
+ * before this function is called.
+ */
+export async function assertFundingExposure(
+  userId: string,
+  newAtomic: string,
+  config: PilotConfig = getPilotConfig(),
+  db: Pick<PilotDb, "select"> = getDb(),
+  excludeTransferId: string | null = null,
+): Promise<void> {
+  if (config.owners.length === 0 && (config.enabled || config.production)) {
+    throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
+  }
+  // Funding exposure is a lifecycle safety rule even while the pilot is OFF.
+  // When the pilot is armed, it narrows the same rule to its configured route
+  // and applies its independent count/spend caps below.
+  const pilotArmed = config.enabled && config.owners.length > 0;
+  const rows = await db
+    .select({ id: transfers.id, amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
+    .from(transfers)
+    .where(eq(transfers.ownerUserId, userId));
+  const mine = rows.filter((r) => (!pilotArmed || r.routeId === PILOT_ROUTE_ID) && /^\d+$/.test(r.amount));
+  const byId = new Map(mine.map((row) => [row.id, row]));
+  const reservations = await db
+    .select({ transferId: handoffAttempts.transferId })
+    .from(handoffAttempts)
+    .where(
+      sql`${handoffAttempts.status} IN ('PREPARED', 'SWAP_ATTACHED') AND ${handoffAttempts.expiresAt} > NOW()`,
+    );
+  const exposed = new Set<string>();
+  for (const row of mine) {
+    if (row.id !== excludeTransferId && isFundingExposureStatus(row.status)) exposed.add(row.id);
+  }
+  for (const reservation of reservations) {
+    const reservedTransfer = byId.get(reservation.transferId);
+    // A stale attempt row must not resurrect exposure after its transfer was
+    // safely cancelled or failed. Reservations apply only to reversible
+    // pre-funding states; funded/uncertain states are already covered above.
+    if (
+      reservedTransfer &&
+      reservedTransfer.id !== excludeTransferId &&
+      (reservedTransfer.status === "QUOTED" || reservedTransfer.status === "SWAP_CREATED")
+    ) {
+      exposed.add(reservedTransfer.id);
+    }
+  }
+  const exposureLimit = pilotArmed ? config.maxTransfers : 1;
+  if (exposed.size >= exposureLimit) {
+    throw new AuthError(
+      409,
+      pilotArmed ? "PILOT_EXPOSURE_LIMIT" : "PAYMENT_EXPOSURE_UNCERTAIN",
+      pilotArmed
+        ? "Another payment may still be funded; check it before preparing a separate payment."
+        : "Another payment is still being prepared or checked; check it before starting a separate payment.",
+    );
+  }
+
+  if (pilotArmed) {
+    let potential = BigInt(newAtomic);
+    for (const row of mine) {
+      if (row.id === excludeTransferId) continue;
+      if (isActualSpendStatus(row.status) || exposed.has(row.id)) potential += BigInt(row.amount);
+    }
+    if (potential > BigInt(config.maxSpendAtomic)) {
+      throw new AuthError(403, "PILOT_SPEND_EXCEEDED", "This payment would exceed the remaining pilot exposure limit.");
+    }
   }
 }
