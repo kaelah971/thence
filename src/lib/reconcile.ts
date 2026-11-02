@@ -579,9 +579,29 @@ async function readExpiredUnfundedFacts(
   return priorMovement.length === 0 ? facts : null;
 }
 
-export const handoffOutcomeSchema = z.object({
-  outcome: z.enum(["cancelled", "initiated", "unknown"]),
-});
+const handoffDiagnosticsSchema = z
+  .object({
+    providerErrorType: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).nullable(),
+    providerErrorCode: z.number().int().min(-2147483648).max(2147483647).nullable(),
+    durationMs: z.number().int().min(0).max(180_000),
+    normalizedOutcome: z.enum(["cancelled", "initiated", "unknown"]),
+    hasHash: z.boolean(),
+    hasSwapId: z.boolean(),
+  })
+  .strict();
+
+export const handoffOutcomeSchema = z
+  .object({
+    outcome: z.enum(["cancelled", "initiated", "unknown"]),
+    // Client diagnostics are observability only. They never participate in
+    // transition decisions or prove funding/settlement.
+    diagnostics: handoffDiagnosticsSchema.optional(),
+  })
+  .strict()
+  .refine((value) => value.diagnostics === undefined || value.diagnostics.normalizedOutcome === value.outcome, {
+    path: ["diagnostics", "normalizedOutcome"],
+    message: "Diagnostics outcome must match the reported outcome.",
+  });
 
 /**
  * Minimal client handoff-outcome report. Client claims are NEVER payment

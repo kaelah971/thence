@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import { clearPending, fetchAttempt, fetchTransfer } from "@/ui/lib/prepare-flow";
 import { mapHostResultToServerOutcome, reportHandoffResult, type ServerHandoffOutcome } from "@/ui/lib/handoff-client";
-import { hasLightningPaymentSupport, payAuthorizedInvoice, type LightningCapableProvider } from "@/ui/lib/nimiq-pay";
+import { hasLightningPaymentSupport, payAuthorizedInvoice, type LightningCapableProvider, type PaymentDiagnostics } from "@/ui/lib/nimiq-pay";
 import { evaluatePaymentGate, isPaymentFlagEnabled } from "@/ui/lib/payment-gate";
 import { getHostProvider } from "@/ui/lib/nimiq-provider";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
@@ -264,10 +264,15 @@ export function useHandoff(): {
         reportedOutcome: null,
       });
 
-      const result = await payAuthorizedInvoice(provider as LightningCapableProvider, input.authorizedInvoice);
+      let paymentDiagnostics: PaymentDiagnostics | null = null;
+      const result = await payAuthorizedInvoice(provider as LightningCapableProvider, input.authorizedInvoice, {
+        onDiagnostics: (diagnostics) => {
+          paymentDiagnostics = diagnostics;
+        },
+      });
       const outcome = mapHostResultToServerOutcome(result);
       if (result.kind === "cancelled") {
-        const reported = await reportHandoffResult(input.transferId, outcome);
+        const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined });
         saveHandoffRecord({
           transferId: input.transferId,
           ownerUserId: input.ownerUserId,
@@ -286,7 +291,7 @@ export function useHandoff(): {
         return;
       }
       if (result.kind === "initiated") {
-        const reported = await reportHandoffResult(input.transferId, outcome);
+        const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined });
         if (!reported.ok) {
           // Native call succeeded but the report timed out: outcome unknown
           // until the server confirms. Never retry the native payment.
@@ -297,7 +302,7 @@ export function useHandoff(): {
         return;
       }
       // unknown / unavailable / unsupported / invalid → report unknown, never retry natively.
-      const reported = await reportHandoffResult(input.transferId, "unknown");
+      const reported = await reportHandoffResult(input.transferId, "unknown", { diagnostics: paymentDiagnostics ?? undefined });
       saveHandoffRecord({
         transferId: input.transferId,
         ownerUserId: input.ownerUserId,

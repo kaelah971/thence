@@ -1100,6 +1100,7 @@ function HandoffStep({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preparation.phase === "ready" ? preparation.transferId : null]);
   const steps = timelineFor("AWAITING_NIM_APPROVAL");
+  const recoveryNeedsActivity = preparation.phase === "failed" && preparation.issue.action === "resume";
   const working =
     preparation.phase === "working"
       ? preparation
@@ -1117,14 +1118,16 @@ function HandoffStep({
             {preparation.phase === "ready"
               ? "Ready for Nimiq Pay approval"
               : preparation.phase === "failed"
-                ? "Couldn't prepare payment"
+                ? preparation.issue.title
                 : "Preparing your payment"}
           </h2>
           <p className={styles.handoffBody}>
             {preparation.phase === "ready"
               ? payeeName + " will receive exactly " + amount + " " + assetLabel + ". Nothing has been paid yet — Nimiq Pay shows the exact NIM amount before you approve."
               : preparation.phase === "failed"
-                ? "Nothing was sent or paid. Your recovery information was kept so you can continue safely."
+                ? recoveryNeedsActivity
+                  ? "This payment needs to be checked before continuing. Check Activity for its current status and do not resend it."
+                  : "Nothing was sent or paid. Your recovery information was kept so you can continue safely."
                 : payeeName + " will receive exactly " + amount + " " + assetLabel + ". Getting everything ready so Nimiq Pay can ask for approval."}
           </p>
         </div>
@@ -1237,12 +1240,18 @@ function HandoffStep({
                 liveSourceSats={preparation.issue.reprice.liveSourceSats}
                 onAccept={() => onAcceptReprice(preparation.issue.reprice?.liveSourceSats ?? "")}
               />
+            ) : recoveryNeedsActivity ? (
+              <Button variant="soft" size="md" icon="arrow-right" block onClick={() => router.push("/app/activity")}>
+                Check Activity
+              </Button>
             ) : preparation.issue.retryable ? (
               <Button variant="soft" size="md" icon="refresh" block onClick={onRetry}>
                 Try again
               </Button>
             ) : null}
-            <p className={styles.ctaNote}>Checking payment — do not resend while a step is in progress.</p>
+            <p className={styles.ctaNote}>
+              {recoveryNeedsActivity ? "Do not resend while this payment is being checked." : "Checking payment — do not resend while a step is in progress."}
+            </p>
           </div>
         )}
 

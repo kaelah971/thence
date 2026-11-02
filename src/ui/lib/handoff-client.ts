@@ -1,8 +1,8 @@
 /**
  * F4.2 — handoff result reporting (existing backend contract).
  *
- * POST /api/transfers/:id/handoff-result accepts ONLY
- * `{ outcome: "cancelled" | "initiated" | "unknown" }`.
+ * POST /api/transfers/:id/handoff-result accepts one of the three client
+ * outcomes plus optional bounded, non-secret handoff diagnostics.
  * The backend rejects funded/claimed/delivered/refunded/paid/success with
  * CLIENT_CANNOT_ATTEST — this module can never produce those strings
  * (typed union, plus a runtime guard).
@@ -11,7 +11,7 @@
  * duplicate reports converge without a second native payment.
  */
 import { apiRequest, type ApiOptions, type ApiResult } from "./api";
-import type { HostPaymentResult } from "./nimiq-pay";
+import type { HostPaymentResult, PaymentDiagnostics } from "./nimiq-pay";
 
 export type ServerHandoffOutcome = "cancelled" | "initiated" | "unknown";
 
@@ -21,7 +21,7 @@ export interface HandoffReport {
   deduplicated: boolean;
 }
 
-type Opts = Pick<ApiOptions, "signal" | "fetch">;
+type Opts = Pick<ApiOptions, "signal" | "fetch"> & { diagnostics?: PaymentDiagnostics | undefined };
 
 /** Map a host result onto the only outcomes the backend accepts. */
 export function mapHostResultToServerOutcome(result: HostPaymentResult): ServerHandoffOutcome {
@@ -44,9 +44,10 @@ export async function reportHandoffResult(
   if (outcome !== "cancelled" && outcome !== "initiated" && outcome !== "unknown") {
     throw new Error("Invalid handoff outcome.");
   }
+  const { diagnostics, ...requestOpts } = opts;
   return apiRequest<{ handoff: HandoffReport }>(`/api/transfers/${encodeURIComponent(transferId)}/handoff-result`, {
-    ...opts,
+    ...requestOpts,
     method: "POST",
-    body: { outcome },
+    body: diagnostics ? { outcome, diagnostics } : { outcome },
   });
 }

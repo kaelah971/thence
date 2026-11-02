@@ -10,7 +10,7 @@ import { AuthError, assertSafeOrigin, fundedFailureCode, requireSession } from "
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { readJsonBody } from "@/lib/transfers";
-import { reportHandoffOutcome } from "@/lib/reconcile";
+import { handoffOutcomeSchema, reportHandoffOutcome } from "@/lib/reconcile";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }): Promise<NextResponse> {
   try {
@@ -28,10 +28,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       );
     }
     const { id } = await context.params;
-    const result = await reportHandoffOutcome(session.userId, id, await readJsonBody(request));
+    const body = await readJsonBody(request);
+    const parsedBody = handoffOutcomeSchema.safeParse(body);
+    const diagnostics = parsedBody.success ? parsedBody.data.diagnostics : undefined;
+    const result = await reportHandoffOutcome(session.userId, id, body);
     // Static outcome line (status union only — never request data): without
     // it, 4xx/5xx outcomes are indistinguishable from success in dashboards.
     console.info(`thence handoff-result: closed:${result.status}`);
+    if (diagnostics) {
+      // Diagnostics are deliberately bounded and booleanized. Never log the
+      // invoice, payment hash, swap id, or provider error payload.
+      console.info(
+        `thence handoff-diagnostics: outcome:${diagnostics.normalizedOutcome} provider_type:${diagnostics.providerErrorType ?? "none"} provider_code:${diagnostics.providerErrorCode ?? "none"} duration_ms:${diagnostics.durationMs} hash:${diagnostics.hasHash ? 1 : 0} swap:${diagnostics.hasSwapId ? 1 : 0}`,
+      );
+    }
     return NextResponse.json({ handoff: result }, { status: 200 });
   } catch (err) {
     console.warn(`thence handoff-result: ${fundedFailureCode(err)}`);

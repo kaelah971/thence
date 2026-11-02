@@ -20,6 +20,7 @@ import {
   mapHostDenial,
   payAuthorizedInvoice,
   type LightningCapableProvider,
+  type PaymentDiagnostics,
 } from "@/ui/lib/nimiq-pay";
 import { evaluatePaymentGate, isPaymentFlagEnabled, type PaymentGateInput } from "@/ui/lib/payment-gate";
 import { mapHostResultToServerOutcome, reportHandoffResult } from "@/ui/lib/handoff-client";
@@ -121,6 +122,35 @@ describe("exact host Lightning API verified (@nimiq/mini-app-sdk 0.2.4)", () => 
     expect((await payAuthorizedInvoice(mockPaypal(legacyNet), INVOICE)).kind).toBe("unknown");
   });
 
+  it("emits sanitized diagnostics for success, timeout, unknown, and duplicate outcomes", async () => {
+    const diagnostics: PaymentDiagnostics[] = [];
+    const observe = (value: PaymentDiagnostics) => diagnostics.push(value);
+    const success = await payAuthorizedInvoice(mockPaypal({ hash: "secret-hash", swapId: "secret-swap" }), INVOICE, { onDiagnostics: observe });
+    const hanging: LightningCapableProvider = { payLightningInvoice: (async () => new Promise(() => undefined)) as LightningCapableProvider["payLightningInvoice"] };
+    const timeout = await payAuthorizedInvoice(hanging, INVOICE, { timeoutMs: 20, onDiagnostics: observe });
+    const unknown = await payAuthorizedInvoice(
+      mockPaypal(new NimiqProviderError("TRANSACTION_OUTCOME_UNKNOWN", "submission uncertain", -32000, { hash: "known-unknown", swapId: "unknown-swap" })),
+      INVOICE,
+      { onDiagnostics: observe },
+    );
+    const duplicate = await payAuthorizedInvoice(
+      mockPaypal(new NimiqProviderError("DUPLICATE_PAYMENT", "already submitted", 409, { hash: "known-hash", swapId: "known-swap" })),
+      INVOICE,
+      { onDiagnostics: observe },
+    );
+
+    expect(success.kind).toBe("initiated");
+    expect(timeout.kind).toBe("unknown");
+    expect(unknown.kind).toBe("unknown");
+    expect(duplicate.kind).toBe("unknown");
+    expect(diagnostics).toHaveLength(4);
+    expect(diagnostics[0]).toMatchObject({ normalizedOutcome: "initiated", providerErrorType: null, providerErrorCode: null, durationMs: expect.any(Number), hasHash: true, hasSwapId: true });
+    expect(diagnostics[1]).toMatchObject({ normalizedOutcome: "unknown", providerErrorType: "NETWORK_ERROR", providerErrorCode: -32000, hasHash: false, hasSwapId: false });
+    expect(diagnostics[2]).toMatchObject({ normalizedOutcome: "unknown", providerErrorType: "TRANSACTION_OUTCOME_UNKNOWN", providerErrorCode: -32000, hasHash: true, hasSwapId: true });
+    expect(diagnostics[3]).toMatchObject({ normalizedOutcome: "unknown", providerErrorType: "DUPLICATE_PAYMENT", providerErrorCode: 409, hasHash: true, hasSwapId: true });
+    expect(JSON.stringify(diagnostics)).not.toMatch(/secret-hash|secret-swap|known-hash|known-unknown|unknown-swap|already submitted/i);
+  });
+
   it("maps unknown host methods to unsupported (no assumed fallback)", () => {
     expect(mapHostDenial(new NimiqProviderError("UNKNOWN_REQUEST", "no such method", 4200)).kind).toBe("unsupported");
   });
@@ -186,6 +216,36 @@ describe("safe result handling: only the backend contract outcomes", () => {
     const f = mockFetch({ "/api/transfers/t-1/handoff-result": json(200, { handoff: { transferId: "t-1", status: "LIGHTNING_HANDOFF", deduplicated: false } }) });
     const res = await reportHandoffResult("t-1", "initiated", { fetch: f });
     expect(res.ok && res.data.handoff.status).toBe("LIGHTNING_HANDOFF");
+  });
+
+  it("forwards only the bounded diagnostics alongside the normalized outcome", async () => {
+    let requestBody: unknown = null;
+    const f = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ handoff: { transferId: "t-1", status: "RECONCILING", deduplicated: false } }), { status: 200 });
+    }) as typeof fetch;
+    await reportHandoffResult("t-1", "unknown", {
+      fetch: f,
+      diagnostics: {
+        providerErrorType: "NETWORK_ERROR",
+        providerErrorCode: -32000,
+        durationMs: 60000,
+        normalizedOutcome: "unknown",
+        hasHash: false,
+        hasSwapId: false,
+      },
+    });
+    expect(requestBody).toEqual({
+      outcome: "unknown",
+      diagnostics: {
+        providerErrorType: "NETWORK_ERROR",
+        providerErrorCode: -32000,
+        durationMs: 60000,
+        normalizedOutcome: "unknown",
+        hasHash: false,
+        hasSwapId: false,
+      },
+    });
   });
 
   it("can never report funded/delivered success (backend would reject)", async () => {

@@ -36,6 +36,16 @@ export type HostPaymentResult =
   | { kind: "unsupported"; reason: string }
   | { kind: "invalid"; reason: string };
 
+/** Safe, non-secret observability for one native handoff call. */
+export interface PaymentDiagnostics {
+  providerErrorType: string | null;
+  providerErrorCode: number | null;
+  durationMs: number;
+  normalizedOutcome: "cancelled" | "initiated" | "unknown";
+  hasHash: boolean;
+  hasSwapId: boolean;
+}
+
 /** True only when the host exposes a callable Lightning payment method. */
 export function hasLightningPaymentSupport(provider: unknown): provider is LightningCapableProvider {
   return (
@@ -61,6 +71,31 @@ function isLegacyErrorResponse(value: unknown): value is { error: { type: string
   if (typeof error !== "object" || error === null) return false;
   const record = error as Record<string, unknown>;
   return typeof record["type"] === "string" && typeof record["message"] === "string";
+}
+
+function safeProviderError(error: unknown): Pick<PaymentDiagnostics, "providerErrorType" | "providerErrorCode"> {
+  const providerError = NimiqProviderError.from(error);
+  const type = providerError?.type;
+  return {
+    // Provider types are enum-like. Do not log arbitrary SDK error text or
+    // data, and do not let a malformed host value become a log injection.
+    providerErrorType: typeof type === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(type) ? type : null,
+    providerErrorCode: typeof providerError?.code === "number" && Number.isInteger(providerError.code) ? providerError.code : null,
+  };
+}
+
+function safeProviderDataPresence(error: unknown): { hasHash: boolean; hasSwapId: boolean } {
+  const data = NimiqProviderError.from(error)?.data;
+  if (typeof data !== "object" || data === null) return { hasHash: false, hasSwapId: false };
+  const record = data as Record<string, unknown>;
+  return {
+    hasHash: typeof record["hash"] === "string" && record["hash"].length > 0,
+    hasSwapId: typeof record["swapId"] === "string" && record["swapId"].length > 0,
+  };
+}
+
+function normalizedOutcome(result: HostPaymentResult): PaymentDiagnostics["normalizedOutcome"] {
+  return result.kind === "cancelled" ? "cancelled" : result.kind === "initiated" ? "initiated" : "unknown";
 }
 
 /** Map a definitive host denial onto cancellation; everything else stays uncertain. */
@@ -90,11 +125,36 @@ export function mapHostDenial(error: unknown): HostPaymentResult {
 export async function payAuthorizedInvoice(
   provider: LightningCapableProvider,
   invoice: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; onDiagnostics?: (diagnostics: PaymentDiagnostics) => void } = {},
 ): Promise<HostPaymentResult> {
   assertAuthorizedInvoice(invoice);
   const timeoutMs = opts.timeoutMs ?? 60_000;
+  const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let emitted = false;
+  const finish = (
+    result: HostPaymentResult,
+    error: unknown = null,
+    presence: { hasHash?: boolean; hasSwapId?: boolean } = {},
+  ): HostPaymentResult => {
+    if (!emitted) {
+      emitted = true;
+      const providerError = error === null ? { providerErrorType: null, providerErrorCode: null } : safeProviderError(error);
+      const providerDataPresence = error === null ? { hasHash: false, hasSwapId: false } : safeProviderDataPresence(error);
+      try {
+        opts.onDiagnostics?.({
+          ...providerError,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          normalizedOutcome: normalizedOutcome(result),
+          hasHash: presence.hasHash === true || providerDataPresence.hasHash,
+          hasSwapId: presence.hasSwapId === true || providerDataPresence.hasSwapId,
+        });
+      } catch {
+        // Diagnostics must never affect the payment result or recovery path.
+      }
+    }
+    return result;
+  };
   try {
     const attempt = (provider.payLightningInvoice as (request: { invoice: string }) => Promise<unknown>)({ invoice });
     const result = await Promise.race([
@@ -105,16 +165,19 @@ export async function payAuthorizedInvoice(
     ]);
     if (isLegacyErrorResponse(result)) {
       // Legacy hosts resolve with `{ error }` instead of throwing.
-      return mapHostDenial(NimiqProviderError.fromLegacyResponse(result) ?? new Error(result.error.message));
+      const error = NimiqProviderError.fromLegacyResponse(result) ?? new Error(result.error.message);
+      return finish(mapHostDenial(error), error);
     }
     const record = (typeof result === "object" && result !== null ? result : {}) as Record<string, unknown>;
-    if (typeof record["hash"] === "string" && typeof record["swapId"] === "string") {
-      return { kind: "initiated", hash: record["hash"] as string, swapId: record["swapId"] as string };
+    const hasHash = typeof record["hash"] === "string";
+    const hasSwapId = typeof record["swapId"] === "string";
+    if (hasHash && hasSwapId) {
+      return finish({ kind: "initiated", hash: record["hash"] as string, swapId: record["swapId"] as string }, null, { hasHash, hasSwapId });
     }
-    return { kind: "unknown", reason: "Nimiq Pay returned an unexpected response. Checking payment — do not resend." };
+    return finish({ kind: "unknown", reason: "Nimiq Pay returned an unexpected response. Checking payment — do not resend." }, null, { hasHash, hasSwapId });
   } catch (error) {
-    if (error instanceof HostUnavailableError) return { kind: "unavailable", reason: error.message };
-    return mapHostDenial(error);
+    if (error instanceof HostUnavailableError) return finish({ kind: "unavailable", reason: error.message }, error);
+    return finish(mapHostDenial(error), error);
   } finally {
     if (timer) clearTimeout(timer);
   }
