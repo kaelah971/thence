@@ -279,6 +279,13 @@ describe.skipIf(!LIVE)("swap attachment (mocked provider)", () => {
         expect(body.deduplicated).toBe(false);
         expect(body.attachment["sourceSats"]).toBe("6327");
         expect(body.attachment["targetAtomic"]).toBe("5000000");
+        // The bound invoice must travel in the attachment + attempt views:
+        // AWAITING-resume recovers it from here for the host handoff.
+        expect(typeof body.attachment["invoiceBolt11"] === "string" && (body.attachment["invoiceBolt11"] as string).startsWith("lnbc")).toBe(true);
+        const resumed = await attemptGet(new Request(`http://localhost/api/transfers/${id}/attempt`, { headers: { cookie } }), { params: Promise.resolve({ id }) });
+        expect(resumed.status).toBe(200);
+        const resumedBody = (await resumed.json()) as { swap: { invoiceBolt11?: unknown } | null };
+        expect(typeof resumedBody.swap?.invoiceBolt11 === "string" && (resumedBody.swap.invoiceBolt11 as string).startsWith("lnbc")).toBe(true);
         const proofs = await getDb().select().from(transferProofs).where(eq(transferProofs.transferId, id));
         expect(proofs.length).toBe(1);
         expect(proofs[0]?.satoraSwapId).toBe(uniqSwap("swap-11111111-2222-3333-4444-555555555555"));
