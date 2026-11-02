@@ -44,6 +44,16 @@ export function resumeLabelFor(status: TransferStatus): string | null {
   }
 }
 
+/**
+ * The cancel-unpaid affordance is only for states with a verified, reversible
+ * pre-funding path. Provider evidence can add a safe close path, but it must
+ * never override an unresolved or funded lifecycle status.
+ */
+export function canShowCancelUnpaid(status: TransferStatus, expiredUnfundedEvidence: boolean): boolean {
+  if (["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "NEEDS_ATTENTION"].includes(status)) return false;
+  return status === "QUOTED" || status === "SWAP_CREATED" || expiredUnfundedEvidence;
+}
+
 export function pillLabel(status: TransferStatus): string {
   const stage = STAGE_OF[status];
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];

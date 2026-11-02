@@ -172,6 +172,37 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
     }
   });
 
+  it("creates a fresh intent beside an unresolved RECONCILING transfer", async () => {
+    const saved = snapshotEnv();
+    try {
+      const me = await login("reconciling");
+      await armFor(me.address, { THENCE_PILOT_MAX_TRANSFERS: "2", THENCE_PILOT_MAX_SPEND_ATOMIC: "600000" });
+      const first = await createDirect(me.cookie, "reconciling", "old", "300000");
+      expect(first.status).toBe(201);
+      const firstPrepared = await preparePost(
+        postJson(`http://localhost/api/transfers/${first.body.transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie: me.cookie, ...withClient("reconciling-first") }),
+        { params: Promise.resolve({ id: first.body.transfer.id }) },
+      );
+      expect(firstPrepared.status).toBe(201);
+      // Model the production recovery state without invoking a wallet,
+      // provider swap, invoice or settlement.
+      await getDb().update(transfers).set({ status: "RECONCILING" }).where(eq(transfers.id, first.body.transfer.id));
+
+      const second = await createDirect(me.cookie, "reconciling", "new", "300000");
+      expect(second.status).toBe(201);
+      expect(second.body.transfer.id).not.toBe(first.body.transfer.id);
+      const secondPrepared = await preparePost(
+        postJson(`http://localhost/api/transfers/${second.body.transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie: me.cookie, ...withClient("reconciling-second") }),
+        { params: Promise.resolve({ id: second.body.transfer.id }) },
+      );
+      expect(secondPrepared.status).toBe(201);
+      expect(await ownerTransferCount(me.userId)).toBe(2);
+    } finally {
+      restoreEnv(saved);
+      await disarmDb();
+    }
+  });
+
   it("allows bounded parallel exposure only with an explicit larger test configuration", async () => {
     const saved = snapshotEnv();
     try {

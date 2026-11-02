@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { TransferStatus } from "@/domain/transfers";
-import { resumeLabelFor } from "@/ui/lib/status";
+import { canShowCancelUnpaid, resumeLabelFor } from "@/ui/lib/status";
 import { shouldDiscardBindingOnAttachFailure } from "@/ui/lib/recovery-vault";
 import { destinationAddressIssue } from "@/ui/lib/assets";
 
@@ -44,6 +44,21 @@ describe("resume CTA gating (F8.10)", () => {
     for (const status of never) {
       expect(resumeLabelFor(status)).toBeNull();
     }
+  });
+});
+
+describe("cancel-unpaid gating", () => {
+  it("never offers cancellation for an unresolved or funded lifecycle", () => {
+    for (const status of ["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "NEEDS_ATTENTION"] as TransferStatus[]) {
+      expect(canShowCancelUnpaid(status, true), status).toBe(false);
+    }
+  });
+
+  it("keeps reversible pre-funding cancellation and verified expiry separate", () => {
+    expect(canShowCancelUnpaid("QUOTED", false)).toBe(true);
+    expect(canShowCancelUnpaid("SWAP_CREATED", false)).toBe(true);
+    expect(canShowCancelUnpaid("AWAITING_NIM_APPROVAL", true)).toBe(true);
+    expect(canShowCancelUnpaid("AWAITING_NIM_APPROVAL", false)).toBe(false);
   });
 });
 

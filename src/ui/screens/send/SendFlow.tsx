@@ -42,6 +42,7 @@ import { usePreparation, type PreparationInput } from "./usePreparation";
 import { WalletChooser, type ChosenWallet } from "./WalletChooser";
 import { clearPending, displayAmountForHandoff, fetchTransfer, isPendingTransferResumable } from "@/ui/lib/prepare-flow";
 import { evmChainIdFor, tokenAddressFor } from "@/ui/lib/routes-api";
+import { resolveSendNavigation } from "@/ui/lib/send-navigation";
 import type { ApiQuote } from "@/ui/lib/quotes-api";
 import styles from "./send.module.css";
 
@@ -126,6 +127,8 @@ export function SendFlow(): React.JSX.Element {
   const recipients =
     recipientData.status === "ready" ? { ...recipientData, items: recipientData.items.filter(isPayable) } : recipientData;
   const initialMode: Mode = params.get("mode") === "request" ? "request" : "send";
+  const navigation = resolveSendNavigation(params.toString(), initialMode);
+  const explicitNewIntent = navigation.kind === "new" && navigation.explicit;
   const prefillId = params.get("to");
   const requestParam = params.get("request");
   const requestId = isPublicId(requestParam) ? requestParam : null;
@@ -155,6 +158,11 @@ export function SendFlow(): React.JSX.Element {
   // callback intentionally ignores it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const pending = useMemo(() => preparation.pendingFor(ownerUserId), [preparation, ownerUserId, pendingEpoch]);
+  // A new-payment navigation invalidates any old same-mount resume completion.
+  // This matters on mobile where the Send tab can change only the query string,
+  // leaving the page component mounted.
+  const navigationGeneration = useRef(0);
+  const newIntentSeen = useRef(false);
 
   // Paying a request link: public terms only, read straight from the server snapshot.
   const requestResource = useApiResource(requestId ? `pay-request:${requestId}` : null, (signal) => getPublicRequest(requestId as string, { signal }));
@@ -393,15 +401,46 @@ export function SendFlow(): React.JSX.Element {
     };
   };
 
+  const resetForNewIntent = useCallback((): void => {
+    navigationGeneration.current += 1;
+    preparation.reset();
+    handoff.reset();
+    dispatch({ type: "reset" });
+    setMode("send");
+    setStep("who");
+    setPayee(null);
+    setFixed(null);
+    setHandoffInput(null);
+    setCreated(null);
+    setQuery("");
+    setTriedEmpty(false);
+    setAppliedPrefill(null);
+    setAppliedRequest(null);
+  }, [dispatch, handoff, preparation]);
+
+  useEffect(() => {
+    if (!explicitNewIntent) {
+      newIntentSeen.current = false;
+      return;
+    }
+    if (newIntentSeen.current) return;
+    newIntentSeen.current = true;
+    resetForNewIntent();
+    // Strip the one-shot marker. The reset above is the source of truth; the
+    // clean URL prevents a later refresh from looking like a resume action.
+    router.replace("/app/send", { scroll: false });
+  }, [explicitNewIntent, resetForNewIntent, router]);
+
   const continuePendingPayment = async (transferId: string): Promise<void> => {
     if (!ownerUserId) return;
+    const generation = navigationGeneration.current;
     // Explicit resume (deep link or banner tap) abandons any same-mount run
     // stuck short of its own timeout: reset frees its lock and retires its
     // generation so late completions stay inert. Same transfer, idempotent
     // server paths — never a new payment. Fresh mounts: harmless no-op.
     preparation.reset();
     const current = await fetchTransfer(transferId);
-    if (!current.ok) return;
+    if (generation !== navigationGeneration.current || !current.ok) return;
     const t = current.data.transfer;
     if (!isPendingTransferResumable(t.status)) {
       // Terminal pointers are stale: clear so the banner goes away. Unknown
@@ -414,6 +453,7 @@ export function SendFlow(): React.JSX.Element {
     }
     const routeId = (ROUTE_IDS as readonly string[]).includes(t.routeId) ? (t.routeId as RouteId) : null;
     if (!routeId) return;
+    if (generation !== navigationGeneration.current) return;
     const tokenAddress = tokenAddressFor(routeId, catalogue);
     const evmChainId = evmChainIdFor(routeId, catalogue);
     if (!tokenAddress || !evmChainId) return;
@@ -452,13 +492,15 @@ export function SendFlow(): React.JSX.Element {
     // Unrepresentable terms keep the current input (never fabricate).
     const authored = humanAmount(t.targetAmountAtomic, destinationFor(routeId).asset);
     if (authored !== null) dispatch({ type: "seed", value: authored });
+    if (generation !== navigationGeneration.current) return;
     setStep("handoff");
     await preparation.resumeWithInput(input, transferId);
   };
 
   // Deep link from Activity ("Resume payment"): continue the SAME transfer.
   // Server-validated (unknown/foreign ids are a silent no-op); never creates.
-  const resumeParam = initialMode === "send" ? params.get("resume") : null;
+  // A mobile New payment navigation explicitly wins over any stale query.
+  const resumeParam = navigation.kind === "resume" ? navigation.transferId : null;
   const resumedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!resumeParam || session.status !== "valid" || !ownerUserId || !catalogue) return;

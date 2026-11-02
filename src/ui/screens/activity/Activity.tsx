@@ -14,7 +14,7 @@ import { loadActivityArchive, setActivityArchived } from "@/ui/lib/activity-arch
 import { useActivityData } from "@/ui/lib/data";
 import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
-import { matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
+import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
 import {
   getProviderEvidence,
@@ -26,6 +26,7 @@ import {
   type ProviderEvidenceDisposition,
 } from "@/ui/lib/settlement-client";
 import { invalidateData } from "@/ui/lib/resource";
+import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import styles from "./activity.module.css";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -70,7 +71,7 @@ export function Activity(): React.JSX.Element {
         <h1 className={shell.title}>Activity</h1>
         <p className={styles.lede}>Every payment, from approval to delivery.</p>
         <div className={styles.newPayment}>
-          <ButtonLink href="/app/send" variant="mint" size="md" icon="arrow-up-right">
+          <ButtonLink href={NEW_PAYMENT_HREF} variant="mint" size="md" icon="arrow-up-right">
             New payment
           </ButtonLink>
         </div>
@@ -115,7 +116,7 @@ export function Activity(): React.JSX.Element {
             title="No payments yet"
             body="Payments you send show up here, with each step until they're delivered."
             action={
-              <ButtonLink href="/app/send" variant="ink" size="md" icon="arrow-up-right">
+              <ButtonLink href={NEW_PAYMENT_HREF} variant="ink" size="md" icon="arrow-up-right">
                 Send money
               </ButtonLink>
             }
@@ -321,9 +322,7 @@ function TransferDetail({
   // The server re-verifies every close. A fresh, identity-matched Satora
   // `expired` result is the only post-approval close affordance; funding and
   // uncertain evidence stay open.
-  const canRetire =
-    !preview &&
-    ((item.status === "QUOTED" || item.status === "SWAP_CREATED") || evidenceDisposition === "EXPIRED_UNFUNDED");
+  const canRetire = !preview && canShowCancelUnpaid(item.status, evidenceDisposition === "EXPIRED_UNFUNDED");
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>

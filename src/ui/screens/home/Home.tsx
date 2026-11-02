@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { RouteId } from "@/domain/routes";
 import { AddressDisplay } from "@/ui/components/AddressDisplay";
 import { Button, ButtonLink } from "@/ui/components/Button";
+import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { DestinationPicker } from "@/ui/components/DestinationPicker";
 import { Icon } from "@/ui/components/Icon";
 import { AssetMark } from "@/ui/components/PaymentCard";
@@ -79,7 +80,7 @@ export function Home(): React.JSX.Element {
         </div>
 
         <nav className={styles.actions} aria-label="Quick actions">
-          <ButtonLink href="/app/send" variant="light" size="md" icon="arrow-up-right">
+          <ButtonLink href={NEW_PAYMENT_HREF} variant="light" size="md" icon="arrow-up-right">
             Send
           </ButtonLink>
           <ButtonLink href="/app/send?mode=request" variant="dark" size="md" icon="arrow-down-left">
@@ -134,7 +135,7 @@ export function Home(): React.JSX.Element {
             title="No payments yet"
             body="When you pay someone, you'll follow it here until it's delivered."
             action={
-              <ButtonLink href="/app/send" variant="ink" size="md" icon="arrow-up-right">
+              <ButtonLink href={NEW_PAYMENT_HREF} variant="ink" size="md" icon="arrow-up-right">
                 Send money
               </ButtonLink>
             }
