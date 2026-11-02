@@ -8,7 +8,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { transfers, users } from "@/db/schema";
+import { reconciliationObservations, transfers, users } from "@/db/schema";
 import { AuthError } from "@/lib/auth";
 import { isClaimReady, planReconciliation } from "@/lib/reconcile";
 import { setSatoraFetchersForTests } from "@/lib/satora";
@@ -435,6 +435,36 @@ describe.skipIf(!LIVE)("client handoff reports", () => {
       try {
         const blocked = await reportPost(postJson(`http://localhost/api/transfers/${attached2.id}/handoff-result`, { outcome: "cancelled" }, { cookie, ...withClient("report-cancel") }), { params: Promise.resolve({ id: attached2.id }) });
         expect(blocked.status).toBe(409);
+      } finally {
+        setSatoraFetchersForTests(null);
+      }
+    } finally {
+      restoreRoutes(previous);
+    }
+  });
+
+  it("allows an owner close only after fresh terminal Satora expiry proof", async () => {
+    const previous = setRoutes(ROUTES);
+    try {
+      const { cookie } = await login("report-expired-close");
+      const { id, swapId } = await authorizedTransfer(cookie, "report-expired-close", "r-expired");
+      mockSwap(
+        fixtureSwap({
+          id: swapId,
+          status: "expired",
+          invoice_expires_at: Math.floor(Date.now() / 1000) - 10,
+        }),
+      );
+      try {
+        const closed = await reportPost(
+          postJson(`http://localhost/api/transfers/${id}/handoff-result`, { outcome: "cancelled" }, { cookie, ...withClient("report-expired-close") }),
+          { params: Promise.resolve({ id }) },
+        );
+        expect(closed.status).toBe(200);
+        expect(((await closed.json()) as { handoff: { status: string } }).handoff.status).toBe("USER_CANCELLED");
+        const observations = await getDb().select().from(reconciliationObservations).where(eq(reconciliationObservations.transferId, id));
+        expect(observations.some((row) => row.providerStatus === "expired" && row.kind === "observation")).toBe(true);
+        expect((await getDb().select().from(transfers).where(eq(transfers.id, id)))[0]?.status).toBe("USER_CANCELLED");
       } finally {
         setSatoraFetchersForTests(null);
       }

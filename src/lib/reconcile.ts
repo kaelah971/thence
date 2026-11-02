@@ -15,12 +15,15 @@
  * - `status`, invoice state and tx ids are provider ASSERTIONS. On-chain
  *   txids are independently verifiable chain evidence (B4.4's job, not
  *   asserted here). An expired invoice alone proves nothing about whether
- *   payment was initiated.
+ *   payment was initiated. Satora's terminal `expired` status is different:
+ *   for Lightning swaps the SDK defines it as expired without funding;
+ *   owner-close still rechecks identity, contradictory tx ids and prior
+ *   funding observations before changing our local status.
  * - Client reports are NOT payment proof. The client may only report
  *   cancelled-before-submit (verified against a pending provider state),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
@@ -115,7 +118,10 @@ export function planReconciliation(
     return { action: "none", reason: "No provider-confirmed milestone yet." };
   }
   if (providerStatus === "expired") {
-    return { action: "none", reason: "Expiry alone establishes nothing about payment." };
+    // Reconciliation is intentionally read-only with respect to terminal
+    // retirement. The owner Close action performs the stricter identity and
+    // no-funding proof before releasing this transfer's exposure.
+    return { action: "none", reason: "Provider swap expired; no funding milestone to advance." };
   }
   if (REFUND_NEGATIVE.has(providerStatus)) {
     const path = walkToNeedsAttention();
@@ -510,6 +516,69 @@ export async function readBoundProviderEvidence(
   };
 }
 
+const MOVEMENT_STATUSES = [
+  "clientfundingseen",
+  "clientfunded",
+  "serverfunded",
+  "clientredeeming",
+  "clientredeemed",
+  "serverredeemed",
+  "clientrefunded",
+  "clientinvalidfunded",
+  "clientfundedtoolate",
+  "serverwontfund",
+  "clientfundedserverrefunded",
+  "clientrefundedserverfunded",
+  "clientrefundedserverrefunded",
+  "clientredeemedandclientrefunded",
+] as const;
+
+/**
+ * Satora 1.7.2 defines `expired` as a terminal Lightning swap outcome:
+ * "expired without funding — nothing was locked." This helper is deliberately
+ * narrower than that protocol statement because it is used to retire a local
+ * owner-visible transfer. Any identity mismatch, transaction assertion or
+ * prior movement observation fails closed.
+ */
+async function readExpiredUnfundedFacts(
+  tx: DbClient,
+  transfer: typeof transfers.$inferSelect,
+  attachment: typeof swapAttachments.$inferSelect,
+): Promise<VerifiedSwapFacts | null> {
+  let facts: VerifiedSwapFacts;
+  try {
+    facts = await getProviderSwap(attachment.satoraSwapId);
+  } catch {
+    return null;
+  }
+  if (
+    facts.satoraSwapId !== attachment.satoraSwapId ||
+    facts.status !== "expired" ||
+    facts.direction !== "lightning_to_evm" ||
+    facts.evmFundTxid !== null ||
+    facts.evmClaimTxid !== null ||
+    facts.targetAtomic !== transfer.targetAmountAtomic ||
+    facts.targetAddress.trim().toLowerCase() !== transfer.destination.trim().toLowerCase() ||
+    (facts.invoiceExpiresAt !== null && facts.invoiceExpiresAt.getTime() > Date.now())
+  ) {
+    return null;
+  }
+  try {
+    const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
+    if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  const priorMovement = await tx
+    .select({ id: reconciliationObservations.id })
+    .from(reconciliationObservations)
+    .where(and(eq(reconciliationObservations.transferId, transfer.id), inArray(reconciliationObservations.providerStatus, [...MOVEMENT_STATUSES])))
+    .limit(1);
+  return priorMovement.length === 0 ? facts : null;
+}
+
 export const handoffOutcomeSchema = z.object({
   outcome: z.enum(["cancelled", "initiated", "unknown"]),
 });
@@ -576,10 +645,10 @@ export async function reportHandoffOutcome(
       return { transferId, status: next, deduplicated: false };
     }
     // outcome === "cancelled": only when NOTHING has moved, verified live.
-    // Allowed from QUOTED (quoted but not yet bound) and SWAP_CREATED
-    // (bound but not yet authorized). From AWAITING the invoice is payable
-    // at any moment, so the report is routed to the reconcilable
-    // unknown-outcome chain instead of terminal cancellation (B4.4).
+    // QUOTED is trivially safe; SWAP_CREATED is checked against the provider
+    // and authorization history below. AWAITING may close only through the
+    // fresh Satora `expired` proof below; otherwise it is routed to the
+    // reconcilable unknown-outcome chain (B4.4).
     if (current !== "AWAITING_NIM_APPROVAL" && current !== "SWAP_CREATED" && current !== "QUOTED") {
       throw new AuthError(409, "NOT_CANCELLABLE", "Only a pre-handoff transfer can be reported cancelled.");
     }
@@ -594,12 +663,22 @@ export async function reportHandoffOutcome(
     // B4.4 cancellation safety: a hold invoice in provider state `pending`
     // proves nothing about whether the user already submitted payment — the
     // funding event may simply not be observed yet. Once the handoff is
-    // authorized (AWAITING) the invoice is payable at any moment, so a
-    // client cancel report must keep the transfer reconcilable instead of
-    // entering terminal USER_CANCELLED, where delayed funding would be
-    // unrecoverable. Truly unbound / never-authorized transfers (QUOTED, or
-    // SWAP_CREATED below the authorization gate) keep terminal cancellation.
+    // authorized (AWAITING), only a fresh, identity-matched Satora `expired`
+    // result can close it. All other reads keep the transfer reconcilable
+    // instead of entering terminal USER_CANCELLED, where delayed funding
+    // would be unrecoverable.
     if (current === "AWAITING_NIM_APPROVAL") {
+      const expired = await readExpiredUnfundedFacts(tx, transfer, attachment);
+      if (expired) {
+        await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
+          providerStatus: expired.status,
+          kind: "observation",
+          evmFundTxid: null,
+          evmClaimTxid: null,
+        });
+        const next = await applyPath(["USER_CANCELLED"]);
+        return { transferId, status: next, deduplicated: false };
+      }
       const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"]);
       return { transferId, status: next, deduplicated: false };
     }

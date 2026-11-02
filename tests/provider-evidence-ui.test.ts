@@ -1,3 +1,4 @@
+import { deriveSwapActions } from "@satora/swap";
 import { describe, expect, it } from "vitest";
 import {
   getProviderEvidence,
@@ -35,12 +36,31 @@ describe("owner payment status evidence", () => {
     expect(body).toBeUndefined();
   });
 
-  it("never treats expiry or pending as proof of no funding", () => {
+  it("distinguishes invoice expiry from Satora's terminal expired status", () => {
     expect(providerEvidenceDisposition(base)).toBe("UNKNOWN");
-    expect(providerEvidenceDisposition({ ...base, invoiceExpired: true, providerStatus: "expired" })).toBe("UNKNOWN");
+    expect(providerEvidenceDisposition({ ...base, invoiceExpired: true, providerStatus: "pending" })).toBe("UNKNOWN");
+    expect(providerEvidenceDisposition({ ...base, invoiceExpired: true, providerStatus: "expired" })).toBe("EXPIRED_UNFUNDED");
+    expect(providerEvidenceDisposition({ ...base, invoiceExpired: true, providerStatus: "expired", hasEvmFundingTx: true })).toBe("FUNDING_DETECTED");
     expect(providerEvidenceDisposition({ ...base, providerStatus: "clientfunded" })).toBe("FUNDING_DETECTED");
     expect(providerEvidenceDisposition({ ...base, providerStatus: "serverredeemed", hasEvmClaimTx: false })).toBe("SETTLEMENT_DETECTED");
     expect(providerEvidenceDisposition({ ...base, identityMatch: false, providerStatus: "clientfunded" })).toBe("UNKNOWN");
+  });
+
+  it("pins the SDK's expired semantics as terminal and unfunded", () => {
+    const result = deriveSwapActions({
+      status: "expired",
+      clientChainNow: 0,
+      serverChainNow: 0,
+      clientRefundLocktime: 1,
+      serverRefundLocktime: 1,
+      clientFunds: false,
+    });
+    expect(result.recommended).toBe("none");
+    expect(result.actions[0]).toMatchObject({
+      id: "none",
+      outcome: "expired",
+      reason: "The swap expired without funding — nothing was locked.",
+    });
   });
 
   it("uses safe labels for unknown provider states", () => {

@@ -217,7 +217,7 @@ function LiveTransferDetail({ initial }: { initial: ActivityItem }): React.JSX.E
             .finally(() => setProviderEvidenceLoading(false));
         }}
       />
-      <TransferDetail item={item} preview={false} />
+      <TransferDetail item={item} preview={false} providerEvidence={providerEvidence} />
     </>
   );
 }
@@ -239,6 +239,7 @@ function ProviderEvidencePanel({
   const expiry = evidence?.invoiceExpiresAt ? new Date(evidence.invoiceExpiresAt) : null;
   const expiryLabel = !evidence || !expiry || Number.isNaN(expiry.getTime()) ? "UNKNOWN" : evidence.invoiceExpired ? "Expired" : `Live until ${expiry.toLocaleString()}`;
   const tone = disposition === "UNKNOWN" ? "warn" : "info";
+  const title = disposition === "EXPIRED_UNFUNDED" ? "Funding evidence: EXPIRED — SAFE TO CLOSE" : `Funding evidence: ${disposition}`;
   return (
     <div style={{ marginBottom: 12 }} data-transfer-id={transferId}>
       <Button variant="soft" size="md" icon="refresh" block disabled={loading} onClick={onCheck}>
@@ -250,7 +251,7 @@ function ProviderEvidencePanel({
         </Notice>
       )}
       {evidence && (
-        <Notice tone={tone} icon={disposition === "UNKNOWN" ? "alert" : "info"} title={`Funding evidence: ${disposition}`} live>
+        <Notice tone={tone} icon={disposition === "UNKNOWN" ? "alert" : "info"} title={title} live>
           <dl className={styles.facts}>
             <div><dt>Provider status</dt><dd>{providerStatusLabel(evidence.providerStatus)}</dd></div>
             <div><dt>Invoice expiry</dt><dd>{expiryLabel}</dd></div>
@@ -259,20 +260,33 @@ function ProviderEvidencePanel({
             <div><dt>Claim transaction</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
           </dl>
           {disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
+          {disposition === "EXPIRED_UNFUNDED" && <p className={styles.latest}>Satora reports this swap expired without funding. The server will re-check that evidence before closing it.</p>}
         </Notice>
       )}
     </div>
   );
 }
 
-function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolean }): React.JSX.Element {
+function TransferDetail({
+  item,
+  preview,
+  providerEvidence = null,
+}: {
+  item: ActivityItem;
+  preview: boolean;
+  providerEvidence?: ProviderEvidence | null;
+}): React.JSX.Element {
   const destination = destinationFor(item.routeId);
   const stage = STAGE_OF[item.status];
   const [closing, setClosing] = useState(false);
   const [closedNote, setClosedNote] = useState<string | null>(null);
-  // Only definitively-unpaid states offer retirement; the server re-verifies
-  // (never authorized, never funded) and keeps funded/uncertain payments open.
-  const canRetire = !preview && (item.status === "QUOTED" || item.status === "SWAP_CREATED");
+  const evidenceDisposition = providerEvidenceDisposition(providerEvidence);
+  // The server re-verifies every close. A fresh, identity-matched Satora
+  // `expired` result is the only post-approval close affordance; funding and
+  // uncertain evidence stay open.
+  const canRetire =
+    !preview &&
+    ((item.status === "QUOTED" || item.status === "SWAP_CREATED") || evidenceDisposition === "EXPIRED_UNFUNDED");
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>
@@ -310,7 +324,7 @@ function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolea
             : "Nothing has been sent or approved. You can safely continue where you left off."}
         </Notice>
       )}
-      {!preview && resumeLabelFor(item.status) !== null && (
+      {!preview && resumeLabelFor(item.status) !== null && evidenceDisposition !== "EXPIRED_UNFUNDED" && (
         <div style={{ marginTop: 12 }}>
           <ButtonLink href={`/app/send?resume=${item.id}`} variant="ink" size="md" icon="arrow-right" block>
             {resumeLabelFor(item.status)}
@@ -364,7 +378,13 @@ function TransferDetail({ item, preview }: { item: ActivityItem; preview: boolea
           >
             {closing ? "Closing…" : "Close this payment"}
           </Button>
-          {closedNote ? <p className={styles.latest}>{closedNote}</p> : <p className={styles.latest}>Only for payments that never reached approval. History is kept.</p>}
+          {closedNote ? (
+            <p className={styles.latest}>{closedNote}</p>
+          ) : evidenceDisposition === "EXPIRED_UNFUNDED" ? (
+            <p className={styles.latest}>Provider evidence shows the swap expired without funding. History is kept.</p>
+          ) : (
+            <p className={styles.latest}>Only for payments that never reached approval. History is kept.</p>
+          )}
         </div>
       )}
 

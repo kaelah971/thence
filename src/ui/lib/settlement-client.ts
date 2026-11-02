@@ -115,16 +115,22 @@ export interface ProviderEvidence {
   observedAt: string;
 }
 
-export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "UNKNOWN";
+export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "EXPIRED_UNFUNDED" | "UNKNOWN";
 
 const FUNDING_STATUSES = new Set(["clientfunded", "serverfunded", "clientredeeming", "clientredeemed", "serverredeemed"]);
 const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
 
-/** Expiry or pending alone never becomes an unfunded verdict. */
+/**
+ * Satora's terminal `expired` status means the Lightning swap expired
+ * without funding; it is distinct from invoice expiry, which is only a clock
+ * fact. Keep the identity and transaction checks ahead of that classification
+ * so contradictory evidence never becomes a close affordance.
+ */
 export function providerEvidenceDisposition(evidence: ProviderEvidence | null): ProviderEvidenceDisposition {
   if (!evidence || !evidence.identityMatch) return "UNKNOWN";
   if (evidence.hasEvmClaimTx || SETTLEMENT_STATUSES.has(evidence.providerStatus)) return "SETTLEMENT_DETECTED";
   if (evidence.hasEvmFundingTx || FUNDING_STATUSES.has(evidence.providerStatus)) return "FUNDING_DETECTED";
+  if (evidence.providerStatus === "expired" && evidence.invoiceExpired) return "EXPIRED_UNFUNDED";
   return "UNKNOWN";
 }
 
