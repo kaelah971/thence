@@ -243,6 +243,7 @@ describe("funded-swap claim eligibility (execution stays OFF)", () => {
   it("is disabled without the explicit controlled flag", () => {
     expect(isClaimFlagEnabled({})).toBe(false);
     expect(isClaimFlagEnabled(process.env)).toBe(false);
+    expect(isClaimFlagEnabled({ NEXT_PUBLIC_THENCE_ENABLE_CLAIM: "1" })).toBe(true);
     expect(evaluateClaimEligibility({ ...open, flagEnabled: false }).allowed).toBe(false);
   });
   it("allows only when every condition holds", () => {

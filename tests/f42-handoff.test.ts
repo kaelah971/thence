@@ -143,6 +143,7 @@ describe("strict payment gate: OFF by default in every build", () => {
   it("is disabled without the explicit controlled-test flag", () => {
     expect(isPaymentFlagEnabled({})).toBe(false);
     expect(isPaymentFlagEnabled(process.env)).toBe(false);
+    expect(isPaymentFlagEnabled({ NEXT_PUBLIC_THENCE_ENABLE_PAYMENT: "1" })).toBe(true);
     const decision = evaluatePaymentGate({ ...open, flagEnabled: false });
     expect(decision.allowed).toBe(false);
     expect(decision.reasons.join(" ")).toMatch(/paused in this preview/i);

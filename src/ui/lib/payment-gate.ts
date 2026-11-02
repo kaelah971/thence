@@ -1,6 +1,6 @@
 /**
- * F4.2 — strict payment gate. Real payment invocation is OFF by default in
- * every build and stays OFF in this milestone.
+ * F4.2 — strict payment gate. Real payment invocation is OFF unless the
+ * explicit deployment flag is enabled at build time.
  *
  * To allow a native invocation ALL of the following must hold:
  * 1. Explicit controlled-test flag: NEXT_PUBLIC_THENCE_ENABLE_PAYMENT === "1"
@@ -12,16 +12,21 @@
  * 7. Unexpired invoice (invoiceExpiresAt in the future)
  * 8. Explicit user action (button press — never auto-invoke, never preview)
  *
- * No test, preview, or dev fixture may bypass this. The flag is unset, so
- * `evaluatePaymentGate` always blocks and `payAuthorizedInvoice` is never
- * reached in this milestone.
+ * No test, preview, or dev fixture may bypass this. The deployment flag is
+ * read through a direct `process.env.NEXT_PUBLIC_*` reference so Next.js
+ * actually inlines its build-time production value; injected env objects stay
+ * available for unit tests.
  */
 
 export const PAYMENT_FLAG_NAME = "NEXT_PUBLIC_THENCE_ENABLE_PAYMENT";
+const PAYMENT_FLAG_VALUE = process.env.NEXT_PUBLIC_THENCE_ENABLE_PAYMENT;
 
-/** Reads the controlled-test flag. Unset/anything-but-"1" means OFF. */
-export function isPaymentFlagEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return env[PAYMENT_FLAG_NAME] === "1";
+/**
+ * Reads the build-time flag by default. An explicit env object is retained for
+ * deterministic tests and never used by the production call sites.
+ */
+export function isPaymentFlagEnabled(env?: Record<string, string | undefined>): boolean {
+  return (env ?? { [PAYMENT_FLAG_NAME]: PAYMENT_FLAG_VALUE })[PAYMENT_FLAG_NAME] === "1";
 }
 
 export interface PaymentGateInput {

@@ -12,19 +12,21 @@
  * - No earlier claim attempt is unresolved (unknown outcome)
  * - Not preview mode
  *
- * Claim execution stays DISABLED in this milestone
- * (NEXT_PUBLIC_THENCE_ENABLE_CLAIM is unset): the gate always blocks,
- * so no funded mainnet claim can run. The wiring below it (exact SDK
- * `claim(swapId)`, single-attempt discipline, verify-after-claim) is
- * implemented and unit-tested with mocks.
+ * Claim execution stays disabled unless the explicit deployment flag is
+ * enabled. The wiring below it (exact SDK `claim(swapId)`, single-attempt
+ * discipline, verify-after-claim) is implemented and unit-tested with mocks.
  */
 import type { TransferStatus } from "@/domain/transfers";
 
 export const CLAIM_FLAG_NAME = "NEXT_PUBLIC_THENCE_ENABLE_CLAIM";
+const CLAIM_FLAG_VALUE = process.env.NEXT_PUBLIC_THENCE_ENABLE_CLAIM;
 
-/** Reads the controlled test flag. Unset/anything-but-"1" means OFF. */
-export function isClaimFlagEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return env[CLAIM_FLAG_NAME] === "1";
+/**
+ * Reads the build-time flag by default. An explicit env object is retained for
+ * deterministic tests and never used by the production call sites.
+ */
+export function isClaimFlagEnabled(env?: Record<string, string | undefined>): boolean {
+  return (env ?? { [CLAIM_FLAG_NAME]: CLAIM_FLAG_VALUE })[CLAIM_FLAG_NAME] === "1";
 }
 
 const FUNDED_TRANSFER: ReadonlySet<string> = new Set(["SERVER_FUNDED", "CLAIMING"]);
