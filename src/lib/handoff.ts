@@ -103,6 +103,8 @@ export interface BoundSwapView {
   sourceSats: string;
   targetAtomic: string;
   paymentHash: string;
+  /** BOLT11 hold invoice (viewing is safe; paying costs money). */
+  invoiceBolt11: string;
   invoiceExpiresAt: string | null;
   providerStatus: string | null;
   verifiedAt: string;
@@ -436,6 +438,7 @@ function toBoundView(row: typeof swapAttachments.$inferSelect): BoundSwapView {
     sourceSats: row.sourceSats,
     targetAtomic: row.targetAtomic,
     paymentHash: row.paymentHash,
+    invoiceBolt11: row.invoiceBolt11,
     invoiceExpiresAt: row.invoiceExpiresAt?.toISOString() ?? null,
     providerStatus: row.providerStatus,
     verifiedAt: row.verifiedAt.toISOString(),

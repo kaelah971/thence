@@ -257,12 +257,17 @@ export function usePreparation(): {
           if (t.status === "AWAITING_NIM_APPROVAL") {
             const attempt = await fetchAttempt(transferId);
             if (attempt.ok) {
-              const swap = attempt.data.swap as { sourceSats?: string } | null;
+              const swap = attempt.data.swap as { sourceSats?: string; invoiceBolt11?: string } | null;
+              // The bound invoice lives server-side: recover it here so Confirm
+              // has the exact authorized string. Without it the handoff guard
+              // rejects every tap although the payment is ready.
+              const boundInvoice =
+                swap !== null && typeof swap.invoiceBolt11 === "string" && swap.invoiceBolt11.length > 0 ? swap.invoiceBolt11 : null;
               setState({
                 phase: "ready",
                 transferId,
                 sourceSats: (swap && typeof swap.sourceSats === "string" ? swap.sourceSats : null) ?? t.quote?.revision?.toString?.() ?? "",
-                invoiceBolt11: null,
+                invoiceBolt11: boundInvoice,
                 statusLabel: t.statusLabel ?? "Approve in Nimiq Pay",
               });
               void attemptToken;
