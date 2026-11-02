@@ -15,7 +15,15 @@ import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
 import { matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
-import { postHandoffCancel, postReconcile } from "@/ui/lib/settlement-client";
+import {
+  getProviderEvidence,
+  postHandoffCancel,
+  postReconcile,
+  providerEvidenceDisposition,
+  providerStatusLabel,
+  type ProviderEvidence,
+  type ProviderEvidenceDisposition,
+} from "@/ui/lib/settlement-client";
 import { invalidateData } from "@/ui/lib/resource";
 import styles from "./activity.module.css";
 
@@ -148,6 +156,9 @@ function LiveTransferDetail({ initial }: { initial: ActivityItem }): React.JSX.E
   const item = fresh ?? initial;
   const [checking, setChecking] = useState(false);
   const [checkedNote, setCheckedNote] = useState<string | null>(null);
+  const [providerEvidence, setProviderEvidence] = useState<ProviderEvidence | null>(null);
+  const [providerEvidenceLoading, setProviderEvidenceLoading] = useState(false);
+  const [providerEvidenceError, setProviderEvidenceError] = useState<string | null>(null);
   const canCheck = !TERMINAL_DETAIL.has(item.status) && resource.status !== "loading";
   return (
     <>
@@ -182,8 +193,70 @@ function LiveTransferDetail({ initial }: { initial: ActivityItem }): React.JSX.E
           {checkedNote && <p className={styles.latest}>{checkedNote}</p>}
         </div>
       )}
+      <ProviderEvidencePanel
+        transferId={item.id}
+        evidence={providerEvidence}
+        loading={providerEvidenceLoading}
+        error={providerEvidenceError}
+        onCheck={() => {
+          setProviderEvidenceLoading(true);
+          setProviderEvidenceError(null);
+          void getProviderEvidence(item.id)
+            .then((result) => {
+              if (result.ok) setProviderEvidence(result.data.evidence);
+              else {
+                setProviderEvidence(null);
+                setProviderEvidenceError(result.kind === "unauthorized" ? "Your session has ended. Evidence is UNKNOWN." : "Evidence is unavailable. Funding status is UNKNOWN.");
+              }
+            })
+            .finally(() => setProviderEvidenceLoading(false));
+        }}
+      />
       <TransferDetail item={item} preview={false} />
     </>
+  );
+}
+
+function ProviderEvidencePanel({
+  transferId,
+  evidence,
+  loading,
+  error,
+  onCheck,
+}: {
+  transferId: string;
+  evidence: ProviderEvidence | null;
+  loading: boolean;
+  error: string | null;
+  onCheck: () => void;
+}): React.JSX.Element {
+  const disposition: ProviderEvidenceDisposition = providerEvidenceDisposition(evidence);
+  const expiry = evidence?.invoiceExpiresAt ? new Date(evidence.invoiceExpiresAt) : null;
+  const expiryLabel = !evidence || !expiry || Number.isNaN(expiry.getTime()) ? "UNKNOWN" : evidence.invoiceExpired ? "Expired" : `Live until ${expiry.toLocaleString()}`;
+  const tone = disposition === "UNKNOWN" ? "warn" : "info";
+  return (
+    <div style={{ marginBottom: 12 }} data-transfer-id={transferId}>
+      <Button variant="soft" size="md" icon="refresh" block disabled={loading} onClick={onCheck}>
+        {loading ? "Checking payment status…" : "Check payment status"}
+      </Button>
+      {error && (
+        <Notice tone="warn" icon="alert" title="Funding evidence: UNKNOWN" live>
+          {error}
+        </Notice>
+      )}
+      {evidence && (
+        <Notice tone={tone} icon={disposition === "UNKNOWN" ? "alert" : "info"} title={`Funding evidence: ${disposition}`} live>
+          <dl className={styles.facts}>
+            <div><dt>Provider status</dt><dd>{providerStatusLabel(evidence.providerStatus)}</dd></div>
+            <div><dt>Invoice expiry</dt><dd>{expiryLabel}</dd></div>
+            <div><dt>Swap identity</dt><dd>{evidence.identityMatch ? "MATCH" : "MISMATCH — UNKNOWN"}</dd></div>
+            <div><dt>Funding transaction</dt><dd>{evidence.hasEvmFundingTx ? "Present" : "Not reported"}</dd></div>
+            <div><dt>Claim transaction</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
+          </dl>
+          {disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
+        </Notice>
+      )}
+    </div>
   );
 }
 

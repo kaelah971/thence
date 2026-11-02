@@ -101,6 +101,52 @@ export interface SettlementResult {
 
 type Opts = Pick<ApiOptions, "signal" | "fetch">;
 
+export interface ProviderEvidence {
+  transferId: string;
+  transferStatus: string;
+  providerStatus: string;
+  invoiceExpired: boolean;
+  invoiceExpiresAt: string | null;
+  sourceSats: string;
+  targetAtomic: string;
+  identityMatch: boolean;
+  hasEvmFundingTx: boolean;
+  hasEvmClaimTx: boolean;
+  observedAt: string;
+}
+
+export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "UNKNOWN";
+
+const FUNDING_STATUSES = new Set(["clientfunded", "serverfunded", "clientredeeming", "clientredeemed", "serverredeemed"]);
+const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
+
+/** Expiry or pending alone never becomes an unfunded verdict. */
+export function providerEvidenceDisposition(evidence: ProviderEvidence | null): ProviderEvidenceDisposition {
+  if (!evidence || !evidence.identityMatch) return "UNKNOWN";
+  if (evidence.hasEvmClaimTx || SETTLEMENT_STATUSES.has(evidence.providerStatus)) return "SETTLEMENT_DETECTED";
+  if (evidence.hasEvmFundingTx || FUNDING_STATUSES.has(evidence.providerStatus)) return "FUNDING_DETECTED";
+  return "UNKNOWN";
+}
+
+export function providerStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    pending: "Pending",
+    clientfundingseen: "Funding seen",
+    clientfunded: "Client funded",
+    serverfunded: "Server funded",
+    clientredeeming: "Claim in progress",
+    clientredeemed: "Claimed",
+    serverredeemed: "Settled",
+    expired: "Expired",
+    unknown: "Unknown",
+  };
+  return labels[status] ?? "Unknown";
+}
+
+export function getProviderEvidence(id: string, opts: Opts = {}): Promise<ApiResult<{ evidence: ProviderEvidence }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/provider-evidence`, opts);
+}
+
 export function getReconciliation(id: string, opts: Opts = {}): Promise<ApiResult<ReconciliationView>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/reconciliation`, opts);
 }
