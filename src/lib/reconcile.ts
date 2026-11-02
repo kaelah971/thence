@@ -540,10 +540,12 @@ export async function reportHandoffOutcome(
       const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
       throw new AuthError(503, code, "Route provider is temporarily unavailable; cancellation cannot be verified.");
     }
-    // Independent provider facts win over any local theory: observed
-    // activity (or an unreadable provider) never resolves to terminal
-    // cancellation.
-    if (facts.status !== "pending") {
+    // Independent provider facts win over any local theory: observed or
+    // possible movement (funding seen/funded/redeeming/redeemed, late or
+    // ambiguous reads) never resolves to terminal cancellation. Quiescent
+    // states (pending, or expired past any funding window) may proceed to
+    // the invoice + authorization checks below.
+    if (facts.status !== "pending" && facts.status !== "expired") {
       throw new AuthError(409, "NOT_CANCELLABLE", "Provider shows activity for this swap; cancellation is not safe — reconcile instead.");
     }
     if (!facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now()) {

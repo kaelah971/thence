@@ -129,8 +129,7 @@ describe.skipIf(!LIVE)("retirement of definitively unpaid payments", () => {
     }
   });
 
-  it("retires a strand-shaped payment: attached swap, expired attempt AND expired invoice", async () => {
-    const previous = setRoutes(ROUTES);
+  it("retires a strand-shaped payment: attached swap, expired attempt AND expired invoice", async () => {    const previous = setRoutes(ROUTES);
     try {
       const { cookie } = await login("strand");
       const { id } = await createDirect(cookie, "strand", "s1");
@@ -151,7 +150,7 @@ describe.skipIf(!LIVE)("retirement of definitively unpaid payments", () => {
         // Age the attempt past TTL and let the mock invoice lapse: the exact
         // d3debd19 shape. Previously this refused (ambiguous invoice).
         await getDb().update(handoffAttempts).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(handoffAttempts.transferId, id));
-        setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ id: sid, invoice_expires_at: Math.floor(Date.now() / 1000) - 10 }) });
+        setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ id: sid, status: "expired", invoice_expires_at: Math.floor(Date.now() / 1000) - 10 }) });
         const out = await cancel(cookie, "strand", id);
         expect(out.status).toBe(200);
         expect(out.body.handoff?.status).toBe("USER_CANCELLED");

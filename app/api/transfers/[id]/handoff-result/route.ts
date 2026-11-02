@@ -5,7 +5,7 @@
  * only provider evidence advances a transfer.
  */
 import { NextResponse } from "next/server";
-import { AuthError, assertSafeOrigin, requireSession } from "@/lib/auth";
+import { AuthError, assertSafeOrigin, fundedFailureCode, requireSession } from "@/lib/auth";
 import { checkRateLimit, rateLimitKeyFor } from "@/lib/rate-limit";
 import { getEnv } from "@/lib/env";
 import { readJsonBody } from "@/lib/transfers";
@@ -28,8 +28,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
     const { id } = await context.params;
     const result = await reportHandoffOutcome(session.userId, id, await readJsonBody(request));
+    // Static outcome line (status union only — never request data): without
+    // it, 4xx/5xx outcomes are indistinguishable from success in dashboards.
+    console.info(`thence handoff-result: closed:${result.status}`);
     return NextResponse.json({ handoff: result }, { status: 200 });
   } catch (err) {
+    console.warn(`thence handoff-result: ${fundedFailureCode(err)}`);
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
     }
