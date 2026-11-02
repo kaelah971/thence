@@ -1,8 +1,9 @@
 /**
  * POST /api/transfers/:id/handoff-result — minimal client outcome report (B4.3).
- * Accepts ONLY cancelled-before-submit (provider-verified idle), initiated,
- * or unknown. Client claims of funded/claimed/delivered/refunded are rejected:
- * only provider evidence advances a transfer.
+ * Accepts owner retirement only when the server verifies no funding (including
+ * terminal Satora expiry), initiated, or unknown. Client claims of
+ * funded/claimed/delivered/refunded are rejected: only provider evidence
+ * advances a transfer.
  */
 import { NextResponse } from "next/server";
 import { AuthError, assertSafeOrigin, fundedFailureCode, requireSession } from "@/lib/auth";

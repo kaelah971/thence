@@ -6,9 +6,10 @@
  * production pilot is never armed here (legacy skip covers creation;
  * the cancel path is ungated by design). d3debd19 itself is untouched.
  *
- * - Definitively unpaid payments (never authorized) retire to
- *   USER_CANCELLED with history preserved — even with an expired attempt
- *   and an ambiguous invoice, which previously refused.
+ * - Definitively unpaid payments retire to USER_CANCELLED with history
+ *   preserved — pre-handoff payments even with an expired attempt and an
+ *   ambiguous invoice, plus authorized payments only with terminal Satora
+ *   expired evidence.
  * - Funded/uncertain payments stay open (reconcile, never silent close).
  * - A retired attempt frees exposure without resetting caps:
  *   DELIVERED spend still counts and an active handoff reservation blocks.

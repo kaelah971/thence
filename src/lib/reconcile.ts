@@ -19,8 +19,8 @@
  *   for Lightning swaps the SDK defines it as expired without funding;
  *   owner-close still rechecks identity, contradictory tx ids and prior
  *   funding observations before changing our local status.
- * - Client reports are NOT payment proof. The client may only report
- *   cancelled-before-submit (verified against a pending provider state),
+ * - Client reports are NOT payment proof. The client may only request
+ *   retirement (the server verifies pre-handoff or terminal expired evidence),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -585,9 +585,9 @@ export const handoffOutcomeSchema = z.object({
 
 /**
  * Minimal client handoff-outcome report. Client claims are NEVER payment
- * proof: "cancelled" requires a provider state showing nothing funded,
- * "initiated"/"unknown" walk the existing unknown-outcome chain, and
- * funded/claimed/delivered/refunded reports are rejected outright.
+ * proof: "cancelled" requires server-verified pre-handoff or terminal expired
+ * evidence, "initiated"/"unknown" walk the existing unknown-outcome chain,
+ * and funded/claimed/delivered/refunded reports are rejected outright.
  */
 export async function reportHandoffOutcome(
   userId: string,
