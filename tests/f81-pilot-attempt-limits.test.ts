@@ -4,14 +4,14 @@
  * F8.2 two-key rule: these tests arm the env gate (KEY 1) AND the database
  * switch (KEY 2, restored to DISABLED afterwards). Production stays OFF.
  *
- * Proves the one-attempt / spend-cap gate at the route level with the pilot
- * armed, using real quotes (no swaps, no invoices, no funds move):
+ * Proves the independent intent, exposure and spend gates at the route level
+ * with the pilot armed, using real quotes (no swaps, no invoices, no funds move):
  * - First pilot transfer creates (201) when correctly configured.
- * - A second distinct transfer is rejected with PILOT_ATTEMPTS_EXCEEDED.
+ * - A second distinct quoted intent is allowed, but a second handoff exposure is rejected.
  * - Same-key replay stays deduplicated (no duplicate transfer).
- * - Spend cap enforced independently of the attempt cap.
+ * - Spend cap enforced independently of exposure count.
  * - Armed-without-allowlist and disarmed configurations stay fail-closed.
- * - Concurrent different-key creates converge to exactly one transfer.
+ * - Concurrent different-key creates remain independent.
  *
  * Guard: the whole suite is LIVE-gated — it runs ONLY against the isolated
  * Neon TEST database installed by vitest.setup.ts (see tests/test-db.ts).
@@ -129,38 +129,59 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
     expect(isLiveTestingEnabled(process.env)).toBe(true);
   });
 
-  it("creates the first pilot transfer, rejects the second, replays idempotency", async () => {
+  it("creates independent intents, blocks a second exposure, and replays idempotency", async () => {
     const saved = snapshotEnv();
     try {
       const me = await login("first");
-      await armFor(me.address);
+      await armFor(me.address, { THENCE_PILOT_MAX_SPEND_ATOMIC: "600000" });
       const first = await createDirect(me.cookie, "first", "t1", "300000");
       expect(first.status).toBe(201);
       expect(first.body.transfer?.id).toMatch(/^[0-9a-f-]{36}$/i);
 
+      const prepared = await preparePost(
+        postJson(
+          `http://localhost/api/transfers/${first.body.transfer.id}/prepare`,
+          { expectedQuoteRevision: 1 },
+          { cookie: me.cookie, ...withClient("first-prepare") },
+        ),
+        { params: Promise.resolve({ id: first.body.transfer.id }) },
+      );
+      expect(prepared.status).toBe(201);
+
       const second = await createDirect(me.cookie, "first", "t2", "300000");
-      expect(second.status).toBe(403);
-      expect(second.body.error).toBe("PILOT_ATTEMPTS_EXCEEDED");
+      expect(second.status).toBe(201);
+      const blocked = await preparePost(
+        postJson(
+          `http://localhost/api/transfers/${second.body.transfer.id}/prepare`,
+          { expectedQuoteRevision: 1 },
+          { cookie: me.cookie, ...withClient("second-prepare") },
+        ),
+        { params: Promise.resolve({ id: second.body.transfer.id }) },
+      );
+      expect(blocked.status).toBe(409);
+      expect((await blocked.json()).error).toBe("PILOT_EXPOSURE_LIMIT");
 
       const replay = await createDirect(me.cookie, "first", "t1", "300000");
       expect(replay.status).toBe(200);
       expect(replay.body.deduplicated).toBe(true);
       expect(replay.body.transfer?.id).toBe(first.body.transfer?.id);
-      expect(await ownerTransferCount(me.userId)).toBe(1);
+      expect(await ownerTransferCount(me.userId)).toBe(2);
     } finally {
       restoreEnv(saved);
       await disarmDb();
     }
   });
 
-  it("enforces the spend cap independently of the attempt cap", async () => {
+  it("enforces spend independently after a payment is delivered", async () => {
     const saved = snapshotEnv();
     try {
       const me = await login("spend");
       await armFor(me.address, { THENCE_PILOT_MAX_TRANSFERS: "10", THENCE_PILOT_MAX_SPEND_ATOMIC: "300000" });
       const first = await createDirect(me.cookie, "spend", "s1", "300000");
       expect(first.status).toBe(201);
-      // 300000 + 100000 exceeds the 300000 spend cap: rejected before quoting.
+      await getDb().update(transfers).set({ status: "DELIVERED" }).where(eq(transfers.id, first.body.transfer.id));
+      // Delivered spend consumes the spend ceiling, while the transfer-count
+      // ceiling remains independent.
       const over = await createDirect(me.cookie, "spend", "s2", "100000");
       expect(over.status).toBe(403);
       expect(over.body.error).toBe("PILOT_SPEND_EXCEEDED");
@@ -197,7 +218,7 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
     }
   });
 
-  it("concurrent different-key creates converge to exactly one transfer", async () => {
+  it("concurrent different-key creates remain independent", async () => {
     const saved = snapshotEnv();
     try {
       const me = await login("race");
@@ -206,11 +227,9 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
         createDirect(me.cookie, "race", "r1", "300000"),
         createDirect(me.cookie, "race", "r2", "300000"),
       ]);
-      const statuses = [a.status, b.status].sort();
-      expect(statuses).toEqual([201, 403]);
-      const loser = a.status === 403 ? a : b;
-      expect(loser.body.error).toBe("PILOT_ATTEMPTS_EXCEEDED");
-      expect(await ownerTransferCount(me.userId)).toBe(1);
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(201);
+      expect(await ownerTransferCount(me.userId)).toBe(2);
     } finally {
       restoreEnv(saved);
       await disarmDb();

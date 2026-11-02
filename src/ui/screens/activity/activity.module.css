@@ -4,6 +4,10 @@
   font-size: var(--text-body-lg);
 }
 
+.newPayment {
+  margin-top: 16px;
+}
+
 .summary {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);

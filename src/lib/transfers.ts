@@ -368,9 +368,10 @@ export async function createTransfer(
   if (!canTransition("DRAFT", "QUOTED")) {
     throw new AuthError(500, "LIFECYCLE_FORBIDDEN", "Transfer preparation is not permitted.");
   }
-  // F8 restricted pilot: server-side allowlist + caps. Placed AFTER the
-  // idempotent replay above so retries of the same key stay deduplicated
-  // and never strand or double-count.
+  // F8 restricted pilot: server-side allowlist + per-intent spend caps.
+  // Placed AFTER the idempotent replay above so retries of the same key stay
+  // deduplicated and never strand or double-count. Funding exposure is
+  // reserved later, when this quoted intent is prepared.
   {
     const ownerAddress = await getOwnerAddress(userId);
     const config = getPilotConfig();
@@ -519,8 +520,9 @@ export async function requoteTransfer(
   if (current.status !== "QUOTED") {
     throw new AuthError(409, "NOT_REQUOTEABLE", "Only pre-funding quoted transfers can be re-quoted.");
   }
-  // F8 restricted pilot: re-quote stays inside pilot bounds (no budget recount).
-  // F8.2: database kill switch also gates re-quotes (new funding preparation).
+  // F8 restricted pilot: re-quote stays inside pilot intent bounds; it does
+  // not create funding exposure. F8.2: the database kill switch also gates
+  // re-quotes (new funding preparation).
   {
     const config = getPilotConfig();
     assertPilotIntent({

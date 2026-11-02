@@ -19,6 +19,7 @@ import { POST as createTransferPost } from "../app/api/transfers/route";
 import { POST as preparePost } from "../app/api/transfers/[id]/prepare/route";
 import { POST as attachPost } from "../app/api/transfers/[id]/attach/route";
 import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-handoff/route";
+import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 import { GET as attemptGet } from "../app/api/transfers/[id]/attempt/route";
 import { GET as getTransfer } from "../app/api/transfers/[id]/route";
 import { POST as createRecipient } from "../app/api/recipients/route";
@@ -362,6 +363,16 @@ describe.skipIf(!LIVE)("swap attachment (mocked provider)", () => {
       );
       expect(conflict.status).toBe(409);
       expect(((await conflict.json()) as { error: string }).error).toBe("SWAP_CONFLICT");
+      // Close the definitively pre-authorization swap before preparing a
+      // separate intent. Exposure protection should not be bypassed merely to
+      // exercise the global swap-reuse constraint below.
+      stubSwapFixture(fixtureSwap({ id: uniqSwap("swap-good-1") }));
+      const closed = await reportPost(
+        postJson(`http://localhost/api/transfers/${id}/handoff-result`, { outcome: "cancelled" }, { cookie, ...withClient("mismatch-close") }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(closed.status).toBe(200);
+      expect(((await closed.json()) as { handoff: { status: string } }).handoff.status).toBe("USER_CANCELLED");
       // Without acknowledgement, nothing binds.
       const noAck = await attachPost(
         postJson(`http://localhost/api/transfers/${id}/attach`, { ...base, satoraSwapId: uniqSwap("swap-good-3"), recoveryAcknowledged: false }, { cookie, ...withClient("mismatch") }),

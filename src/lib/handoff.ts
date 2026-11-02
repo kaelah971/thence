@@ -42,7 +42,7 @@ import {
   transfers,
 } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
-import { assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig } from "@/lib/pilot";
+import { assertFundingExposure, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
 import { canTransition, transition } from "@/domain/transfers";
 import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
@@ -245,6 +245,11 @@ export async function prepareHandoff(
         ownerAddress: await getOwnerAddress(userId),
       }, config);
       await assertPilotDbEnabled(config, tx);
+      // A quoted transfer is not exposure. Reserve the owner-level exposure
+      // slot only when this independent intent becomes a handoff attempt.
+      // Same-payment replays returned above never re-run this gate.
+      await lockPilotCreate(tx, userId);
+      await assertFundingExposure(userId, transfer.targetAmountAtomic, config, tx, transfer.id);
     }
     // Explicitly retire stale/ambiguous predecessors (auditable, never silent).
     await tx

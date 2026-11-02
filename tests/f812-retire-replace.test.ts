@@ -10,15 +10,15 @@
  *   USER_CANCELLED with history preserved — even with an expired attempt
  *   and an ambiguous invoice, which previously refused.
  * - Funded/uncertain payments stay open (reconcile, never silent close).
- * - A retired attempt frees the pilot slot without resetting caps:
- *   DELIVERED spend still counts and a live attempt still blocks.
+ * - A retired attempt frees exposure without resetting caps:
+ *   DELIVERED spend still counts and an active handoff reservation blocks.
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { handoffAttempts, reconciliationObservations, transfers, users } from "@/db/schema";
 import { setSatoraFetchersForTests } from "@/lib/satora";
-import { assertPilotBudget } from "@/lib/pilot";
+import { assertFundingExposure, assertPilotBudget, getPilotConfig } from "@/lib/pilot";
 
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransferPost } from "../app/api/transfers/route";
@@ -266,19 +266,29 @@ describe.skipIf(!LIVE)("retired attempts free the pilot slot without resetting c
     }
   });
 
-  it("a live 0.30 still blocks a second, and delivered spend still counts", async () => {
+  it("allows a second intent but blocks a second handoff exposure, and delivered spend still counts", async () => {
     const previous = setRoutes(ROUTES);
     try {
       const { cookie, userId } = await login("cap");
-      await createDirect(cookie, "cap", "c1");
-      // Slot occupied by the live first transfer.
-      await expect(assertPilotBudget(userId, "300000", armed)).rejects.toMatchObject({ code: "PILOT_ATTEMPTS_EXCEEDED" });
-      // Delivered money keeps counting toward the spend ceiling even though
-      // the attempt slot itself is free once terminal.
-      const mine = await getDb().select().from(transfers).where(eq(transfers.ownerUserId, userId));
-      const live = mine.find((t) => t.status === "QUOTED");
-      expect(live).toBeDefined();
-      await getDb().update(transfers).set({ status: "DELIVERED" }).where(eq(transfers.id, live!.id));
+      const first = await createDirect(cookie, "cap", "c1");
+      const prepared = await preparePost(
+        postJson(`http://localhost/api/transfers/${first.id}/prepare`, { expectedQuoteRevision: first.quoteRevision }, { cookie, ...withClient("prepare-cap") }),
+        { params: Promise.resolve({ id: first.id }) },
+      );
+      expect(prepared.status).toBe(201);
+      // A quoted second intent is allowed; the exposure gate runs before its
+      // handoff attempt so no second swap or invoice can be created.
+      const second = await createDirect(cookie, "cap", "c2");
+      await expect(
+        assertFundingExposure(userId, "300000", getPilotConfig({ THENCE_PILOT_ENABLED: "0" }), getDb(), second.id),
+      ).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+      await expect(assertFundingExposure(userId, "300000", armed, getDb(), second.id)).rejects.toMatchObject({ code: "PILOT_EXPOSURE_LIMIT" });
+      // A definitive failure releases the exposure reservation, even though
+      // its handoff history remains available for audit.
+      await getDb().update(transfers).set({ status: "FAILED" }).where(eq(transfers.id, first.id));
+      await expect(assertFundingExposure(userId, "300000", armed, getDb(), second.id)).resolves.toBeUndefined();
+      // Delivered money keeps counting toward the independent spend ceiling.
+      await getDb().update(transfers).set({ status: "DELIVERED" }).where(eq(transfers.id, second.id));
       await expect(assertPilotBudget(userId, "300000", armed)).rejects.toMatchObject({ code: "PILOT_SPEND_EXCEEDED" });
     } finally {
       restoreRoutes(previous);
