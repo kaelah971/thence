@@ -12,10 +12,11 @@
  * against the same validation the IndexedDB path uses, plus JSON
  * reload round-trips. Real-device persistence remains F4.1 QA-pending.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NimiqProviderError } from "@nimiq/mini-app-sdk";
 import {
   assertAuthorizedInvoice,
+  DEFAULT_PAYMENT_TIMEOUT_MS,
   hasLightningPaymentSupport,
   mapHostDenial,
   payAuthorizedInvoice,
@@ -93,6 +94,31 @@ describe("exact host Lightning API verified (@nimiq/mini-app-sdk 0.2.4)", () => 
     const res = await payAuthorizedInvoice(mockPaypal({ hash: "abc", swapId: "swap-1" }, calls), INVOICE);
     expect(calls).toEqual([INVOICE]);
     expect(res).toEqual({ kind: "initiated", hash: "abc", swapId: "swap-1" });
+  });
+
+  it("waits beyond the old 60-second boundary for the native host response", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(DEFAULT_PAYMENT_TIMEOUT_MS).toBeGreaterThan(60_000);
+      const calls: string[] = [];
+      let resolvePayment!: (value: unknown) => void;
+      const pending = new Promise<unknown>((resolve) => {
+        resolvePayment = resolve;
+      });
+      const payment = payAuthorizedInvoice({
+        payLightningInvoice: (async (req: { invoice: string }) => {
+          calls.push(req.invoice);
+          return pending;
+        }) as LightningCapableProvider["payLightningInvoice"],
+      }, INVOICE);
+
+      await vi.advanceTimersByTimeAsync(60_001);
+      resolvePayment({ hash: "late-hash", swapId: "late-swap" });
+      await expect(payment).resolves.toEqual({ kind: "initiated", hash: "late-hash", swapId: "late-swap" });
+      expect(calls).toEqual([INVOICE]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects non-BOLT11 input before touching the host", async () => {

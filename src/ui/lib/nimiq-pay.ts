@@ -57,6 +57,12 @@ export function hasLightningPaymentSupport(provider: unknown): provider is Light
 
 const INVOICE_RE = /^(lnbc|lnbcrt|lntb|lntbs)/i;
 
+/** Nimiq Pay's documented native Mini App request window. */
+export const NIMIQ_PAY_REQUEST_TIMEOUT_MS = 120_000;
+/** Bounded allowance for the host's timeout/result crossing the bridge. */
+export const NIMIQ_PAY_RESPONSE_GRACE_MS = 5_000;
+export const DEFAULT_PAYMENT_TIMEOUT_MS = NIMIQ_PAY_REQUEST_TIMEOUT_MS + NIMIQ_PAY_RESPONSE_GRACE_MS;
+
 /** Validate without normalizing: the caller must supply the exact authorized string. */
 export function assertAuthorizedInvoice(invoice: string): void {
   if (typeof invoice !== "string" || invoice.length === 0 || invoice.length > 8192) {
@@ -128,7 +134,7 @@ export async function payAuthorizedInvoice(
   opts: { timeoutMs?: number; onDiagnostics?: (diagnostics: PaymentDiagnostics) => void } = {},
 ): Promise<HostPaymentResult> {
   assertAuthorizedInvoice(invoice);
-  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_PAYMENT_TIMEOUT_MS;
   const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let emitted = false;
