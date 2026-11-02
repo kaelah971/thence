@@ -33,7 +33,7 @@ import {
 } from "@/db/schema";
 import { canTransition, isTerminal, transition } from "@/domain/transfers";
 import type { TransferStatus } from "@/domain/transfers";
-import { getProviderSwap, resolveRoute } from "@/lib/satora";
+import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 
@@ -436,6 +436,77 @@ export async function getReconciliation(userId: string, transferId: string): Pro
         }
       : null,
     latest,
+  };
+}
+
+/**
+ * Fresh provider evidence without reconciliation side effects. This is an
+ * operator/read-only diagnostic: it never records an observation, advances a
+ * transfer, or returns invoices, hashes, swap ids, addresses, or tokens.
+ */
+export async function readBoundProviderEvidence(
+  userId: string,
+  transferId: string,
+): Promise<{
+  transferId: string;
+  transferStatus: string;
+  providerStatus: string;
+  invoiceExpired: boolean;
+  invoiceExpiresAt: string | null;
+  sourceSats: string;
+  targetAtomic: string;
+  identityMatch: boolean;
+  hasEvmFundingTx: boolean;
+  hasEvmClaimTx: boolean;
+  observedAt: string;
+}> {
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(transfers)
+    .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+    .limit(1);
+  const transfer = rows[0];
+  if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+  const bound = await db.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
+  const attachment = bound[0];
+  if (!attachment) throw new AuthError(409, "NOT_RECONCILABLE", "No bound swap to inspect.");
+
+  let facts: VerifiedSwapFacts;
+  try {
+    const { getProviderSwap } = await import("@/lib/satora");
+    facts = await getProviderSwap(attachment.satoraSwapId);
+  } catch (err) {
+    if (err instanceof SatoraError) {
+      const status = err.code === "SWAP_NOT_FOUND" ? 404 : err.code === "PROVIDER_TIMEOUT" || err.code === "PROVIDER_UNAVAILABLE" ? 503 : 409;
+      throw new AuthError(status, err.code, err.message);
+    }
+    throw new AuthError(503, "PROVIDER_UNAVAILABLE", "Route provider is temporarily unavailable.");
+  }
+
+  let identityMatch = facts.targetAtomic === transfer.targetAmountAtomic && facts.targetAddress.toLowerCase() === transfer.destination.toLowerCase();
+  try {
+    const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
+    identityMatch =
+      identityMatch &&
+      String(resolved.chainId) === String(facts.evmChainId) &&
+      resolved.tokenAddress.toLowerCase() === facts.targetTokenAddress.toLowerCase();
+  } catch {
+    identityMatch = false;
+  }
+  const invoiceExpiresAt = facts.invoiceExpiresAt?.toISOString() ?? null;
+  return {
+    transferId,
+    transferStatus: transfer.status,
+    providerStatus: facts.status || "unknown",
+    invoiceExpired: !facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now(),
+    invoiceExpiresAt,
+    sourceSats: facts.sourceSats,
+    targetAtomic: facts.targetAtomic,
+    identityMatch,
+    hasEvmFundingTx: facts.evmFundTxid !== null,
+    hasEvmClaimTx: facts.evmClaimTxid !== null,
+    observedAt: new Date().toISOString(),
   };
 }
 

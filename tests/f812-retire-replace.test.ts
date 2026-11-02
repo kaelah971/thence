@@ -16,7 +16,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { handoffAttempts, transfers, users } from "@/db/schema";
+import { handoffAttempts, reconciliationObservations, transfers, users } from "@/db/schema";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { assertPilotBudget } from "@/lib/pilot";
 
@@ -26,6 +26,7 @@ import { POST as preparePost } from "../app/api/transfers/[id]/prepare/route";
 import { POST as attachPost } from "../app/api/transfers/[id]/attach/route";
 import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-handoff/route";
 import { GET as getTransfer } from "../app/api/transfers/[id]/route";
+import { GET as providerEvidenceGet } from "../app/api/transfers/[id]/provider-evidence/route";
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 
 const createdUserIds: string[] = [];
@@ -160,6 +161,42 @@ describe.skipIf(!LIVE)("retirement of definitively unpaid payments", () => {
       }
     } finally {
       restoreRoutes(previous);
+    }
+  });
+
+  it("reads fresh provider evidence without writing reconciliation or changing status", async () => {
+    const previous = setRoutes(ROUTES);
+    try {
+      const { cookie } = await login("evidence");
+      const { id } = await createDirect(cookie, "evidence", "e1");
+      const prep = await preparePost(
+        postJson(`http://localhost/api/transfers/${id}/prepare`, { expectedQuoteRevision: 1 }, { cookie, ...withClient("prep-evidence") }),
+        { params: Promise.resolve({ id }) },
+      );
+      if (prep.status !== 200 && prep.status !== 201) throw new Error(`prepare failed: ${prep.status}`);
+      const token = ((await prep.json()) as { attemptToken: string }).attemptToken;
+      setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ id: sid }) });
+      const before = await getDb().select().from(reconciliationObservations).where(eq(reconciliationObservations.transferId, id));
+      const attached = await attachPost(
+        postJson(`http://localhost/api/transfers/${id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: uniqSwap("swap-evidence"), recoveryAcknowledged: true }, { cookie, ...withClient("evidence") }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(attached.status).toBe(201);
+      const statusBefore = await transferStatus(cookie, id);
+      const inspected = await providerEvidenceGet(new Request(`http://localhost/api/transfers/${id}/provider-evidence`, { headers: { cookie } }), { params: Promise.resolve({ id }) });
+      expect(inspected.status).toBe(200);
+      const body = (await inspected.json()) as { evidence: Record<string, unknown> };
+      expect(body.evidence.providerStatus).toBe("pending");
+      expect(body.evidence.invoiceExpired).toBe(false);
+      expect(body.evidence.identityMatch).toBe(true);
+      expect(body.evidence.hasEvmFundingTx).toBe(false);
+      expect(body.evidence.hasEvmClaimTx).toBe(false);
+      expect(await transferStatus(cookie, id)).toBe(statusBefore);
+      const after = await getDb().select().from(reconciliationObservations).where(eq(reconciliationObservations.transferId, id));
+      expect(after).toHaveLength(before.length);
+    } finally {
+      restoreRoutes(previous);
+      setSatoraFetchersForTests(null);
     }
   });
 
