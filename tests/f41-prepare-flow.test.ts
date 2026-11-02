@@ -146,6 +146,13 @@ describe("quote expiration blocks preparation", () => {
     expect(issue.action).toBe("requote");
     expect(issue.retryable).toBe(true);
   });
+
+  it("maps a pilot-capped duplicate create to continue-instead-of-restart", () => {
+    const issue = classifyPreparationFailure({ kind: "invalid", code: "PILOT_ATTEMPTS_EXCEEDED" });
+    expect(issue.title).toBe("You already have this payment in progress");
+    expect(issue.action).toBe("resume");
+    expect(issue.retryable).toBe(true);
+  });
 });
 
 describe("wrong wallet, route and amount never proceed", () => {
