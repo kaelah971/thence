@@ -211,9 +211,19 @@ export function useHandoff(): {
         return;
       }
 
-      // Host capability (verified method, never assumed).
+      // Host capability (verified method, never assumed). Null means the host
+      // never provided a provider (not inside Nimiq Pay, or injection timed
+      // out) — distinct from an outdated host that lacks the method.
       const provider: unknown = providerForTests() ?? (await getHostProvider().catch(() => null));
-      if (!provider || !hasLightningPaymentSupport(provider)) {
+      if (!provider) {
+        setState({
+          phase: "attention",
+          transferId: input.transferId,
+          message: "Nimiq Pay isn't responding. Reopen Thence inside Nimiq Pay and try again.",
+        });
+        return;
+      }
+      if (!hasLightningPaymentSupport(provider)) {
         setState({
           phase: "attention",
           transferId: input.transferId,

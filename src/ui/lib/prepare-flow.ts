@@ -324,6 +324,8 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
       return { title: "Not available right now", body: "This currency can't be paid at the moment.", retryable: false, action: "abort" };
     case "IDEMPOTENCY_CONFLICT":
       return { title: "Checking payment — do not resend", body: "A different payment already used this reference. Continue it instead of starting over.", retryable: true, action: "resume" };
+    case "PILOT_ATTEMPTS_EXCEEDED":
+      return { title: "You already have this payment in progress", body: "Continue it from Activity instead of starting over — nothing new was created.", retryable: true, action: "resume" };
     case "PROVIDER_TIMEOUT":
     case "PROVIDER_UNAVAILABLE":
     case "PROVIDER_MALFORMED":

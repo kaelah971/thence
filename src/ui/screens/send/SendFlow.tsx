@@ -31,6 +31,7 @@ import { availabilityFor, tokenDecimalsFor, useRouteCatalogue } from "@/ui/lib/r
 import { useSession } from "@/ui/lib/session";
 import { timelineFor } from "@/ui/lib/status";
 import { usePreviewMode } from "@/ui/lib/stores";
+import { isPaymentFlagEnabled } from "@/ui/lib/payment-gate";
 import { RequestDetailsStep, RequestSharedStep } from "./RequestSteps";
 import { useCalculator } from "./useCalculator";
 import { humanAmount } from "@/ui/lib/transfers-api";
@@ -1168,7 +1169,15 @@ function HandoffStep({
               {handoff.state.phase === "confirming" ? "Waiting for Nimiq Pay…" : "Confirm in Nimiq Pay"}
             </Button>
             <p className={styles.ctaNote}>
-              <Icon name="lock" size={14} /> Payments are paused in this preview \u2014 nothing was sent. Nimiq Pay would show the exact NIM amount before you approve.
+              {(!isPaymentFlagEnabled() || previewMode) ? (
+                <>
+                  <Icon name="lock" size={14} /> Payments are paused in this preview — nothing was sent. Nimiq Pay would show the exact NIM amount before you approve.
+                </>
+              ) : (
+                <>
+                  <Icon name="lock" size={14} /> Nimiq Pay shows the exact NIM amount before you approve. Nothing moves until you confirm there.
+                </>
+              )}
             </p>
             {handoff.state.transferId === preparation.transferId && handoff.state.phase === "confirming" && (
               <p className={styles.quoteLine} role="status" aria-live="polite">
