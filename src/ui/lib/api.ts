@@ -21,7 +21,7 @@ export type ApiFailureKind =
 
 export type ApiResult<T> =
   | { ok: true; status: number; data: T }
-  | { ok: false; status: number; kind: ApiFailureKind; code: string | null; details?: Record<string, string> | null };
+  | { ok: false; status: number; kind: ApiFailureKind; code: string | null; details?: Record<string, string> | null; message?: string | null };
 
 export interface ApiOptions {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
@@ -73,6 +73,10 @@ export async function apiRequest<T>(path: string, options: ApiOptions = {}): Pro
     payload = null;
   }
   if (response.ok) return { ok: true, status: response.status, data: payload as T };
+  const message =
+    payload && typeof payload === "object" && typeof (payload as { message?: unknown }).message === "string"
+      ? ((payload as { message: string }).message).slice(0, 300)
+      : null;
   const code =
     payload && typeof payload === "object" && typeof (payload as { error?: unknown }).error === "string"
       ? ((payload as { error: string }).error)
@@ -89,7 +93,7 @@ export async function apiRequest<T>(path: string, options: ApiOptions = {}): Pro
     Object.values(rawDetails as Record<string, unknown>).every((v) => typeof v === "string")
       ? (rawDetails as Record<string, string>)
       : null;
-  return { ok: false, status: response.status, kind, code, details };
+  return { ok: false, status: response.status, kind, code, details, message };
 }
 
 const CODE_MESSAGES: Record<string, string> = {

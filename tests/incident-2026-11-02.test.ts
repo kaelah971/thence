@@ -16,7 +16,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "./fixtures/incidents-2026-11-02.json";
-import { canTransition } from "@/domain/transfers";
+import { USER_FACING_LABEL, canTransition, isTerminal } from "@/domain/transfers";
+import { assessNonChainEvidence, chainRefusal, scanWindow } from "@/lib/expiry-resolution";
+import { EXPIRED_UNFUNDED_BODY } from "@/ui/lib/settlement-client";
 import { assertFundingExposure, getPilotConfig, isActualSpendStatus, isFundingExposureStatus } from "@/lib/pilot";
 import { isClaimReady, planReconciliation } from "@/lib/reconcile";
 import { getProviderSwap, setSatoraFetchersForTests } from "@/lib/satora";
@@ -26,6 +28,7 @@ import {
   matchRefundEvent,
   setSettlementChainForTests,
   verifyEvmRefundEvidence,
+  verifyNoHtlcActivity,
   type ChainReads,
   type ChainReceipt,
 } from "@/lib/settlement";
@@ -235,25 +238,138 @@ describe("stale eddaa6de — expired, never funded, still RECONCILING and occupy
     expect(isActualSpendStatus("RECONCILING")).toBe(false);
   });
 
-  it("characterization: there is no path out — planner does nothing and no terminal edge exists", () => {
-    expect(planReconciliation("RECONCILING", "expired").action).toBe("none");
+  it("the exit is narrow: only the evidence-gated EXPIRED_UNFUNDED edge, never cancel/fail, never applied by the planner itself", () => {
+    expect(canTransition("RECONCILING", "EXPIRED_UNFUNDED")).toBe(true);
     expect(canTransition("RECONCILING", "USER_CANCELLED")).toBe(false);
     expect(canTransition("RECONCILING", "FAILED")).toBe(false);
+    // Expiry alone never auto-closes outside RECONCILING.
+    expect(planReconciliation("AWAITING_NIM_APPROVAL", "expired").action).toBe("none");
+    expect(planReconciliation("LIGHTNING_HANDOFF", "expired").action).toBe("none");
+    expect(isTerminal("EXPIRED_UNFUNDED")).toBe(true);
   });
 
-  it("characterization: it blocks a new payment under the armed pilot cap (PILOT_EXPOSURE_LIMIT)", async () => {
+  it("while unresolved it still blocks a new payment under the armed pilot cap (PILOT_EXPOSURE_LIMIT)", async () => {
     await expect(assertFundingExposure(OWNER, "300000", armed, fixtureDb())).rejects.toMatchObject({ code: "PILOT_EXPOSURE_LIMIT" });
     // Control: the same owner with that row resolved is not blocked by exposure.
     await expect(assertFundingExposure(OWNER, "300000", armed, fixtureDb("USER_CANCELLED"))).resolves.toBeUndefined();
   });
 
-  it.fails("REQUIRED (P4): an evidence-proven expired-unfunded RECONCILING transfer has a safe terminal exit", () => {
+  // P4 (was it.fails): an evidence-proven expired-unfunded RECONCILING transfer has a safe terminal exit.
+  it("P4: an evidence-proven expired-unfunded RECONCILING transfer has a safe terminal exit", () => {
     const decision = planReconciliation("RECONCILING", "expired");
     expect(decision.action).not.toBe("none");
+    expect(decision).toMatchObject({ action: "evidence-gated-close", path: ["EXPIRED_UNFUNDED"] });
   });
 
-  it.fails("REQUIRED (P4): once retired on that evidence it no longer occupies financial capacity", async () => {
-    // Today the only state it can sit in is RECONCILING, so the cap stays occupied.
-    await expect(assertFundingExposure(OWNER, "300000", armed, fixtureDb())).resolves.toBeUndefined();
+  // P4 (was it.fails): once retired on that evidence it no longer occupies financial capacity.
+  it("P4: once retired on that evidence it no longer occupies financial capacity", async () => {
+    expect(isFundingExposureStatus("EXPIRED_UNFUNDED")).toBe(false);
+    expect(isActualSpendStatus("EXPIRED_UNFUNDED")).toBe(false);
+    await expect(assertFundingExposure(OWNER, "300000", armed, fixtureDb("EXPIRED_UNFUNDED"))).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * P4 evidence gates replayed on the REAL captured evidence. The fixture
+ * chain answers only inside the block ranges that were actually scanned on
+ * Polygon (outside them it throws → UNAVAILABLE), and maps block numbers to
+ * time with the linear fit of the two captured block timestamps (1.5 s/block).
+ */
+describe("P4 evidence gates on real evidence", () => {
+  const HTLC = INC.satora.getSwap.evm_htlc_address;
+  const anchor = blocks[INC.polygon.receipts[FUND_TX as keyof typeof INC.polygon.receipts].blockNumber]!;
+  const ts = (n: bigint) => Number(anchor.timestamp) + Math.floor((Number(n) - Number(anchor.number)) * 1.5);
+  const scans = [INC.polygonHtlcScan, STALE.polygonHtlcScan];
+
+  function scanningChain(): ChainReads {
+    return {
+      ...fixtureChain(),
+      async getBlockTimestamp(_chainId, n) {
+        return ts(n);
+      },
+      async getLogsByTopic1(_chainId, address, topic1, from, to) {
+        const scan = scans.find((s) => s.hashLock.toLowerCase() === topic1.toLowerCase());
+        if (!scan || from < BigInt(scan.fromBlock) || to > BigInt(scan.toBlock)) throw new Error("outside captured evidence");
+        return scan.logs
+          .filter((l) => BigInt(l.blockNumber) >= from && BigInt(l.blockNumber) <= to)
+          .map((l) => ({ address, topics: [l.topic0, topic1, "0x" + "00".repeat(32)], data: "0x", logIndex: l.logIndex }));
+      },
+    };
+  }
+
+  function rows(c: typeof STALE | typeof INC, status: string) {
+    const transfer = { ...c.transfer, status, targetAmountAtomic: c.transfer.target_amount_atomic, destination: c.transfer.destination } as never;
+    const attachment = {
+      satoraSwapId: c.attachment.satora_swap_id,
+      paymentHash: c.attachment.payment_hash,
+      createdAt: new Date(c.attachment.created_at),
+      invoiceExpiresAt: new Date(c.attachment.invoice_expires_at!),
+    } as never;
+    return { transfer, attachment };
+  }
+  const cleanLocal = { movementObservations: 0, identityMismatchObservations: 0, evmProofRecorded: false, nimiqFundingRecorded: false, activeReservations: 0 };
+
+  it("eddaa6de: real provider + local evidence passes every non-chain gate; the chain scan finds NO_ACTIVITY", async () => {
+    setSettlementChainForTests(scanningChain());
+    const facts = await getProviderSwap(STALE.satora.getSwap.id);
+    const { transfer, attachment } = rows(STALE, "RECONCILING");
+    const local = { ...cleanLocal, movementObservations: STALE.observations.filter((o) => o.provider_status !== "expired").length };
+    expect(assessNonChainEvidence({ transfer, attachment, facts, routeMatches: true, local, now: at(fixture._meta.dbCapturedAt) })).toBeNull();
+    const window = scanWindow(attachment, facts)!;
+    expect(window.start.toISOString()).toBe("2026-11-02T12:49:27.671Z");
+    expect(window.end.toISOString()).toBe("2026-11-02T15:24:26.000Z");
+    const chain = await verifyNoHtlcActivity({ chainId: 137, htlcAddress: facts.evmHtlcAddress, hashLock: STALE.attachment.payment_hash, windowStart: window.start, windowEnd: window.end });
+    expect(chain.verdict).toBe("NO_ACTIVITY");
+    expect(chainRefusal(chain)).toBeNull();
+  });
+
+  it("077770a1: the same scan over its window finds the real fund + refund events (ACTIVITY_FOUND)", async () => {
+    setSettlementChainForTests(scanningChain());
+    const chain = await verifyNoHtlcActivity({
+      chainId: 137,
+      htlcAddress: HTLC,
+      hashLock: INC.attachment.payment_hash,
+      windowStart: new Date("2026-11-02T21:07:44.000Z"),
+      windowEnd: new Date("2026-11-02T22:40:00.000Z"),
+    });
+    expect(chain.verdict).toBe("ACTIVITY_FOUND");
+    expect(chain.eventTopics).toEqual([fixture._meta.htlcEventTopics.fund, fixture._meta.htlcEventTopics.swapRefunded]);
+    expect(chainRefusal(chain)).toBe("CHAIN_ACTIVITY_FOUND");
+  });
+
+  it("077770a1: provider and local gates refuse a funded/refunded swap before any chain scan", async () => {
+    const facts = await getProviderSwap(INC.satora.getSwap.id);
+    const { transfer, attachment } = rows(INC, "RECONCILING");
+    expect(assessNonChainEvidence({ transfer, attachment, facts, routeMatches: true, local: cleanLocal, now: at(fixture._meta.dbCapturedAt) })).toBe("PROVIDER_REPORTS_EVM_TX");
+    expect(assessNonChainEvidence({ transfer, attachment, facts, routeMatches: true, local: { ...cleanLocal, movementObservations: 1 }, now: at(fixture._meta.dbCapturedAt) })).toBe("LOCAL_MOVEMENT_RECORDED");
+  });
+
+  it("refuses on any doubt: NIM funding recorded, too-recent expiry, untrusted HTLC, unreadable or unfinalized chain", async () => {
+    const facts = await getProviderSwap(STALE.satora.getSwap.id);
+    const { transfer, attachment } = rows(STALE, "RECONCILING");
+    const now = at(fixture._meta.dbCapturedAt);
+    expect(assessNonChainEvidence({ transfer, attachment, facts, routeMatches: true, local: { ...cleanLocal, nimiqFundingRecorded: true }, now })).toBe("NIM_FUNDING_RECORDED");
+    expect(assessNonChainEvidence({ transfer, attachment, facts, routeMatches: true, local: cleanLocal, now: at(STALE.attachment.invoice_expires_at!) + 60_000 })).toBe("INVOICE_NOT_SETTLED");
+    expect(assessNonChainEvidence({ transfer, attachment, facts: { ...facts, evmHtlcAddress: "0x" + "11".repeat(20) }, routeMatches: true, local: cleanLocal, now })).toBe("HTLC_UNTRUSTED");
+    expect(assessNonChainEvidence({ transfer, attachment, facts, routeMatches: false, local: cleanLocal, now })).toBe("PROVIDER_IDENTITY_MISMATCH");
+    expect(assessNonChainEvidence({ ...rows(STALE, "AWAITING_NIM_APPROVAL"), facts, routeMatches: true, local: cleanLocal, now })).toBe("NOT_RESOLVABLE");
+    // Chain outside the captured evidence is unreadable → never NO_ACTIVITY.
+    setSettlementChainForTests(scanningChain());
+    const outside = await verifyNoHtlcActivity({ chainId: 137, htlcAddress: facts.evmHtlcAddress, hashLock: STALE.attachment.payment_hash, windowStart: new Date("2026-11-02T10:00:00Z"), windowEnd: new Date("2026-11-02T15:00:00Z") });
+    expect(outside.verdict).toBe("UNAVAILABLE");
+    // A reader without scan capability is inconclusive, not "no activity".
+    setSettlementChainForTests(fixtureChain());
+    const blind = await verifyNoHtlcActivity({ chainId: 137, htlcAddress: facts.evmHtlcAddress, hashLock: STALE.attachment.payment_hash, windowStart: new Date("2026-11-02T12:50:00Z"), windowEnd: new Date("2026-11-02T15:00:00Z") });
+    expect(blind.verdict).toBe("INCONCLUSIVE");
+    // A window ending in the future (not final) is refused.
+    setSettlementChainForTests(scanningChain());
+    const unfinal = await verifyNoHtlcActivity({ chainId: 137, htlcAddress: facts.evmHtlcAddress, hashLock: STALE.attachment.payment_hash, windowStart: new Date("2026-11-02T12:50:00Z"), windowEnd: new Date("2099-01-01T00:00:00Z") });
+    expect(unfinal.verdict).toBe("INSUFFICIENT_CONFIRMATIONS");
+  });
+
+  it("the owner copy for the closed state never claims a NIM refund", () => {
+    expect(EXPIRED_UNFUNDED_BODY).not.toMatch(/refund(ed)?/i);
+    expect(EXPIRED_UNFUNDED_BODY).toMatch(/Nimiq Pay/);
+    expect(USER_FACING_LABEL.EXPIRED_UNFUNDED).toBe("Expired — not delivered");
   });
 });

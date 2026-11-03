@@ -485,6 +485,48 @@ export const reconciliationObservations = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* transfer_transitions (P4 audit trail)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Append-only audit of transfer status transitions written by the
+ * reconciler and the evidence-gated terminal resolution. Each row records
+ * who moved the transfer, from what, to what, why, and the non-secret
+ * evidence relied on (provider status, tx-id presence, chain scan window and
+ * result). Never stores invoices, preimages, credentials or addresses beyond
+ * public contract identifiers.
+ *
+ * A transfer can enter a terminal status at most once (partial unique
+ * index), which makes terminal resolution idempotent under concurrency even
+ * if two writers raced past the row lock.
+ */
+export const transferTransitions = pgTable(
+  "transfer_transitions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "cascade" }),
+    fromStatus: varchar("from_status", { length: 32 }).notNull(),
+    toStatus: varchar("to_status", { length: 32 }).notNull(),
+    /** owner (session action), reconciler (provider-evidence advance), operator. */
+    actor: varchar("actor", { length: 16 }).notNull(),
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Machine-readable reason, e.g. EXPIRED_UNFUNDED_VERIFIED, PROVIDER_SERVER_FUNDED. */
+    reasonCode: varchar("reason_code", { length: 64 }).notNull(),
+    /** Non-secret evidence snapshot relied on for this transition. */
+    evidence: jsonb("evidence").notNull().default(sql`'{}'::jsonb`),
+    terminal: boolean("terminal").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("transfer_transitions_transfer_idx").on(t.transferId, t.createdAt),
+    uniqueIndex("transfer_transitions_terminal_once").on(t.transferId).where(sql`${t.terminal} = true`),
+    check("transfer_transitions_actor_format", sql`${t.actor} IN ('owner', 'reconciler', 'operator')`),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
 /* route_observations (availability diagnostics, not a pricing promise) */
 /* ------------------------------------------------------------------ */
 

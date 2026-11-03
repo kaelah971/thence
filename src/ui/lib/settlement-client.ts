@@ -179,10 +179,29 @@ export function postHandoffCancel(id: string, opts: Opts = {}): Promise<ApiResul
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/handoff-result`, { ...opts, method: "POST", body: { outcome: "cancelled" } });
 }
 
+/**
+ * P4: owner request to close an expired, never-funded payment. The server
+ * re-proves provider expiry/identity, local history, Nimiq-side records and
+ * on-chain HTLC absence; any doubt keeps the payment open (plain-language
+ * refusal in `message`). No body: the client cannot supply evidence.
+ */
+export function postCloseExpired(id: string, opts: Opts = {}): Promise<ApiResult<{ resolution: { transferId: string; status: TransferStatus; deduplicated: boolean } }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/close-expired`, { ...opts, method: "POST", body: {} });
+}
+
 /** No body is sent: the server derives the swap and claim tx itself. */
 export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiResult<{ settlement: SettlementResult }>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/verify-settlement`, { ...opts, method: "POST", body: {} });
 }
+
+/**
+ * P4 owner copy for EXPIRED_UNFUNDED. Deliberately silent about a NIM
+ * refund: Thence cannot see Nimiq Pay's own swap, so it states only what was
+ * independently verified (nothing reached the provider or Polygon) and where
+ * the owner can check their NIM.
+ */
+export const EXPIRED_UNFUNDED_BODY =
+  "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on Polygon for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
 
 export type ProgressPhase =
   | "waiting-approval"
@@ -192,7 +211,8 @@ export type ProgressPhase =
   | "delivered"
   | "attention"
   | "cancelled"
-  | "refunded";
+  | "refunded"
+  | "expired";
 
 /**
  * Map the authoritative backend status onto customer progress.
@@ -224,6 +244,8 @@ export function progressForStatus(status: string, opts: { receiptReady?: boolean
       return "cancelled";
     case "REFUNDED":
       return "refunded";
+    case "EXPIRED_UNFUNDED":
+      return "expired";
     default:
       return "attention";
   }
@@ -261,6 +283,10 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
   refunded: {
     title: "Payment refunded",
     body: "The provider refunded this payment. No delivery was confirmed.",
+  },
+  expired: {
+    title: "Payment expired — not delivered",
+    body: EXPIRED_UNFUNDED_BODY,
   },
 };
 

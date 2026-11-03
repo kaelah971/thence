@@ -37,6 +37,12 @@ export interface FakeApi {
   calls: RecordedCall[];
   count(method: string, pathSuffix: string): number;
   set(transferId: string, next: Partial<ServerTransferState>): void;
+  /**
+   * P4: what POST /close-expired answers. "verified" mirrors the server's
+   * successful evidence-gated close (status → EXPIRED_UNFUNDED); a refusal
+   * mirrors its plain-language 409/503 body and leaves the status untouched.
+   */
+  closeOutcome: { kind: "verified" } | { kind: "refused"; status: number; error: string; message: string };
   restore(): void;
 }
 
@@ -168,14 +174,23 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
     }
     if (sub === "provider-evidence" && method === "GET") return json(200, { evidence: providerEvidence(c, s, now) });
     if (sub === "receipt") return json(409, { error: "NOT_DELIVERED" });
+    if (sub === "close-expired" && method === "POST") {
+      const outcome = api.closeOutcome;
+      if (outcome.kind === "refused") return json(outcome.status, { error: outcome.error, message: outcome.message });
+      if (s.status === "EXPIRED_UNFUNDED") return json(200, { resolution: { transferId: id, status: "EXPIRED_UNFUNDED", deduplicated: true } });
+      if (s.status !== "RECONCILING") return json(409, { error: "NOT_RESOLVABLE", message: "This payment can't be closed this way. Check its status in Activity." });
+      state[id] = { ...s, status: "EXPIRED_UNFUNDED", observedAt: new Date(now).toISOString() };
+      return json(200, { resolution: { transferId: id, status: "EXPIRED_UNFUNDED", deduplicated: false } });
+    }
     // Anything else (claims, cancels, new payments) is outside what these
     // lifecycle tests allow: record it and refuse.
     return json(403, { error: "FORBIDDEN_IN_TEST" });
   };
   globalThis.fetch = vi.fn(handler) as unknown as typeof fetch;
-  return {
+  const api: FakeApi = {
     state,
     calls,
+    closeOutcome: { kind: "verified" },
     count: (method, suffix) => calls.filter((c) => c.method === method && c.path.endsWith(suffix)).length,
     set: (id, next) => {
       state[id] = { ...state[id]!, ...next };
@@ -184,4 +199,5 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
       globalThis.fetch = original;
     },
   };
+  return api;
 }

@@ -1,4 +1,4 @@
-import { USER_FACING_LABEL, type TransferStatus } from "@/domain/transfers";
+import { isTerminal, USER_FACING_LABEL, type TransferStatus } from "@/domain/transfers";
 
 /** Product stages used for grouping, filters and tone. The backend label stays authoritative. */
 export type TransferStage = "ready" | "approval" | "moving" | "checking" | "attention" | "delivered" | "closed";
@@ -10,6 +10,7 @@ export const STAGE_OF: Record<TransferStatus, TransferStage> = {
   QUOTE_EXPIRED: "closed",
   USER_CANCELLED: "closed",
   REFUNDED: "closed",
+  EXPIRED_UNFUNDED: "closed",
   AWAITING_NIM_APPROVAL: "approval",
   LIGHTNING_HANDOFF: "moving",
   CLIENT_FUNDED: "moving",
@@ -51,6 +52,10 @@ export function resumeLabelFor(status: TransferStatus): string | null {
  * never override an unresolved or funded lifecycle status.
  */
 export function canShowCancelUnpaid(status: TransferStatus, expiredUnfundedEvidence: boolean): boolean {
+  // Terminal payments are already closed; nothing to cancel (P4: this
+  // previously re-offered "Cancel unpaid payment" on any non-listed status,
+  // e.g. EXPIRED_UNFUNDED, when the evidence read expired).
+  if (isTerminal(status)) return false;
   if (["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "NEEDS_ATTENTION"].includes(status)) return false;
   return status === "QUOTED" || status === "SWAP_CREATED" || expiredUnfundedEvidence;
 }

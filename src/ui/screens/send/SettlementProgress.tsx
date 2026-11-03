@@ -191,7 +191,7 @@ export function SettlementProgress({
           <Skeleton width="100%" height={60} />
         </div>
       )}
-      {state.phase !== "idle" && state.phase !== "delivered" && state.phase !== "refunded" && (
+      {state.phase !== "idle" && state.phase !== "delivered" && state.phase !== "refunded" && state.phase !== "expired" && (
         <p className={styles.ctaNote}>
           <AssetMark asset={destination.asset} size={14} /> {destination.network} · Checking payment — do not resend.
         </p>

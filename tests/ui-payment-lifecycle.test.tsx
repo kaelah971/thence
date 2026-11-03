@@ -243,30 +243,75 @@ describe("Activity — the two real incident payments", () => {
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
   });
 
-  it("stale eddaa6de: evidence says 'EXPIRED — SAFE TO CLOSE' while the payment says 'do not resend' and offers no way to close", async () => {
+  it("stale eddaa6de: before evidence is checked it stays 'checking — do not resend' with no close action", async () => {
     vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
     api = installFakeApi({ [STALE.transfer.id]: { status: "RECONCILING", providerStatus: "expired", observedAt: STALE.observations[2]!.observed_at } });
     await openActivityDetail(/Someone new/);
     expect(screen.getAllByText(/Checking your payment — do not resend/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Close expired payment" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     await advance(0);
     expect(api.state[STALE.transfer.id]!.status).toBe("RECONCILING");
-
-    fireEvent.click(screen.getByRole("button", { name: "Check payment status" }));
-    await advance(0);
-    expect(screen.getByText("Funding evidence: EXPIRED — SAFE TO CLOSE")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Cancel unpaid payment" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Resume payment|Continue to approval/ })).toBeNull();
-    expect(api.calls.some((c) => c.path.endsWith("/handoff-result"))).toBe(false);
+    expect(screen.queryByRole("button", { name: /Resume payment|Continue to approval|Cancel unpaid payment/ })).toBeNull();
+    expect(api.calls.some((c) => c.path.endsWith("/handoff-result") || c.path.endsWith("/close-expired"))).toBe(false);
   });
 
-  it.fails("REQUIRED (P4): an evidence-proven expired-unfunded RECONCILING payment can be safely closed", async () => {
+  // P4 (was it.fails "…can be safely closed"). The action is named "Close
+  // expired payment", not "Cancel unpaid payment": this payment was approved,
+  // so "cancel" would misdescribe what happened.
+  it("P4: an evidence-proven expired-unfunded RECONCILING payment can be safely closed, with honest copy", async () => {
     vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
     api = installFakeApi({ [STALE.transfer.id]: { status: "RECONCILING", providerStatus: "expired", observedAt: STALE.observations[2]!.observed_at } });
     await openActivityDetail(/Someone new/);
     fireEvent.click(screen.getByRole("button", { name: "Check payment status" }));
     await advance(0);
-    expect(screen.getByRole("button", { name: "Cancel unpaid payment" })).toBeTruthy();
+    expect(screen.getByText("Funding evidence: EXPIRED — SAFE TO CLOSE")).toBeTruthy();
+    // No contradiction any more: the "do not resend" banner gives way to one clear explanation.
+    expect(screen.getByText("This payment expired before any money moved")).toBeTruthy();
+    expect(screen.queryByText(/Checking your payment — do not resend/)).toBeNull();
+    const closeButton = screen.getByRole("button", { name: "Close expired payment" });
+    expect(screen.queryByRole("button", { name: "Cancel unpaid payment" })).toBeNull();
+
+    fireEvent.click(closeButton);
+    await advance(0);
+    expect(api.count("POST", "/close-expired")).toBe(1);
+    expect(api.state[STALE.transfer.id]!.status).toBe("EXPIRED_UNFUNDED");
+    expect(screen.getAllByText("Payment expired — not delivered").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Closed\. Nothing reached their network/)).toBeTruthy();
+    // Never a NIM refund claim; points to Nimiq Pay's own timeout instead.
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/Nimiq Pay releases it back to you when its own timeout ends/);
+    expect(text).not.toMatch(/NIM (was|has been) refunded|refund(ed)? your NIM/i);
+    expect(screen.queryByRole("button", { name: "Close expired payment" })).toBeNull();
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+  });
+
+  it("P4: a server refusal keeps the payment open and shows the plain-language reason", async () => {
+    vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
+    api = installFakeApi({ [STALE.transfer.id]: { status: "RECONCILING", providerStatus: "expired", observedAt: STALE.observations[2]!.observed_at } });
+    api.closeOutcome = {
+      kind: "refused",
+      status: 409,
+      error: "NIM_FUNDING_RECORDED",
+      message: "A NIM payment is recorded for this payment, and Thence can't confirm it came back. It stays open for review.",
+    };
+    await openActivityDetail(/Someone new/);
+    fireEvent.click(screen.getByRole("button", { name: "Check payment status" }));
+    await advance(0);
+    fireEvent.click(screen.getByRole("button", { name: "Close expired payment" }));
+    await advance(0);
+    expect(screen.getByText(/Thence can't confirm it came back\. It stays open for review\./)).toBeTruthy();
+    expect(api.state[STALE.transfer.id]!.status).toBe("RECONCILING");
+    expect(screen.queryByText("Payment expired — not delivered")).toBeNull();
+  });
+
+  it("P4: an already-closed EXPIRED_UNFUNDED payment shows the closed state and no actions", async () => {
+    vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
+    api = installFakeApi({ [STALE.transfer.id]: { status: "EXPIRED_UNFUNDED", providerStatus: "expired", observedAt: "2026-11-03T12:59:00.000Z" } });
+    await openActivityDetail(/Someone new/);
+    expect(screen.getAllByText("Payment expired — not delivered").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Expired — not delivered").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Check for updates|Close expired payment|Cancel unpaid payment|Finish delivery/ })).toBeNull();
   });
 });

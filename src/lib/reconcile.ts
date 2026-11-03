@@ -40,6 +40,7 @@ import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { verifyEvmRefundEvidence } from "@/lib/settlement";
+import { recordPath } from "@/lib/transitions";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -69,7 +70,14 @@ const REFUND_NEGATIVE = new Set([
 export type ReconcileDecision =
   | { action: "none"; reason: string }
   | { action: "advance"; path: TransferStatus[]; reason: string }
-  | { action: "needs-attention"; path: TransferStatus[]; reason: string };
+  | { action: "needs-attention"; path: TransferStatus[]; reason: string }
+  /**
+   * P4: a terminal exit EXISTS but must never be applied by reconciliation
+   * itself. Only the owner-initiated, evidence-gated resolution in
+   * src/lib/expiry-resolution.ts may take it, after re-proving provider
+   * identity, local history, Nimiq-side records and on-chain HTLC absence.
+   */
+  | { action: "evidence-gated-close"; path: TransferStatus[]; reason: string };
 
 /**
  * Pure status-mapping: provider milestone → legal internal path.
@@ -129,6 +137,13 @@ export function planReconciliation(
 
   if (providerStatus === "pending" || providerStatus === "clientfundingseen") {
     return { action: "none", reason: "No provider-confirmed milestone yet." };
+  }
+  if (providerStatus === "expired" && current === "RECONCILING") {
+    return {
+      action: "evidence-gated-close",
+      path: ["EXPIRED_UNFUNDED"],
+      reason: "Provider swap expired; closing requires independent no-funding evidence (owner action).",
+    };
   }
   if (providerStatus === "expired") {
     // Reconciliation is intentionally read-only with respect to terminal
@@ -322,6 +337,25 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       const final = advanced[advanced.length - 1];
       if (final) {
         await tx.update(transfers).set({ status: final, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+        // P4 audit: same transaction as the status write.
+        await recordPath(
+          tx,
+          {
+            transferId: transfer.id,
+            actor: "reconciler",
+            actorUserId: userId,
+            reasonCode: `PROVIDER_${providerStatus.toUpperCase()}`,
+            evidence: {
+              providerStatus,
+              decision: decision.action,
+              evmFundTxid: facts.evmFundTxid ?? null,
+              evmClaimTxid: facts.evmClaimTxid ?? null,
+              refundVerified: REFUNDED_PROVIDER_STATUSES.has(providerStatus) ? true : null,
+            },
+          },
+          current,
+          advanced,
+        );
       }
     }
     await recordObservation(tx, transfer.id, attachment.satoraSwapId, {

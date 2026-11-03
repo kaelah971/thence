@@ -96,6 +96,13 @@ export interface ChainReads {
   getFinalizedBlockNumber(chainId: number): Promise<bigint | null>;
   /** Block hash at a height (reorg detection); null when unavailable. */
   getBlockHash(chainId: number, blockNumber: bigint): Promise<string | null>;
+  /** P4: block timestamp in unix seconds. Optional: absent means "cannot scan". */
+  getBlockTimestamp?(chainId: number, blockNumber: bigint): Promise<number>;
+  /**
+   * P4: logs emitted by `address` whose topic[1] equals `topic1` in an
+   * inclusive block range. Optional: absent means "cannot scan".
+   */
+  getLogsByTopic1?(chainId: number, address: string, topic1: string, fromBlock: bigint, toBlock: bigint): Promise<ChainLog[]>;
 }
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -166,6 +173,27 @@ function liveReads(): ChainReads {
       } catch {
         return null;
       }
+    },
+    async getBlockTimestamp(chainId, blockNumber) {
+      const b = await withTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
+      return Number(b.timestamp);
+    },
+    async getLogsByTopic1(chainId, address, topic1, fromBlock, toBlock) {
+      const toHex = (n: bigint): Hex => ("0x" + n.toString(16)) as Hex;
+      const raw = (await withTimeout(
+        clientFor(chainId).request({
+          method: "eth_getLogs",
+          params: [{ address: address as Hex, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock), topics: [null, topic1 as Hex] }],
+        }),
+        "getLogs",
+      )) as unknown as Array<{ address: string; topics: string[]; data: string; logIndex: string | null }>;
+      if (!Array.isArray(raw)) throw new Error("Malformed getLogs response.");
+      return raw.map((l) => ({
+        address: l.address,
+        topics: [...l.topics],
+        data: l.data,
+        logIndex: l.logIndex === null ? null : Number(BigInt(l.logIndex)),
+      }));
     },
   };
 }
@@ -251,6 +279,130 @@ export function matchSettlementTransfers(
   }
   indexes.sort((a, b) => a - b);
   return { matched: total >= requiredAtomic && total > 0n, totalAtomic: total, logIndexes: indexes };
+}
+
+/* ------------------------------------------------------------------ */
+/* P4 — independent proof that an HTLC never moved for a hash lock      */
+/* ------------------------------------------------------------------ */
+
+/** eth_getLogs chunk size (public RPCs commonly cap ranges near 2–5k blocks). */
+export const HTLC_LOG_CHUNK_BLOCKS = 2_000n;
+/** Hard bound on one scan, so a request can never fan out unboundedly. */
+export const MAX_HTLC_SCAN_BLOCKS = 40_000n;
+
+export type HtlcActivityVerdict =
+  | "NO_ACTIVITY"
+  | "ACTIVITY_FOUND"
+  | "INSUFFICIENT_CONFIRMATIONS"
+  | "INCONCLUSIVE"
+  | "UNAVAILABLE";
+
+export interface HtlcActivityResult {
+  verdict: HtlcActivityVerdict;
+  reason: string;
+  fromBlock: string | null;
+  toBlock: string | null;
+  latestBlock: string | null;
+  logCount: number;
+  /** topic[0] of each matching log (event signatures only; no data). */
+  eventTopics: string[];
+}
+
+type TimestampReader = (chainId: number, blockNumber: bigint) => Promise<number>;
+
+/** Last block whose timestamp is <= ts (binary search; read-only). */
+async function blockAtOrBefore(getTs: TimestampReader, chainId: number, ts: number, latest: bigint): Promise<bigint | null> {
+  if ((await getTs(chainId, latest)) <= ts) return latest;
+  let lo = 0n;
+  let hi = latest; // invariant: ts(hi) > ts
+  if ((await getTs(chainId, lo)) > ts) return null;
+  while (hi - lo > 1n) {
+    const mid = (lo + hi) / 2n;
+    if ((await getTs(chainId, mid)) <= ts) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Prove that the bound HTLC contract emitted NO event for `hashLock` in the
+ * window [windowStart, windowEnd]. Read-only. Any doubt is not "no activity":
+ * missing chain capabilities, an unbounded range, unreadable chunks or a
+ * window end without the chain's finality depth all return non-NO_ACTIVITY.
+ *
+ * Absence is proven per HTLC address and hash lock (topic[1] of every
+ * HTLCErc20 v6 lifecycle event: fund, redeem, refund).
+ */
+export async function verifyNoHtlcActivity(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  windowStart: Date;
+  windowEnd: Date;
+}): Promise<HtlcActivityResult> {
+  const base = { fromBlock: null, toBlock: null, latestBlock: null, logCount: 0, eventTopics: [] as string[] };
+  if (input.chainId !== 137) return { ...base, verdict: "INCONCLUSIVE", reason: "HTLC scans are enabled only for Polygon in this pilot." };
+  if (!input.htlcAddress || !EVM_ADDRESS_RE.test(input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Missing a valid HTLC address or hash lock to scan." };
+  }
+  if (!(input.windowEnd.getTime() > input.windowStart.getTime())) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window is empty." };
+  }
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess." };
+  }
+  const chain = reads();
+  if (!chain.getBlockTimestamp || !chain.getLogsByTopic1) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs." };
+  }
+  const getTs: TimestampReader = chain.getBlockTimestamp.bind(chain);
+  const getLogs = chain.getLogsByTopic1.bind(chain);
+  try {
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const startTs = Math.floor(input.windowStart.getTime() / 1000);
+    const endTs = Math.ceil(input.windowEnd.getTime() / 1000);
+    const fromBlock = await blockAtOrBefore(getTs, input.chainId, startTs, latest);
+    if (fromBlock === null) return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window starts before chain history." };
+    const endBefore = await blockAtOrBefore(getTs, input.chainId, endTs, latest);
+    if (endBefore === null) return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window end is not resolvable." };
+    // Cover the whole window: include the first block at/after windowEnd.
+    const toBlock = endBefore < latest ? endBefore + 1n : latest;
+    const span = { fromBlock: fromBlock.toString(), toBlock: toBlock.toString(), latestBlock: latest.toString() };
+    if ((await getTs(input.chainId, toBlock)) < endTs) {
+      return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "The chain has not yet reached the end of the scan window." };
+    }
+    const policy = DEFAULT_FINALITY_POLICY[input.chainId]!;
+    if (latest - toBlock + 1n < BigInt(policy.confirmations)) {
+      return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Scan window end does not yet have the required confirmations." };
+    }
+    if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
+      return { ...base, ...span, verdict: "INCONCLUSIVE", reason: "Scan window exceeds the bounded block range." };
+    }
+    const htlc = input.htlcAddress.toLowerCase();
+    const lock = input.hashLock.toLowerCase();
+    const matches: ChainLog[] = [];
+    for (let s = fromBlock; s <= toBlock; s += HTLC_LOG_CHUNK_BLOCKS) {
+      const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > toBlock ? toBlock : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      const logs = await getLogs(input.chainId, input.htlcAddress, input.hashLock, s, e);
+      for (const log of logs) {
+        // Defensive re-filter: never trust the RPC's own filtering for a match.
+        if (log.address.toLowerCase() === htlc && log.topics[1]?.toLowerCase() === lock) matches.push(log);
+      }
+    }
+    if (matches.length > 0) {
+      return {
+        ...span,
+        verdict: "ACTIVITY_FOUND",
+        reason: "The HTLC emitted events for this hash lock; the swap was funded on-chain.",
+        logCount: matches.length,
+        eventTopics: matches.map((l) => (l.topics[0] ?? "").toLowerCase()),
+      };
+    }
+    return { ...span, verdict: "NO_ACTIVITY", reason: "No HTLC event for this hash lock in the finalized scan window.", logCount: 0, eventTopics: [] };
+  } catch {
+    return { ...base, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable." };
+  }
 }
 
 export type RefundVerificationVerdict =
@@ -487,7 +639,7 @@ export async function verifySettlement(userId: string, transferId: string): Prom
 
   // DELIVERED is reachable only from funded/claiming states with evidence.
   if (current !== "CLAIMING" && current !== "SERVER_FUNDED") {
-    if (current === "USER_CANCELLED" || current === "QUOTE_EXPIRED" || current === "FAILED" || current === "NEEDS_ATTENTION") {
+    if (current === "USER_CANCELLED" || current === "QUOTE_EXPIRED" || current === "FAILED" || current === "NEEDS_ATTENTION" || current === "EXPIRED_UNFUNDED") {
       throw new AuthError(409, "NOT_VERIFIABLE", "Transfer is in a terminal or attention state; settlement cannot be verified.");
     }
     return {

@@ -218,9 +218,9 @@ export function useSettlement(): {
         clearPending(input.ownerUserId, input.transferId);
         return;
       }
-      if (phase === "refunded") {
+      if (phase === "refunded" || phase === "expired") {
         setState({
-          phase: "refunded",
+          phase,
           transferId: input.transferId,
           transferStatus: status,
           statusLabel,
