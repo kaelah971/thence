@@ -105,13 +105,18 @@ export interface ChainReads {
   getLogsByTopic1?(chainId: number, address: string, topic1: string, fromBlock: bigint, toBlock: bigint): Promise<ChainLog[]>;
 }
 
-function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+/**
+ * P5 fix: the race is AWAITED before `finally` clears the timer. Previously
+ * the promise was returned un-awaited, so `finally` cleared the timer
+ * immediately and chain reads had no timeout at all.
+ */
+export async function withChainTimeout<T>(promise: Promise<T>, label: string, ms = CHAIN_READ_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    return Promise.race([
+    return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out.`)), CHAIN_READ_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error(`${label} timed out.`)), ms);
       }),
     ]);
   } finally {
@@ -138,11 +143,11 @@ function liveReads(): ChainReads {
   };
   return {
     async getTransaction(chainId, hash) {
-      const tx = await withTimeout(clientFor(chainId).getTransaction({ hash: hash as Hex }), "getTransaction");
+      const tx = await withChainTimeout(clientFor(chainId).getTransaction({ hash: hash as Hex }), "getTransaction");
       return { hash: tx.hash, blockNumber: tx.blockNumber ?? null };
     },
     async getReceipt(chainId, hash) {
-      const r = await withTimeout(clientFor(chainId).getTransactionReceipt({ hash: hash as Hex }), "getReceipt");
+      const r = await withChainTimeout(clientFor(chainId).getTransactionReceipt({ hash: hash as Hex }), "getReceipt");
       return {
         status: r.status === "success" ? "success" : "reverted",
         blockNumber: r.blockNumber,
@@ -156,11 +161,11 @@ function liveReads(): ChainReads {
       };
     },
     async getLatestBlockNumber(chainId) {
-      return withTimeout(clientFor(chainId).getBlockNumber(), "getBlockNumber");
+      return withChainTimeout(clientFor(chainId).getBlockNumber(), "getBlockNumber");
     },
     async getFinalizedBlockNumber(chainId) {
       try {
-        const b = await withTimeout(clientFor(chainId).getBlock({ blockTag: "finalized" }), "getFinalizedBlock");
+        const b = await withChainTimeout(clientFor(chainId).getBlock({ blockTag: "finalized" }), "getFinalizedBlock");
         return b.number ?? null;
       } catch {
         return null;
@@ -168,19 +173,19 @@ function liveReads(): ChainReads {
     },
     async getBlockHash(chainId, blockNumber) {
       try {
-        const b = await withTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
+        const b = await withChainTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
         return b.hash ?? null;
       } catch {
         return null;
       }
     },
     async getBlockTimestamp(chainId, blockNumber) {
-      const b = await withTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
+      const b = await withChainTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
       return Number(b.timestamp);
     },
     async getLogsByTopic1(chainId, address, topic1, fromBlock, toBlock) {
       const toHex = (n: bigint): Hex => ("0x" + n.toString(16)) as Hex;
-      const raw = (await withTimeout(
+      const raw = (await withChainTimeout(
         clientFor(chainId).request({
           method: "eth_getLogs",
           params: [{ address: address as Hex, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock), topics: [null, topic1 as Hex] }],
@@ -205,8 +210,25 @@ export function setSettlementChainForTests(overrides: ChainReads | null): void {
   chainOverrides = overrides;
 }
 
+/**
+ * P5: every chain read — live or injected — is bounded by the timeout, so a
+ * hung RPC can never stall verification (callers map timeouts to UNAVAILABLE).
+ */
+function bounded(chain: ChainReads): ChainReads {
+  const t = <T,>(p: Promise<T>, label: string) => withChainTimeout(p, label);
+  return {
+    getTransaction: (c, h) => t(chain.getTransaction(c, h), "getTransaction"),
+    getReceipt: (c, h) => t(chain.getReceipt(c, h), "getReceipt"),
+    getLatestBlockNumber: (c) => t(chain.getLatestBlockNumber(c), "getBlockNumber"),
+    getFinalizedBlockNumber: (c) => t(chain.getFinalizedBlockNumber(c), "getFinalizedBlock"),
+    getBlockHash: (c, n) => t(chain.getBlockHash(c, n), "getBlock"),
+    ...(chain.getBlockTimestamp ? { getBlockTimestamp: (c: number, n: bigint) => t(chain.getBlockTimestamp!(c, n), "getBlock") } : {}),
+    ...(chain.getLogsByTopic1 ? { getLogsByTopic1: (c: number, a: string, l: string, f: bigint, e: bigint) => t(chain.getLogsByTopic1!(c, a, l, f, e), "getLogs") } : {}),
+  };
+}
+
 function reads(): ChainReads {
-  return chainOverrides ?? liveReads();
+  return bounded(chainOverrides ?? liveReads());
 }
 
 /** Test seam: drop cached viem clients (isolated RPC configuration). */
