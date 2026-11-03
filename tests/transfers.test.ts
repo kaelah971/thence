@@ -52,7 +52,7 @@ describe("transfer transition policy (B0 — PRD §9)", () => {
   });
 
   it("terminal states have no outgoing edges", () => {
-    for (const s of ["QUOTE_EXPIRED", "USER_CANCELLED", "DELIVERED", "FAILED"] as const) {
+    for (const s of ["QUOTE_EXPIRED", "USER_CANCELLED", "REFUNDED", "DELIVERED", "FAILED"] as const) {
       expect(TRANSITIONS[s]).toEqual([]);
       expect(isTerminal(s)).toBe(true);
     }

@@ -218,6 +218,22 @@ export function useSettlement(): {
         clearPending(input.ownerUserId, input.transferId);
         return;
       }
+      if (phase === "refunded") {
+        setState({
+          phase: "refunded",
+          transferId: input.transferId,
+          transferStatus: status,
+          statusLabel,
+          providerStatus: view.latest.providerStatus,
+          claimReady: false,
+          message: copy.body,
+          receipt: null,
+          verifyVerdict: null,
+        });
+        clearClaimRecord(input.transferId, input.ownerUserId);
+        clearPending(input.ownerUserId, input.transferId);
+        return;
+      }
       if (phase === "attention") {
         setState({
           phase: "attention",

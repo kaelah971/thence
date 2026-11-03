@@ -9,6 +9,7 @@ export const STAGE_OF: Record<TransferStatus, TransferStage> = {
   SWAP_CREATED: "ready",
   QUOTE_EXPIRED: "closed",
   USER_CANCELLED: "closed",
+  REFUNDED: "closed",
   AWAITING_NIM_APPROVAL: "approval",
   LIGHTNING_HANDOFF: "moving",
   CLIENT_FUNDED: "moving",

@@ -43,6 +43,7 @@ describe("owner payment status evidence", () => {
     expect(providerEvidenceDisposition({ ...base, invoiceExpired: true, providerStatus: "expired", hasEvmFundingTx: true })).toBe("FUNDING_DETECTED");
     expect(providerEvidenceDisposition({ ...base, providerStatus: "clientfunded" })).toBe("FUNDING_DETECTED");
     expect(providerEvidenceDisposition({ ...base, providerStatus: "serverredeemed", hasEvmClaimTx: false })).toBe("SETTLEMENT_DETECTED");
+    expect(providerEvidenceDisposition({ ...base, providerStatus: "clientrefunded" })).toBe("REFUNDED");
     expect(providerEvidenceDisposition({ ...base, providerStatus: "clientfundedserverrefunded", hasEvmFundingTx: true, hasEvmClaimTx: true })).toBe("REFUNDED");
     expect(providerStatusLabel("clientfundedserverrefunded")).toBe("Refunded after funding");
     expect(providerEvidenceDisposition({ ...base, identityMatch: false, providerStatus: "clientfunded" })).toBe("UNKNOWN");

@@ -21,7 +21,7 @@ import styles from "./send.module.css";
  * Read-only tracking starts on mount (bounded, visibility-aware, cleaned
  * up on unmount). "Delivered" renders only with the backend-confirmed
  * immutable receipt — never from invoice, funding, claim or broadcast.
- * The claim control stays behind the claim gate (OFF in this milestone).
+ * The claim control stays behind the owner/session/recovery claim gate.
  */
 export function SettlementProgress({
   transferId,
@@ -118,7 +118,7 @@ export function SettlementProgress({
             {claiming ? "Checking delivery…" : "Finish delivery"}
           </Button>
           <p className={styles.ctaNote}>
-            <Icon name="lock" size={14} /> Finishing delivery is paused in this preview. If a payment is on its way, follow it in Activity \u2014 don\u2019t try again.
+            <Icon name="lock" size={14} /> One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.
           </p>
         </>
       )}
@@ -191,7 +191,7 @@ export function SettlementProgress({
           <Skeleton width="100%" height={60} />
         </div>
       )}
-      {state.phase !== "idle" && state.phase !== "delivered" && (
+      {state.phase !== "idle" && state.phase !== "delivered" && state.phase !== "refunded" && (
         <p className={styles.ctaNote}>
           <AssetMark asset={destination.asset} size={14} /> {destination.network} · Checking payment — do not resend.
         </p>

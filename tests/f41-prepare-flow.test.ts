@@ -147,6 +147,17 @@ describe("quote expiration blocks preparation", () => {
     expect(issue.retryable).toBe(true);
   });
 
+  it("maps an exposure-blocked fresh intent to a local stop without an Activity detour", () => {
+    const issue = classifyPreparationFailure({ kind: "http", code: "PILOT_EXPOSURE_LIMIT" });
+    expect(issue).toMatchObject({
+      title: "Another payment is still being checked",
+      retryable: false,
+      action: "abort",
+    });
+    expect(issue.body).toMatch(/was not prepared/i);
+    expect(issue.action).not.toBe("resume");
+  });
+
   it("maps a pilot-capped duplicate create to continue-instead-of-restart", () => {
     const issue = classifyPreparationFailure({ kind: "invalid", code: "PILOT_ATTEMPTS_EXCEEDED" });
     expect(issue.title).toBe("You already have this payment in progress");

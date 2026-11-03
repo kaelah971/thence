@@ -209,7 +209,7 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
  * the swap + preimage from its own storage and reveals it server-side.
  * Only public facts are returned. Throws on transport/SDK failure so
  * callers report unknown and reconcile instead of retrying blindly.
- * Funded execution stays behind the claim gate (OFF in this milestone).
+ * Funded execution stays behind the explicit owner/recovery claim gate.
  */
 export async function claimStoredSwap(swapId: string): Promise<ClaimOutcome> {
   if (!swapId) throw new Error("Missing swap id.");

@@ -50,15 +50,19 @@ const MAIN_LINE: TransferStatus[] = [
   "CLAIMING",
 ];
 
-const REFUND_NEGATIVE = new Set([
+const REFUNDED_PROVIDER_STATUSES = new Set([
   "clientrefunded",
-  "clientinvalidfunded",
-  "clientfundedtoolate",
-  "serverwontfund",
   "clientfundedserverrefunded",
   "clientrefundedserverfunded",
   "clientrefundedserverrefunded",
   "clientredeemedandclientrefunded",
+]);
+
+const REFUND_NEGATIVE = new Set([
+  ...REFUNDED_PROVIDER_STATUSES,
+  "clientinvalidfunded",
+  "clientfundedtoolate",
+  "serverwontfund",
 ]);
 
 export type ReconcileDecision =
@@ -113,6 +117,14 @@ export function planReconciliation(
     if (current === "AWAITING_NIM_APPROVAL") return ["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "NEEDS_ATTENTION"];
     return null;
   };
+  const walkToRefunded = (): TransferStatus[] | null => {
+    if (current === "REFUNDED") return [];
+    if (canTransition(current, "REFUNDED")) return ["REFUNDED"];
+    if (current === "OUTCOME_UNKNOWN") return ["RECONCILING", "REFUNDED"];
+    if (current === "LIGHTNING_HANDOFF") return ["OUTCOME_UNKNOWN", "RECONCILING", "REFUNDED"];
+    if (current === "AWAITING_NIM_APPROVAL") return ["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "REFUNDED"];
+    return null;
+  };
 
   if (providerStatus === "pending" || providerStatus === "clientfundingseen") {
     return { action: "none", reason: "No provider-confirmed milestone yet." };
@@ -122,6 +134,11 @@ export function planReconciliation(
     // retirement. The owner Close action performs the stricter identity and
     // no-funding proof before releasing this transfer's exposure.
     return { action: "none", reason: "Provider swap expired; no funding milestone to advance." };
+  }
+  if (REFUNDED_PROVIDER_STATUSES.has(providerStatus)) {
+    const path = walkToRefunded();
+    if (!path) return { action: "none", reason: "No legal refund path from current state." };
+    return { action: "advance", path, reason: `Provider reports terminal refund ${providerStatus}.` };
   }
   if (REFUND_NEGATIVE.has(providerStatus)) {
     const path = walkToNeedsAttention();

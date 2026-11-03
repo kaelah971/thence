@@ -177,7 +177,7 @@ export function Activity(): React.JSX.Element {
   );
 }
 
-const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "FAILED"]);
+const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED"]);
 
 /** Re-reads the transfer so the sheet shows the latest server status. */
 function LiveTransferDetail({

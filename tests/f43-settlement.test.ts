@@ -149,12 +149,13 @@ describe("customer progress never overstates the backend state", () => {
     expect(progressForStatus("FAILED")).toBe("attention");
     expect(progressForStatus("USER_CANCELLED")).toBe("cancelled");
     expect(progressForStatus("QUOTE_EXPIRED")).toBe("cancelled");
+    expect(progressForStatus("REFUNDED")).toBe("refunded");
     expect(progressForStatus("SOMETHING_NEW")).toBe("attention");
     // Unknown outcomes are never collapsed into failed/cancelled.
     expect(["checking", "on-its-way", "finishing"]).toContain(progressForStatus("OUTCOME_UNKNOWN"));
     expect(progressForStatus("OUTCOME_UNKNOWN")).not.toBe("cancelled");
     // Every phase has everyday-language copy.
-    for (const phase of ["waiting-approval", "on-its-way", "checking", "finishing", "delivered", "attention", "cancelled"] as const) {
+    for (const phase of ["waiting-approval", "on-its-way", "checking", "finishing", "delivered", "attention", "cancelled", "refunded"] as const) {
       expect(progressCopy(phase).title.length).toBeGreaterThan(0);
       expect(progressCopy(phase).body.length).toBeGreaterThan(0);
     }

@@ -41,10 +41,10 @@
  * OFF independently: this gate alone never authorizes a host payment.
  * Blocked attempts throw AuthError (403 PILOT_*, never a zero or silent pass).
  */
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { AuthError } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { handoffAttempts, pilotControls, transfers, users } from "@/db/schema";
+import { handoffAttempts, pilotControls, reconciliationObservations, transfers, users } from "@/db/schema";
 import { normalizeNimiqAddress } from "@/lib/nimiq";
 import type { TransferStatus } from "@/domain/transfers";
 
@@ -139,6 +139,13 @@ const FUNDING_ACTIVE_EXPOSURE: ReadonlySet<TransferStatus> = new Set([
   "NEEDS_ATTENTION",
 ]);
 const ACTUAL_SPEND: ReadonlySet<TransferStatus> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "DELIVERED"]);
+const REFUNDED_PROVIDER_STATUSES = new Set([
+  "clientrefunded",
+  "clientfundedserverrefunded",
+  "clientrefundedserverfunded",
+  "clientrefundedserverrefunded",
+  "clientredeemedandclientrefunded",
+]);
 
 export function isFundingExposureStatus(status: string): boolean {
   return FUNDING_ACTIVE_EXPOSURE.has(status as TransferStatus);
@@ -146,6 +153,35 @@ export function isFundingExposureStatus(status: string): boolean {
 
 export function isActualSpendStatus(status: string): boolean {
   return ACTUAL_SPEND.has(status as TransferStatus);
+}
+
+/**
+ * A pre-delivery transfer may still carry SERVER_FUNDED/NEEDS_ATTENTION in an
+ * older row even after a later read observed a terminal provider refund. Use
+ * the latest stored observation to release that stale exposure without ever
+ * discounting a DELIVERED transfer.
+ */
+async function latestRefundedBeforeDelivery(
+  db: Pick<PilotDb, "select">,
+  rows: ReadonlyArray<{ id: string; status: string }>,
+): Promise<Set<string>> {
+  const ids = rows.map((row) => row.id);
+  if (ids.length === 0) return new Set();
+  const observations = await db
+    .select({ transferId: reconciliationObservations.transferId, providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind, observedAt: reconciliationObservations.observedAt })
+    .from(reconciliationObservations)
+    .where(inArray(reconciliationObservations.transferId, ids));
+  const latest = new Map<string, { providerStatus: string; kind: string; observedAt: number }>();
+  for (const observation of observations) {
+    const current = latest.get(observation.transferId);
+    const observedAt = observation.observedAt.getTime();
+    if (!current || observedAt > current.observedAt) latest.set(observation.transferId, { providerStatus: observation.providerStatus, kind: observation.kind, observedAt });
+  }
+  return new Set(
+    rows
+      .filter((row) => row.status !== "DELIVERED" && latest.get(row.id)?.kind === "observation" && REFUNDED_PROVIDER_STATUSES.has(latest.get(row.id)?.providerStatus ?? ""))
+      .map((row) => row.id),
+  );
 }
 
 /** Per-owner pilot mutex: serializes creation and exposure reservation
@@ -303,16 +339,17 @@ export async function assertPilotBudget(
     return;
   }
   const rows = await db
-    .select({ amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
+    .select({ id: transfers.id, amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)
     .where(eq(transfers.ownerUserId, userId));
   const mine = rows.filter((r) => r.routeId === PILOT_ROUTE_ID && /^\d+$/.test(r.amount));
+  const refunded = await latestRefundedBeforeDelivery(db, mine);
   // Only provider-confirmed or delivered spend consumes the aggregate spend
-  // ceiling here. Uncertain exposure is checked before preparation, where a
-  // new swap/invoice would otherwise be created.
+  // ceiling here. A stored terminal refund releases a stale pre-delivery row;
+  // uncertain exposure is checked separately before preparation.
   let total = BigInt(newAtomic);
   for (const r of mine) {
-    if (isActualSpendStatus(r.status)) total += BigInt(r.amount);
+    if (isActualSpendStatus(r.status) && !refunded.has(r.id)) total += BigInt(r.amount);
   }
   if (total > BigInt(config.maxSpendAtomic)) {
     throw new AuthError(403, "PILOT_SPEND_EXCEEDED", "Pilot total spend limit reached.");
@@ -347,6 +384,7 @@ export async function assertFundingExposure(
     .from(transfers)
     .where(eq(transfers.ownerUserId, userId));
   const mine = rows.filter((r) => (!pilotArmed || r.routeId === PILOT_ROUTE_ID) && /^\d+$/.test(r.amount));
+  const refunded = await latestRefundedBeforeDelivery(db, mine);
   const byId = new Map(mine.map((row) => [row.id, row]));
   const reservations = await db
     .select({ transferId: handoffAttempts.transferId })
@@ -356,7 +394,7 @@ export async function assertFundingExposure(
     );
   const exposed = new Set<string>();
   for (const row of mine) {
-    if (row.id !== excludeTransferId && isFundingExposureStatus(row.status)) exposed.add(row.id);
+    if (row.id !== excludeTransferId && isFundingExposureStatus(row.status) && !refunded.has(row.id)) exposed.add(row.id);
   }
   for (const reservation of reservations) {
     const reservedTransfer = byId.get(reservation.transferId);
@@ -386,7 +424,7 @@ export async function assertFundingExposure(
     let potential = BigInt(newAtomic);
     for (const row of mine) {
       if (row.id === excludeTransferId) continue;
-      if (isActualSpendStatus(row.status) || exposed.has(row.id)) potential += BigInt(row.amount);
+      if ((isActualSpendStatus(row.status) && !refunded.has(row.id)) || exposed.has(row.id)) potential += BigInt(row.amount);
     }
     if (potential > BigInt(config.maxSpendAtomic)) {
       throw new AuthError(403, "PILOT_SPEND_EXCEEDED", "This payment would exceed the remaining pilot exposure limit.");

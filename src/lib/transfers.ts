@@ -25,14 +25,15 @@ import { and, count, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
-import { paymentRequests, recipientDestinations, recipients, transfers } from "@/db/schema";
+import { paymentRequests, reconciliationObservations, recipientDestinations, recipients, transfers } from "@/db/schema";
 
-import { assertPilotBudget, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
+import { assertFundingExposure, assertPilotBudget, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
 import { isAtomicAmount, parseAtomicAmount } from "@/domain/money";
 import {
   TRANSFER_STATUSES,
   USER_FACING_LABEL,
   canTransition,
+  isTerminal,
   type TransferStatus,
 } from "@/domain/transfers";
 import { pairForRouteId } from "@/domain/routes";
@@ -140,6 +141,14 @@ export interface TransferView {
 type Db = ReturnType<typeof getDb>;
 type TransferRow = typeof transfers.$inferSelect;
 
+const REFUNDED_PROVIDER_STATUSES = new Set([
+  "clientrefunded",
+  "clientfundedserverrefunded",
+  "clientrefundedserverfunded",
+  "clientrefundedserverrefunded",
+  "clientredeemedandclientrefunded",
+]);
+
 function quoteSnapshotOf(row: TransferRow): QuoteSnapshot | null {
   if (!row.quotedAt || !row.quotedNetTargetAtomic || !row.quotedSourceSats) return null;
   return {
@@ -163,10 +172,20 @@ async function toView(db: Db, row: TransferRow): Promise<TransferView> {
     const req = await db.select({ publicId: paymentRequests.publicId }).from(paymentRequests).where(eq(paymentRequests.id, row.requestId)).limit(1);
     requestPublicId = req[0]?.publicId ?? null;
   }
+  let displayStatus = row.status as TransferStatus;
+  if (!isTerminal(displayStatus)) {
+    const latest = await db
+      .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind })
+      .from(reconciliationObservations)
+      .where(eq(reconciliationObservations.transferId, row.id))
+      .orderBy(desc(reconciliationObservations.observedAt))
+      .limit(1);
+    if (latest[0]?.kind === "observation" && REFUNDED_PROVIDER_STATUSES.has(latest[0]?.providerStatus ?? "")) displayStatus = "REFUNDED";
+  }
   return {
     id: row.id,
-    status: row.status as TransferStatus,
-    statusLabel: USER_FACING_LABEL[row.status as TransferStatus] ?? row.status,
+    status: displayStatus,
+    statusLabel: USER_FACING_LABEL[displayStatus] ?? displayStatus,
     routeId: row.routeId,
     recipientName: row.recipientName,
     asset: row.targetAsset,
@@ -377,6 +396,10 @@ export async function createTransfer(
     const config = getPilotConfig();
     assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress }, config);
     await assertPilotBudget(userId, intent.targetAmountAtomic, config);
+    // Fail before creating a durable QUOTED placeholder when the owner has no
+    // remaining exposure slot. The transaction below repeats this check under
+    // the owner lock so a concurrent create cannot race past the preflight.
+    await assertFundingExposure(userId, intent.targetAmountAtomic, config);
     // F8.2 KEY 2: database kill switch. Checked BEFORE the live quote so a
     // stopped pilot never reaches the provider.
     await assertPilotDbEnabled(config);
@@ -401,6 +424,10 @@ export async function createTransfer(
       // so an emergency stop landing between the pre-quote gate and the
       // insert still blocks the insert (fail-closed).
       await assertPilotDbEnabled(txConfig, tx);
+      // The preflight is only an early user-facing failure. Repeat the
+      // exposure check under the same owner lock to keep two fresh intents
+      // from both creating placeholders when only one slot remains.
+      await assertFundingExposure(userId, intent.targetAmountAtomic, txConfig, tx);
       return tx
         .insert(transfers)
         .values({

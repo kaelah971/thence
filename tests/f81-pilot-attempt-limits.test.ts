@@ -20,12 +20,12 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { pilotControls, transfers, users } from "@/db/schema";
+import { pilotControls, reconciliationObservations, transfers, users } from "@/db/schema";
 import { POST as preparePost } from "../app/api/transfers/[id]/prepare/route";
 import { GET as reconciliationGet } from "../app/api/transfers/[id]/reconciliation/route";
 import { isLiveTestingEnabled } from "./test-db";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
-import { POST as createTransferPost } from "../app/api/transfers/route";
+import { GET as transfersGet, POST as createTransferPost } from "../app/api/transfers/route";
 
 const createdUserIds: string[] = [];
 afterAll(async () => {
@@ -149,23 +149,14 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
       expect(prepared.status).toBe(201);
 
       const second = await createDirect(me.cookie, "first", "t2", "300000");
-      expect(second.status).toBe(201);
-      const blocked = await preparePost(
-        postJson(
-          `http://localhost/api/transfers/${second.body.transfer.id}/prepare`,
-          { expectedQuoteRevision: 1 },
-          { cookie: me.cookie, ...withClient("second-prepare") },
-        ),
-        { params: Promise.resolve({ id: second.body.transfer.id }) },
-      );
-      expect(blocked.status).toBe(409);
-      expect((await blocked.json()).error).toBe("PILOT_EXPOSURE_LIMIT");
+      expect(second.status).toBe(409);
+      expect(second.body.error).toBe("PILOT_EXPOSURE_LIMIT");
 
       const replay = await createDirect(me.cookie, "first", "t1", "300000");
       expect(replay.status).toBe(200);
       expect(replay.body.deduplicated).toBe(true);
       expect(replay.body.transfer?.id).toBe(first.body.transfer?.id);
-      expect(await ownerTransferCount(me.userId)).toBe(2);
+      expect(await ownerTransferCount(me.userId)).toBe(1);
     } finally {
       restoreEnv(saved);
       await disarmDb();
@@ -196,6 +187,36 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
         { params: Promise.resolve({ id: second.body.transfer.id }) },
       );
       expect(secondPrepared.status).toBe(201);
+      expect(await ownerTransferCount(me.userId)).toBe(2);
+    } finally {
+      restoreEnv(saved);
+      await disarmDb();
+    }
+  });
+
+  it("releases a stale funded row after the latest provider refund evidence", async () => {
+    const saved = snapshotEnv();
+    try {
+      const me = await login("refund-release");
+      await armFor(me.address, { THENCE_PILOT_MAX_TRANSFERS: "1", THENCE_PILOT_MAX_SPEND_ATOMIC: "300000" });
+      const refunded = await createDirect(me.cookie, "refund-release", "refunded", "300000");
+      expect(refunded.status).toBe(201);
+      await getDb().update(transfers).set({ status: "SERVER_FUNDED" }).where(eq(transfers.id, refunded.body.transfer.id));
+      await getDb().insert(reconciliationObservations).values({
+        transferId: refunded.body.transfer.id,
+        satoraSwapId: "swap-refunded",
+        providerStatus: "clientfundedserverrefunded",
+        kind: "observation",
+      });
+      const listed = await transfersGet(new Request("http://localhost/api/transfers", { headers: { cookie: me.cookie } }));
+      const listedBody = (await listed.json()) as { transfers: Array<{ id: string; status: string; statusLabel: string }> };
+      expect(listedBody.transfers.find((row) => row.id === refunded.body.transfer.id)).toMatchObject({
+        status: "REFUNDED",
+        statusLabel: "Payment refunded — no delivery",
+      });
+
+      const fresh = await createDirect(me.cookie, "refund-release", "fresh", "300000");
+      expect(fresh.status).toBe(201);
       expect(await ownerTransferCount(me.userId)).toBe(2);
     } finally {
       restoreEnv(saved);

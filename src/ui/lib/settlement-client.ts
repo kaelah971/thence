@@ -128,7 +128,7 @@ const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
  */
 export function providerEvidenceDisposition(evidence: ProviderEvidence | null): ProviderEvidenceDisposition {
   if (!evidence || !evidence.identityMatch) return "UNKNOWN";
-  if (evidence.providerStatus === "clientfundedserverrefunded" || evidence.providerStatus === "clientrefundedserverfunded" || evidence.providerStatus === "clientrefundedserverrefunded" || evidence.providerStatus === "clientredeemedandclientrefunded") return "REFUNDED";
+  if (evidence.providerStatus === "clientrefunded" || evidence.providerStatus === "clientfundedserverrefunded" || evidence.providerStatus === "clientrefundedserverfunded" || evidence.providerStatus === "clientrefundedserverrefunded" || evidence.providerStatus === "clientredeemedandclientrefunded") return "REFUNDED";
   if (evidence.hasEvmClaimTx || SETTLEMENT_STATUSES.has(evidence.providerStatus)) return "SETTLEMENT_DETECTED";
   if (evidence.hasEvmFundingTx || FUNDING_STATUSES.has(evidence.providerStatus)) return "FUNDING_DETECTED";
   if (evidence.providerStatus === "expired" && evidence.invoiceExpired) return "EXPIRED_UNFUNDED";
@@ -144,6 +144,7 @@ export function providerStatusLabel(status: string): string {
     clientredeeming: "Claim in progress",
     clientredeemed: "Claimed",
     serverredeemed: "Settled",
+    clientrefunded: "Refunded",
     clientfundedserverrefunded: "Refunded after funding",
     clientrefundedserverfunded: "Refunded after funding",
     clientrefundedserverrefunded: "Refunded",
@@ -190,7 +191,8 @@ export type ProgressPhase =
   | "finishing"
   | "delivered"
   | "attention"
-  | "cancelled";
+  | "cancelled"
+  | "refunded";
 
 /**
  * Map the authoritative backend status onto customer progress.
@@ -220,6 +222,8 @@ export function progressForStatus(status: string, opts: { receiptReady?: boolean
     case "USER_CANCELLED":
     case "QUOTE_EXPIRED":
       return "cancelled";
+    case "REFUNDED":
+      return "refunded";
     default:
       return "attention";
   }
@@ -253,6 +257,10 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
   cancelled: {
     title: "Payment cancelled",
     body: "This payment was cancelled. The server confirmed no settlement.",
+  },
+  refunded: {
+    title: "Payment refunded",
+    body: "The provider refunded this payment. No delivery was confirmed.",
   },
 };
 

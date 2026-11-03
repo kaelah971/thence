@@ -9,6 +9,8 @@ import {
   DEFAULT_MAX_TARGET_ATOMIC,
   assertPilotIntent,
   canonicalKey,
+  isActualSpendStatus,
+  isFundingExposureStatus,
   getPilotConfig,
 } from "@/lib/pilot";
 
@@ -82,6 +84,12 @@ describe("F8 pilot gate", () => {
     expect(() =>
       assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, misconfigured),
     ).toThrowError(expect.objectContaining({ code: "PILOT_NOT_AUTHORIZED" }));
+  });
+
+  it("releases exposure and spend accounting after a terminal refund", () => {
+    expect(isFundingExposureStatus("REFUNDED")).toBe(false);
+    expect(isActualSpendStatus("REFUNDED")).toBe(false);
+    expect(isFundingExposureStatus("RECONCILING")).toBe(true);
   });
 
   it("matches owner addresses canonically (spacing/case-insensitive)", () => {

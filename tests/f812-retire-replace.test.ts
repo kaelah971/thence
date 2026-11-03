@@ -12,14 +12,15 @@
  *   expired evidence.
  * - Funded/uncertain payments stay open (reconcile, never silent close).
  * - A retired attempt frees exposure without resetting caps:
- *   DELIVERED spend still counts and an active handoff reservation blocks.
+ *   durable creation blocks before a placeholder, DELIVERED spend still counts,
+ *   and an active handoff reservation blocks.
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { handoffAttempts, reconciliationObservations, transfers, users } from "@/db/schema";
 import { setSatoraFetchersForTests } from "@/lib/satora";
-import { assertFundingExposure, assertPilotBudget, getPilotConfig } from "@/lib/pilot";
+import { assertPilotBudget } from "@/lib/pilot";
 
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransferPost } from "../app/api/transfers/route";
@@ -267,7 +268,7 @@ describe.skipIf(!LIVE)("retired attempts free the pilot slot without resetting c
     }
   });
 
-  it("allows a second intent but blocks a second handoff exposure, and delivered spend still counts", async () => {
+  it("blocks a second intent before a placeholder, then preserves caps after replacement", async () => {
     const previous = setRoutes(ROUTES);
     try {
       const { cookie, userId } = await login("cap");
@@ -277,17 +278,50 @@ describe.skipIf(!LIVE)("retired attempts free the pilot slot without resetting c
         { params: Promise.resolve({ id: first.id }) },
       );
       expect(prepared.status).toBe(201);
-      // A quoted second intent is allowed; the exposure gate runs before its
-      // handoff attempt so no second swap or invoice can be created.
-      const second = await createDirect(cookie, "cap", "c2");
-      await expect(
-        assertFundingExposure(userId, "300000", getPilotConfig({ THENCE_PILOT_ENABLED: "0" }), getDb(), second.id),
-      ).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
-      await expect(assertFundingExposure(userId, "300000", armed, getDb(), second.id)).rejects.toMatchObject({ code: "PILOT_EXPOSURE_LIMIT" });
+
+      const blocked = await createTransferPost(
+        postJson(
+          "http://localhost/api/transfers",
+          {
+            routeId: "usdc-polygon",
+            targetAmountAtomic: "300000",
+            recipientName: "Retire",
+            idempotencyKey: `k-${RUN}-c2-blocked`,
+            direct: { asset: "USDC", network: "Polygon", address: EVM_A },
+          },
+          { cookie, ...withClient("mk-cap-blocked") },
+        ),
+      );
+      expect(blocked.status).toBe(409);
+      expect(((await blocked.json()) as { error: string }).error).toBe("PAYMENT_EXPOSURE_UNCERTAIN");
+      expect(await getDb().select({ id: transfers.id }).from(transfers).where(eq(transfers.ownerUserId, userId))).toHaveLength(1);
+
       // A definitive failure releases the exposure reservation, even though
       // its handoff history remains available for audit.
       await getDb().update(transfers).set({ status: "FAILED" }).where(eq(transfers.id, first.id));
-      await expect(assertFundingExposure(userId, "300000", armed, getDb(), second.id)).resolves.toBeUndefined();
+      const second = await createDirect(cookie, "cap", "c2");
+      const secondPrepared = await preparePost(
+        postJson(`http://localhost/api/transfers/${second.id}/prepare`, { expectedQuoteRevision: second.quoteRevision }, { cookie, ...withClient("prepare-cap-2") }),
+        { params: Promise.resolve({ id: second.id }) },
+      );
+      expect(secondPrepared.status).toBe(201);
+
+      const third = await createTransferPost(
+        postJson(
+          "http://localhost/api/transfers",
+          {
+            routeId: "usdc-polygon",
+            targetAmountAtomic: "300000",
+            recipientName: "Retire",
+            idempotencyKey: `k-${RUN}-c3-blocked`,
+            direct: { asset: "USDC", network: "Polygon", address: EVM_A },
+          },
+          { cookie, ...withClient("mk-cap-blocked-2") },
+        ),
+      );
+      expect(third.status).toBe(409);
+      expect(((await third.json()) as { error: string }).error).toBe("PAYMENT_EXPOSURE_UNCERTAIN");
+
       // Delivered money keeps counting toward the independent spend ceiling.
       await getDb().update(transfers).set({ status: "DELIVERED" }).where(eq(transfers.id, second.id));
       await expect(assertPilotBudget(userId, "300000", armed)).rejects.toMatchObject({ code: "PILOT_SPEND_EXCEEDED" });

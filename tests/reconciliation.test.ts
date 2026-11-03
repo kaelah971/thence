@@ -152,9 +152,9 @@ describe("reconciliation planning (pure, no I/O)", () => {
     expect(planReconciliation("CLAIMING", "serverredeemed")).toMatchObject({ action: "none" });
     expect(planReconciliation("SERVER_FUNDED", "pending")).toMatchObject({ action: "none" });
   });
-  it("routes refund evidence to NEEDS_ATTENTION without failing", () => {
-    expect(planReconciliation("RECONCILING", "clientrefunded")).toMatchObject({ action: "needs-attention", path: ["NEEDS_ATTENTION"] });
-    expect(planReconciliation("SERVER_FUNDED", "clientfundedserverrefunded")).toMatchObject({ action: "needs-attention", path: ["NEEDS_ATTENTION"] });
+  it("routes terminal refund evidence to REFUNDED without enabling a claim", () => {
+    expect(planReconciliation("RECONCILING", "clientrefunded")).toMatchObject({ action: "advance", path: ["REFUNDED"] });
+    expect(planReconciliation("SERVER_FUNDED", "clientfundedserverrefunded")).toMatchObject({ action: "advance", path: ["REFUNDED"] });
     expect(planReconciliation("CLIENT_FUNDED", "serverwontfund")).toMatchObject({ action: "needs-attention", path: ["NEEDS_ATTENTION"] });
     expect(planReconciliation("LIGHTNING_HANDOFF", "expired")).toMatchObject({ action: "none" });
   });
@@ -165,6 +165,7 @@ describe("reconciliation planning (pure, no I/O)", () => {
     expect(isClaimReady("AWAITING_NIM_APPROVAL", "pending")).toBe(false);
     expect(isClaimReady("SERVER_FUNDED", "pending")).toBe(false);
     expect(isClaimReady("SERVER_FUNDED", "clientfundedserverrefunded")).toBe(false);
+    expect(isClaimReady("REFUNDED", "serverfunded")).toBe(false);
   });
 });
 
@@ -365,6 +366,28 @@ describe.skipIf(!LIVE)("read-only reconciliation (mocked provider)", () => {
         const body = ((await res.json()) as { reconciliation: { claimReady: boolean; status: string } }).reconciliation;
         expect(body.status).toBe("SERVER_FUNDED");
         expect(body.claimReady).toBe(true);
+      } finally {
+        setSatoraFetchersForTests(null);
+      }
+    } finally {
+      restoreRoutes(previous);
+    }
+  });
+
+  it("marks a provider-funded refund terminal and non-claimable", async () => {
+    const previous = setRoutes(ROUTES);
+    try {
+      const { cookie } = await login("recon-refund");
+      const { id } = await authorizedTransfer(cookie, "recon-refund", "refund");
+      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded" }));
+      try {
+        const res = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund") }), { params: Promise.resolve({ id }) });
+        expect(res.status).toBe(200);
+        const body = ((await res.json()) as { reconciliation: { status: string; statusLabel: string; claimReady: boolean; advancedPath: string[] } }).reconciliation;
+        expect(body.status).toBe("REFUNDED");
+        expect(body.statusLabel).toMatch(/refunded/i);
+        expect(body.claimReady).toBe(false);
+        expect(body.advancedPath.at(-1)).toBe("REFUNDED");
       } finally {
         setSatoraFetchersForTests(null);
       }
