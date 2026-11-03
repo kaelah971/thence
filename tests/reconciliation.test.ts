@@ -154,6 +154,7 @@ describe("reconciliation planning (pure, no I/O)", () => {
   });
   it("routes refund evidence to NEEDS_ATTENTION without failing", () => {
     expect(planReconciliation("RECONCILING", "clientrefunded")).toMatchObject({ action: "needs-attention", path: ["NEEDS_ATTENTION"] });
+    expect(planReconciliation("SERVER_FUNDED", "clientfundedserverrefunded")).toMatchObject({ action: "needs-attention", path: ["NEEDS_ATTENTION"] });
     expect(planReconciliation("CLIENT_FUNDED", "serverwontfund")).toMatchObject({ action: "needs-attention", path: ["NEEDS_ATTENTION"] });
     expect(planReconciliation("LIGHTNING_HANDOFF", "expired")).toMatchObject({ action: "none" });
   });
@@ -163,6 +164,7 @@ describe("reconciliation planning (pure, no I/O)", () => {
     expect(isClaimReady("CLIENT_FUNDED", "clientfunded")).toBe(false);
     expect(isClaimReady("AWAITING_NIM_APPROVAL", "pending")).toBe(false);
     expect(isClaimReady("SERVER_FUNDED", "pending")).toBe(false);
+    expect(isClaimReady("SERVER_FUNDED", "clientfundedserverrefunded")).toBe(false);
   });
 });
 

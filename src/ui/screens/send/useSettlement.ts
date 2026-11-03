@@ -12,7 +12,7 @@ import {
   type ProgressPhase,
   type SettlementVerdict,
 } from "@/ui/lib/settlement-client";
-import { evaluateClaimEligibility, isClaimFlagEnabled, mayRetryClaim } from "@/ui/lib/claim-gate";
+import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRetryClaim } from "@/ui/lib/claim-gate";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap } from "@/ui/lib/satora-browser";
 import { canHaveReceipt, getReceipt, type ApiReceipt } from "@/ui/lib/transfers-api";
@@ -22,6 +22,8 @@ export interface SettlementInput {
   ownerUserId: string;
   sessionValid: boolean;
   previewMode: boolean;
+  /** Set only by an explicit owner click; tracking never authorizes a claim. */
+  explicitClaimAuthorization?: boolean;
 }
 
 export interface SettlementState {
@@ -45,6 +47,8 @@ interface ClaimRecord {
   ownerUserId: string;
   satoraSwapId: string;
   txHash: string | null;
+  /** Set after the SDK reports a successful claim, even when it returns no tx id. */
+  submittedAt?: string | null;
   unknownAt: string | null;
   verifyCompletedSinceClaim: boolean;
 }
@@ -71,6 +75,7 @@ export function loadClaimRecord(transferId: string, ownerUserId: string): ClaimR
       ownerUserId,
       satoraSwapId: parsed.satoraSwapId,
       txHash: typeof parsed.txHash === "string" ? parsed.txHash : null,
+      submittedAt: typeof parsed.submittedAt === "string" ? parsed.submittedAt : null,
       unknownAt: typeof parsed.unknownAt === "string" ? parsed.unknownAt : null,
       verifyCompletedSinceClaim: parsed.verifyCompletedSinceClaim === true,
     };
@@ -145,6 +150,7 @@ export function useSettlement(): {
     verifyVerdict: null,
   });
   const runId = useRef(0);
+  const claimInFlight = useRef(false);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const lastInput = useRef<SettlementInput | null>(null);
 
@@ -191,6 +197,7 @@ export function useSettlement(): {
       view: { latest: { providerStatus: string; claimReady: boolean; ambiguous: boolean }; transfer: { routeId: string } },
       round: number,
       id: number,
+      resume: () => void,
     ): Promise<void> => {
       if (runId.current !== id) return;
       const phase = progressForStatus(status);
@@ -280,7 +287,7 @@ export function useSettlement(): {
             receipt: null,
             verifyVerdict: null,
           });
-          later(POLL_DELAYS_MS[round] ?? 15000, () => void trackRef.current?.(input), id);
+          later(POLL_DELAYS_MS[round] ?? 15000, resume, id);
           return;
         }
         if (!reconciled.ok && reconciled.kind === "unauthorized") {
@@ -328,7 +335,7 @@ export function useSettlement(): {
         verifyVerdict: null,
       });
       if (isReconcilable(fresh.data.transfer.status) && round + 1 < POLL_DELAYS_MS.length) {
-        later(POLL_DELAYS_MS[round] ?? 15000, () => void trackRef.current?.(input), id);
+        later(POLL_DELAYS_MS[round] ?? 15000, resume, id);
       }
     },
     [later],
@@ -360,13 +367,13 @@ export function useSettlement(): {
         });
         return;
       }
-      await settleFromView(input, transferRes.data.transfer.status as string, transferRes.data.transfer.statusLabel ?? null, reconRes.data, 0, id);
+      // The resume callback is invoked later, after this stable track callback exists.
+      // eslint-disable-next-line react-hooks/immutability
+      await settleFromView(input, transferRes.data.transfer.status as string, transferRes.data.transfer.statusLabel ?? null, reconRes.data, 0, id, () => void track(input));
     },
     [clearTimers, readAuthoritative, settleFromView],
   );
 
-  const trackRef = useRef<((input: SettlementInput) => Promise<void>) | null>(null);
-  trackRef.current = track;
   const runVerifyLoopRef = useRef<((input: SettlementInput, round: number) => Promise<void>) | null>(null);
 
   const checkAgain = useCallback(
@@ -378,6 +385,9 @@ export function useSettlement(): {
 
   const attemptClaim = useCallback(
     async (input: SettlementInput): Promise<{ ok: boolean; reason: string }> => {
+      if (claimInFlight.current) return { ok: false, reason: "A delivery attempt is already in progress. Check payment status — do not try again." };
+      claimInFlight.current = true;
+      try {
       const view = await getReconciliation(input.transferId);
       if (!view.ok) return { ok: false, reason: "Checking your payment — do not resend." };
       const swap = view.data.swap;
@@ -390,28 +400,40 @@ export function useSettlement(): {
         vault.binding.ownerUserId === input.ownerUserId &&
         vault.binding.satoraSwapId === swap.satoraSwapId &&
         vault.binding.attemptToken.length > 0;
-      const readback = vaultMatched ? await readBackSwap(swap.satoraSwapId) : { ok: false as const, hasRecoveryMaterial: false as const };
+      const readback = vaultMatched ? await readBackSwap(swap.satoraSwapId) : { ok: false as const, hasRecoveryMaterial: false as const, paymentHash: null, evmRefundLocktime: null };
+      const readbackIdentityMatched =
+        readback.ok &&
+        readback.hasRecoveryMaterial &&
+        typeof readback.paymentHash === "string" &&
+        readback.paymentHash.toLowerCase() === swap.paymentHash.toLowerCase();
       const record = loadClaimRecord(input.transferId, input.ownerUserId);
+      const claimRetryAllowed = record !== null && record.unknownAt !== null
+        ? mayRetryClaim({ earlierClaimUnknown: true, verifyCompletedSinceClaim: record.verifyCompletedSinceClaim, claimReadyNow: view.data.latest.claimReady, knownClaimTxHash: record.txHash !== null })
+        : false;
+      const claimAlreadySubmitted = record !== null && (record.txHash !== null || record.submittedAt != null) && !claimRetryAllowed;
       const gate = evaluateClaimEligibility({
         flagEnabled: isClaimFlagEnabled(),
+        explicitAuthorization: input.explicitClaimAuthorization === true,
+        sessionValid: input.sessionValid,
+        timelockSafe: readbackIdentityMatched && isClaimWindowOpen(readback.evmRefundLocktime),
+        claimAlreadySubmitted,
         transferStatus: transfer.status,
         providerStatus: view.data.latest.providerStatus,
         vaultMatched,
-        readbackOk: readback.ok && readback.hasRecoveryMaterial,
+        readbackOk: readbackIdentityMatched,
         networkMatch: vault.status === "ok" ? vault.binding.routeId === transfer.routeId : false,
         destinationMatch:
           vault.status === "ok"
             ? vault.binding.destination.toLowerCase() === transfer.destination.toLowerCase() &&
               vault.binding.targetAtomic === transfer.targetAmountAtomic
             : false,
-        earlierClaimUnknown: record !== null && record.unknownAt !== null,
+        earlierClaimUnknown: record !== null && record.unknownAt !== null && !claimRetryAllowed,
         previewMode: input.previewMode,
       });
       if (!gate.allowed) {
-        return { ok: false, reason: gate.reasons[0] ?? "Finishing delivery is paused in this preview. Check Activity for the latest status \u2014 don\u2019t try again yet." };
-      }
-      if (record && record.unknownAt !== null && !mayRetryClaim({ earlierClaimUnknown: true, verifyCompletedSinceClaim: record.verifyCompletedSinceClaim, claimReadyNow: view.data.latest.claimReady, knownClaimTxHash: record.txHash !== null })) {
-        return { ok: false, reason: "A delivery attempt is still being checked. Don't try again yet." };
+        const reason = gate.reasons[0] ?? "Finishing delivery is paused in this preview. Check Activity for the latest status \u2014 don\u2019t try again yet.";
+        setState((s) => ({ ...s, message: reason }));
+        return { ok: false, reason };
       }
       let outcome: { success: boolean; txHash: string | null; message: string };
       try {
@@ -426,9 +448,12 @@ export function useSettlement(): {
         setState((s) => ({ ...s, phase: "attention", message: `${outcome.message} Follow the next step before starting another payment.` }));
         return { ok: false, reason: outcome.message };
       }
-      saveClaimRecord({ transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, txHash: outcome.txHash, unknownAt: null, verifyCompletedSinceClaim: false });
+      saveClaimRecord({ transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, txHash: outcome.txHash, submittedAt: new Date().toISOString(), unknownAt: null, verifyCompletedSinceClaim: false });
       await runVerifyLoopRef.current?.(input, 0);
       return { ok: true, reason: outcome.txHash ? "Delivery submitted. Confirming it arrived." : "Delivery submitted. Confirming it arrived." };
+      } finally {
+        claimInFlight.current = false;
+      }
     },
     [],
   );
@@ -490,7 +515,9 @@ export function useSettlement(): {
     [later],
   );
 
-  runVerifyLoopRef.current = runVerifyLoop;
+  useEffect(() => {
+    runVerifyLoopRef.current = runVerifyLoop;
+  }, [runVerifyLoop]);
 
   return { state, track, stop, attemptClaim, checkAgain };
 }

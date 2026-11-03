@@ -115,7 +115,7 @@ export interface ProviderEvidence {
   observedAt: string;
 }
 
-export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "EXPIRED_UNFUNDED" | "UNKNOWN";
+export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "REFUNDED" | "EXPIRED_UNFUNDED" | "UNKNOWN";
 
 const FUNDING_STATUSES = new Set(["clientfunded", "serverfunded", "clientredeeming", "clientredeemed", "serverredeemed"]);
 const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
@@ -128,6 +128,7 @@ const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
  */
 export function providerEvidenceDisposition(evidence: ProviderEvidence | null): ProviderEvidenceDisposition {
   if (!evidence || !evidence.identityMatch) return "UNKNOWN";
+  if (evidence.providerStatus === "clientfundedserverrefunded" || evidence.providerStatus === "clientrefundedserverfunded" || evidence.providerStatus === "clientrefundedserverrefunded" || evidence.providerStatus === "clientredeemedandclientrefunded") return "REFUNDED";
   if (evidence.hasEvmClaimTx || SETTLEMENT_STATUSES.has(evidence.providerStatus)) return "SETTLEMENT_DETECTED";
   if (evidence.hasEvmFundingTx || FUNDING_STATUSES.has(evidence.providerStatus)) return "FUNDING_DETECTED";
   if (evidence.providerStatus === "expired" && evidence.invoiceExpired) return "EXPIRED_UNFUNDED";
@@ -143,6 +144,10 @@ export function providerStatusLabel(status: string): string {
     clientredeeming: "Claim in progress",
     clientredeemed: "Claimed",
     serverredeemed: "Settled",
+    clientfundedserverrefunded: "Refunded after funding",
+    clientrefundedserverfunded: "Refunded after funding",
+    clientrefundedserverrefunded: "Refunded",
+    clientredeemedandclientrefunded: "Refunded after claim attempt",
     expired: "Expired",
     unknown: "Unknown",
   };

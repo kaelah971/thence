@@ -13,7 +13,7 @@ import fs from "node:fs";
 import { buildTransferBody } from "@/ui/lib/prepare-flow";
 import { createMemoryVault } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap, setBrowserSwapClientForTests } from "@/ui/lib/satora-browser";
-import { evaluateClaimEligibility, isClaimFlagEnabled, mayRetryClaim } from "@/ui/lib/claim-gate";
+import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRetryClaim } from "@/ui/lib/claim-gate";
 import {
   getReconciliation,
   postReconcile,
@@ -259,11 +259,21 @@ describe("funded-swap claim eligibility (execution stays OFF)", () => {
       ["network", { ...open, networkMatch: false }],
       ["destination", { ...open, destinationMatch: false }],
       ["earlier unknown", { ...open, earlierClaimUnknown: true }],
+      ["prior claim", { ...open, claimAlreadySubmitted: true }],
       ["preview", { ...open, previewMode: true }],
     ];
     for (const [key, input] of cases) {
       expect(evaluateClaimEligibility(input as never).allowed, key).toBe(false);
     }
+  });
+  it("requires explicit owner authorization, a live session, and a safe refund window", () => {
+    expect(evaluateClaimEligibility({ ...open, explicitAuthorization: false }).allowed).toBe(false);
+    expect(evaluateClaimEligibility({ ...open, sessionValid: false }).allowed).toBe(false);
+    expect(evaluateClaimEligibility({ ...open, timelockSafe: false }).allowed).toBe(false);
+    const now = 1_000_000_000_000;
+    expect(isClaimWindowOpen(Math.floor((now + 61_000) / 1000), now)).toBe(true);
+    expect(isClaimWindowOpen(Math.floor((now + 60_000) / 1000), now)).toBe(false);
+    expect(isClaimWindowOpen(null, now)).toBe(false);
   });
   it("wrong token/network/address/amount never permits a claim", () => {
     expect(evaluateClaimEligibility({ ...open, networkMatch: false }).reasons.join(" ")).toMatch(/network/i);

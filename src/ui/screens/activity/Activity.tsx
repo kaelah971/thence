@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ButtonLink, Button } from "@/ui/components/Button";
 import { Icon } from "@/ui/components/Icon";
 import { AssetMark } from "@/ui/components/PaymentCard";
@@ -27,6 +27,7 @@ import {
 } from "@/ui/lib/settlement-client";
 import { invalidateData } from "@/ui/lib/resource";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
+import { useSettlement } from "@/ui/screens/send/useSettlement";
 import styles from "./activity.module.css";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -232,6 +233,9 @@ function LiveTransferDetail({
           {checkedNote && <p className={styles.latest}>{checkedNote}</p>}
         </div>
       )}
+      {userId && (item.status === "SERVER_FUNDED" || item.status === "CLAIMING") && (
+        <ActivityClaimRecovery transferId={item.id} ownerUserId={userId} />
+      )}
       <ProviderEvidencePanel
         transferId={item.id}
         evidence={providerEvidence}
@@ -256,6 +260,58 @@ function LiveTransferDetail({
   );
 }
 
+function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string; ownerUserId: string }): React.JSX.Element {
+  const settlement = useSettlement();
+  const [claiming, setClaiming] = useState(false);
+  const state = settlement.state;
+
+  useEffect(() => {
+    void settlement.track({ transferId, ownerUserId, sessionValid: true, previewMode: false });
+    return () => settlement.stop();
+    // Track once for this Activity detail; manual action uses the same hook state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerUserId, transferId]);
+
+  const claimReady = state.claimReady && (state.phase === "on-its-way" || state.phase === "finishing");
+  const title = claimReady ? "Ready to finish delivery" : state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
+  const message = claimReady
+    ? "This uses the saved recovery information in this browser. Choose the one-time action below; do not start a new payment."
+    : state.message || "Checking the same payment — do not resend.";
+
+  return (
+    <div style={{ marginBottom: 12 }} data-recovery-transfer-id={transferId}>
+      <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
+        {message}
+      </Notice>
+      {claimReady && (
+        <>
+          <Button
+            variant="soft"
+            size="md"
+            icon="arrow-right"
+            block
+            disabled={claiming}
+            aria-busy={claiming}
+            onClick={() => {
+              if (claiming) return;
+              setClaiming(true);
+              void settlement
+                .attemptClaim({ transferId, ownerUserId, sessionValid: true, previewMode: false, explicitClaimAuthorization: true })
+                .finally(() => {
+                  setClaiming(false);
+                  invalidateData();
+                });
+            }}
+          >
+            {claiming ? "Checking delivery…" : "Finish delivery"}
+          </Button>
+          <p className={styles.latest}>One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ProviderEvidencePanel({
   transferId,
   evidence,
@@ -272,8 +328,12 @@ function ProviderEvidencePanel({
   const disposition: ProviderEvidenceDisposition = providerEvidenceDisposition(evidence);
   const expiry = evidence?.invoiceExpiresAt ? new Date(evidence.invoiceExpiresAt) : null;
   const expiryLabel = !evidence || !expiry || Number.isNaN(expiry.getTime()) ? "UNKNOWN" : evidence.invoiceExpired ? "Expired" : `Live until ${expiry.toLocaleString()}`;
-  const tone = disposition === "UNKNOWN" ? "warn" : "info";
-  const title = disposition === "EXPIRED_UNFUNDED" ? "Funding evidence: EXPIRED — SAFE TO CLOSE" : `Funding evidence: ${disposition}`;
+  const tone = disposition === "UNKNOWN" || disposition === "REFUNDED" ? "warn" : "info";
+  const title = disposition === "EXPIRED_UNFUNDED"
+    ? "Funding evidence: EXPIRED — SAFE TO CLOSE"
+    : disposition === "REFUNDED"
+      ? "Funding evidence: REFUNDED — NO DELIVERY"
+      : `Funding evidence: ${disposition}`;
   return (
     <div style={{ marginBottom: 12 }} data-transfer-id={transferId}>
       <Button variant="soft" size="md" icon="refresh" block disabled={loading} onClick={onCheck}>
@@ -285,15 +345,16 @@ function ProviderEvidencePanel({
         </Notice>
       )}
       {evidence && (
-        <Notice tone={tone} icon={disposition === "UNKNOWN" ? "alert" : "info"} title={title} live>
+        <Notice tone={tone} icon={disposition === "UNKNOWN" || disposition === "REFUNDED" ? "alert" : "info"} title={title} live>
           <dl className={styles.facts}>
             <div><dt>Provider status</dt><dd>{providerStatusLabel(evidence.providerStatus)}</dd></div>
             <div><dt>Invoice expiry</dt><dd>{expiryLabel}</dd></div>
             <div><dt>Swap identity</dt><dd>{evidence.identityMatch ? "MATCH" : "MISMATCH — UNKNOWN"}</dd></div>
             <div><dt>Funding transaction</dt><dd>{evidence.hasEvmFundingTx ? "Present" : "Not reported"}</dd></div>
-            <div><dt>Claim transaction</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
+            <div><dt>{disposition === "REFUNDED" ? "Refund transaction" : "Claim transaction"}</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
           </dl>
           {disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
+          {disposition === "REFUNDED" && <p className={styles.latest}>The provider reports that its funded lock was refunded. Do not claim or start another payment; keep this payment open for reconciliation.</p>}
           {disposition === "EXPIRED_UNFUNDED" && <p className={styles.latest}>Satora reports this swap expired without funding. The server will re-check that evidence before closing it.</p>}
         </Notice>
       )}

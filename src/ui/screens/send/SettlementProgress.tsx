@@ -44,6 +44,7 @@ export function SettlementProgress({
   saveOffer: { address: string; routeId: RouteId } | null;
 }): React.JSX.Element {
   const settlement = useSettlement();
+  const [claiming, setClaiming] = useState(false);
   const state = settlement.state;
 
   useEffect(() => {
@@ -104,12 +105,17 @@ export function SettlementProgress({
             size="md"
             icon="arrow-right"
             block
+            disabled={claiming}
+            aria-busy={claiming}
             onClick={() => {
-              if (!ownerUserId) return;
-              void settlement.attemptClaim({ transferId, ownerUserId, sessionValid, previewMode });
+              if (!ownerUserId || claiming) return;
+              setClaiming(true);
+              void settlement
+                .attemptClaim({ transferId, ownerUserId, sessionValid, previewMode, explicitClaimAuthorization: true })
+                .finally(() => setClaiming(false));
             }}
           >
-            Finish delivery
+            {claiming ? "Checking delivery…" : "Finish delivery"}
           </Button>
           <p className={styles.ctaNote}>
             <Icon name="lock" size={14} /> Finishing delivery is paused in this preview. If a payment is on its way, follow it in Activity \u2014 don\u2019t try again.

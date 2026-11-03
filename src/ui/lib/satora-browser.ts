@@ -34,6 +34,8 @@ export interface SwapReadback {
   satoraSwapId: string;
   hasRecoveryMaterial: boolean;
   paymentHash: string | null;
+  /** Public EVM refund locktime from the SDK response, in Unix seconds. */
+  evmRefundLocktime: number | null;
   reason?: string;
 }
 
@@ -150,7 +152,7 @@ export async function createExactReceiveSwap(terms: ExactSwapTerms): Promise<Pub
  * Returns only public facts — secrets are checked for presence, never returned.
  */
 export async function readBackSwap(swapId: string): Promise<SwapReadback> {
-  if (!swapId) return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, reason: "Missing swap id." };
+  if (!swapId) return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Missing swap id." };
   let client: SwapClient;
   try {
     client = await loadClient();
@@ -160,6 +162,7 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
       satoraSwapId: swapId,
       hasRecoveryMaterial: false,
       paymentHash: null,
+      evmRefundLocktime: null,
       reason: error instanceof Error ? error.message : "Swap storage is unavailable.",
     };
   }
@@ -172,14 +175,15 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
       satoraSwapId: swapId,
       hasRecoveryMaterial: false,
       paymentHash: null,
+      evmRefundLocktime: null,
       reason: error instanceof Error ? error.message : "Could not read back the swap.",
     };
   }
   if (!stored) {
-    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, reason: "Saved swap was not found." };
+    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Saved swap was not found." };
   }
   if (stored.swapId !== swapId) {
-    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, reason: "Saved swap does not match." };
+    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Saved swap does not match." };
   }
   const hasSecrets =
     typeof stored.preimage === "string" &&
@@ -189,11 +193,13 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
     typeof stored.preimageHash === "string" &&
     stored.preimageHash.length > 0;
   if (!hasSecrets) {
-    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, reason: "Recovery material is incomplete." };
+    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Recovery material is incomplete." };
   }
   const response = stored.response as unknown as Record<string, unknown>;
   const paymentHash = typeof response["hash_lock"] === "string" ? (response["hash_lock"] as string) : stored.preimageHash;
-  return { ok: true, satoraSwapId: swapId, hasRecoveryMaterial: true, paymentHash };
+  const rawRefundLocktime = response["evm_refund_locktime"];
+  const evmRefundLocktime = typeof rawRefundLocktime === "number" && Number.isSafeInteger(rawRefundLocktime) && rawRefundLocktime > 0 ? rawRefundLocktime : null;
+  return { ok: true, satoraSwapId: swapId, hasRecoveryMaterial: true, paymentHash, evmRefundLocktime };
 }
 
 /**

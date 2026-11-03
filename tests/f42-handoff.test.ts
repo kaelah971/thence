@@ -408,7 +408,7 @@ describe("F4.1 browser QA with safe mocks (no host, no funds)", () => {
       version: 2,
       swapId: "swap-1",
       keyIndex: 0,
-      response: { id: "swap-1", hash_lock: `0x${"ab".repeat(32)}`, bolt11_invoice: INVOICE },
+      response: { id: "swap-1", hash_lock: `0x${"ab".repeat(32)}`, bolt11_invoice: INVOICE, evm_refund_locktime: Math.floor(Date.now() / 1000) + 3600 },
       publicKey: "02" + "ab".repeat(32),
       preimage: "ab".repeat(32),
       preimageHash: "cd".repeat(32),
@@ -424,6 +424,7 @@ describe("F4.1 browser QA with safe mocks (no host, no funds)", () => {
     try {
       const ok = await readBackSwap("swap-1");
       expect(ok.ok && ok.hasRecoveryMaterial).toBe(true);
+      expect(ok.ok && ok.evmRefundLocktime).toBeTypeOf("number");
       expect((await readBackSwap("missing")).ok).toBe(false);
     } finally {
       setBrowserSwapClientForTests(null);
