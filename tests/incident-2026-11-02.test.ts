@@ -8,11 +8,8 @@
  * the fixture through the existing test seams. DATABASE_URL is stubbed to an
  * unroutable `.invalid` host only so env validation passes; nothing connects.
  *
- * Convention for known defects (no fixes in this milestone):
- * - `it(...)` CHARACTERIZES today's behavior and passes.
- * - `it.fails(...)` states the REQUIRED behavior and is expected to fail
- *   until P1–P6 land. When a fix makes it pass, vitest reports it as a
- *   failure, forcing the marker to be removed in the fixing change.
+ * Every former `it.fails` marker here has been converted by P4/P2 into an
+ * ordinary test (named "P4: …" / "P2: …").
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "./fixtures/incidents-2026-11-02.json";

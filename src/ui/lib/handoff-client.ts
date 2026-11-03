@@ -11,6 +11,7 @@
  * duplicate reports converge without a second native payment.
  */
 import { apiRequest, type ApiOptions, type ApiResult } from "./api";
+import { kickPaymentTracker } from "./payment-tracker";
 import type { HostPaymentResult, PaymentDiagnostics } from "./nimiq-pay";
 
 export type ServerHandoffOutcome = "cancelled" | "initiated" | "unknown";
@@ -45,9 +46,16 @@ export async function reportHandoffResult(
     throw new Error("Invalid handoff outcome.");
   }
   const { diagnostics, ...requestOpts } = opts;
-  return apiRequest<{ handoff: HandoffReport }>(`/api/transfers/${encodeURIComponent(transferId)}/handoff-result`, {
-    ...requestOpts,
-    method: "POST",
-    body: diagnostics ? { outcome, diagnostics } : { outcome },
-  });
+  try {
+    return await apiRequest<{ handoff: HandoffReport }>(`/api/transfers/${encodeURIComponent(transferId)}/handoff-result`, {
+      ...requestOpts,
+      method: "POST",
+      body: diagnostics ? { outcome, diagnostics } : { outcome },
+    });
+  } finally {
+    // P1: back from the Nimiq Pay host (any outcome, even a lost report):
+    // wake the shared lifecycle driver so approval/funding surface promptly.
+    // Read-only refresh; never retries the native payment.
+    kickPaymentTracker(transferId);
+  }
 }

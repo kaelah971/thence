@@ -5,7 +5,6 @@ import { clearPending, fetchTransfer } from "@/ui/lib/prepare-flow";
 import { TRANSFER_STATUSES, isTerminal, type TransferStatus } from "@/domain/transfers";
 import {
   getReconciliation,
-  postReconcile,
   postVerifySettlement,
   progressCopy,
   progressForStatus,
@@ -17,6 +16,7 @@ import { claimActionAllowed, claimWindowAt } from "@/domain/claim-deadline";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap } from "@/ui/lib/satora-browser";
 import { canHaveReceipt, getReceipt, type ApiReceipt } from "@/ui/lib/transfers-api";
+import { kickPaymentTracker, subscribePaymentTracker, type TrackerError, type TrackerSnapshot } from "@/ui/lib/payment-tracker";
 
 export interface SettlementInput {
   transferId: string;
@@ -50,8 +50,7 @@ export function deadlineMsFrom(value: string | null | undefined): number | null 
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
-/** Bounded polling: short backoff, stops at terminal insight, never aggressive. */
-const POLL_DELAYS_MS = [3000, 6000, 12000, 12000, 15000];
+/** Verify-after-claim rounds (tracking cadence lives in payment-tracker.ts). */
 const MAX_VERIFY_ROUNDS = 4;
 
 interface ClaimRecord {
@@ -129,20 +128,20 @@ async function loadVaultBinding(transferId: string, ownerUserId: string) {
   return loadBinding(transferId, ownerUserId);
 }
 
-/** Non-terminal states where a bounded reconcile is allowed. */
-function isReconcilable(status: string): boolean {
-  return (
-    status === "LIGHTNING_HANDOFF" ||
-    status === "OUTCOME_UNKNOWN" ||
-    status === "RECONCILING" ||
-    status === "CLIENT_FUNDED" ||
-    status === "SERVER_FUNDED" ||
-    status === "CLAIMING"
-  );
-}
-
 const copyFor = (phase: ProgressPhase): { title: string; body: string } => progressCopy(phase);
 
+function refreshFailureMessage(error: TrackerError): string {
+  return error.kind === "rate-limited"
+    ? "Too many tries at once. Checking again shortly — do not resend."
+    : "The network check is temporarily unavailable. Checking again shortly — do not resend.";
+}
+
+/**
+ * P1: settlement view of ONE shared lifecycle driver (src/ui/lib/payment-tracker.ts).
+ * This hook no longer schedules provider refreshes itself; it subscribes to
+ * the per-(owner, transfer) tracker and maps its snapshots to customer
+ * state. The explicit claim path and its gates are unchanged.
+ */
 export function useSettlement(): {
   state: SettlementState;
   track: (input: SettlementInput) => Promise<void>;
@@ -165,7 +164,9 @@ export function useSettlement(): {
   const runId = useRef(0);
   const claimInFlight = useRef(false);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
-  const lastInput = useRef<SettlementInput | null>(null);
+  const unsubscribe = useRef<(() => void) | null>(null);
+  const tracked = useRef<{ transferId: string; ownerUserId: string } | null>(null);
+  const receiptFor = useRef<string | null>(null);
 
   const clearTimers = useCallback(() => {
     for (const t of timers.current) clearTimeout(t);
@@ -175,202 +176,90 @@ export function useSettlement(): {
   const stop = useCallback(() => {
     runId.current += 1;
     clearTimers();
+    unsubscribe.current?.();
+    unsubscribe.current = null;
+    tracked.current = null;
   }, [clearTimers]);
 
   useEffect(() => stop, [stop]);
 
-  const later = useCallback(
-    (ms: number, fn: () => void, id: number) => {
-      // Pause while hidden: resume on visible instead of polling in background.
-      if (typeof document !== "undefined" && document.hidden) {
-        const onVisible = () => {
-          if (runId.current !== id) return;
-          document.removeEventListener("visibilitychange", onVisible);
-          void fn();
-        };
-        document.addEventListener("visibilitychange", onVisible);
-        timers.current.push(setTimeout(() => document.removeEventListener("visibilitychange", onVisible), ms * 4));
-        return;
-      }
-      timers.current.push(setTimeout(() => void fn(), ms));
-    },
-    [],
-  );
-
-  const readAuthoritative = useCallback(async (transferId: string) => {
-    const [transferRes, reconRes] = await Promise.all([fetchTransfer(transferId), getReconciliation(transferId)]);
-    if (reconRes.ok) setClaimInfo({ claimDeadlineMs: deadlineMsFrom(reconRes.data.latest.claimDeadlineAt ?? reconRes.data.swap?.claimDeadline), identityMismatch: reconRes.data.latest.identityMismatch === true });
-    return { transferRes, reconRes };
+  /** Verify-after-claim rounds only (bounded); tracking itself is the shared driver. */
+  const later = useCallback((ms: number, fn: () => void, id: number) => {
+    timers.current.push(
+      setTimeout(() => {
+        if (runId.current === id) void fn();
+      }, ms),
+    );
   }, []);
 
-  const settleFromView = useCallback(
-    async (
-      input: SettlementInput,
-      status: string,
-      statusLabel: string | null,
-      view: { latest: { providerStatus: string; claimReady: boolean; ambiguous: boolean }; transfer: { routeId: string } },
-      round: number,
-      id: number,
-      resume: () => void,
-    ): Promise<void> => {
-      if (runId.current !== id) return;
-      const phase = progressForStatus(status);
-      const copy = copyFor(phase === "delivered" ? "finishing" : phase);
-      if (phase === "cancelled") {
-        setState({
-          phase: "cancelled",
-          transferId: input.transferId,
-          transferStatus: status,
-          statusLabel,
-          providerStatus: view.latest.providerStatus,
-          claimReady: false,
-          message: copy.body,
-          receipt: null,
-          verifyVerdict: null,
-        });
-        // Terminal: the interrupted-payment pointer is now stale.
+  const applySnapshot = useCallback(async (input: SettlementInput, snapshot: TrackerSnapshot, id: number): Promise<void> => {
+    if (runId.current !== id) return;
+    const unauthorized = snapshot.readError?.kind === "unauthorized" || snapshot.refreshError?.kind === "unauthorized";
+    if (unauthorized) {
+      setState((s) => ({ ...s, phase: "attention", transferId: input.transferId, claimReady: false, message: "Your session has ended. Sign in again." }));
+      return;
+    }
+    const view = snapshot.view;
+    if (!view) {
+      setState((s) => ({
+        ...s,
+        phase: "checking",
+        transferId: input.transferId,
+        claimReady: false,
+        message: snapshot.readError ? refreshFailureMessage(snapshot.readError) : "Checking your payment — do not resend.",
+      }));
+      return;
+    }
+    setClaimInfo({
+      claimDeadlineMs: deadlineMsFrom(view.latest.claimDeadlineAt ?? view.swap?.claimDeadline),
+      identityMismatch: view.latest.identityMismatch === true,
+    });
+    const status = view.transfer.status;
+    const statusLabel = view.transfer.statusLabel ?? null;
+    const providerStatus = view.latest.providerStatus;
+    const phase = progressForStatus(status);
+    const base = { transferId: input.transferId, transferStatus: status as string, statusLabel, providerStatus, receipt: null, verifyVerdict: null };
+    if (phase === "cancelled") {
+      setState({ ...base, phase: "cancelled", claimReady: false, message: copyFor("cancelled").body });
+      clearPending(input.ownerUserId, input.transferId);
+      return;
+    }
+    if (phase === "refunded" || phase === "expired") {
+      setState({ ...base, phase, claimReady: false, message: copyFor(phase).body });
+      clearClaimRecord(input.transferId, input.ownerUserId);
+      clearPending(input.ownerUserId, input.transferId);
+      return;
+    }
+    if (phase === "attention") {
+      setState({ ...base, phase: "attention", claimReady: view.latest.claimReady, message: statusLabel ? `${statusLabel}. Follow the next step before starting another payment.` : copyFor("attention").body });
+      if ((TRANSFER_STATUSES as readonly string[]).includes(status) && isTerminal(status as TransferStatus)) {
         clearPending(input.ownerUserId, input.transferId);
-        return;
       }
-      if (phase === "refunded" || phase === "expired") {
-        setState({
-          phase,
-          transferId: input.transferId,
-          transferStatus: status,
-          statusLabel,
-          providerStatus: view.latest.providerStatus,
-          claimReady: false,
-          message: copy.body,
-          receipt: null,
-          verifyVerdict: null,
-        });
+      return;
+    }
+    if (phase === "delivered") {
+      // Receipts load ONLY for backend-confirmed DELIVERED transfers (once).
+      if (receiptFor.current === input.transferId) return;
+      const receiptRes = await getReceipt(input.transferId);
+      if (runId.current !== id) return;
+      if (receiptRes.ok) {
+        receiptFor.current = input.transferId;
+        setState({ ...base, phase: "delivered", claimReady: false, message: copyFor("delivered").body, receipt: receiptRes.data.receipt, verifyVerdict: "VERIFIED" });
         clearClaimRecord(input.transferId, input.ownerUserId);
         clearPending(input.ownerUserId, input.transferId);
         return;
       }
-      if (phase === "attention") {
-        setState({
-          phase: "attention",
-          transferId: input.transferId,
-          transferStatus: status,
-          statusLabel,
-          providerStatus: view.latest.providerStatus,
-          claimReady: view.latest.claimReady,
-          message: statusLabel ? `${statusLabel}. Follow the next step before starting another payment.` : copy.body,
-          receipt: null,
-          verifyVerdict: null,
-        });
-        // Terminal (e.g. FAILED): the interrupted-payment pointer is stale.
-        // Non-terminal attention keeps it for resume.
-        if ((TRANSFER_STATUSES as readonly string[]).includes(status) && isTerminal(status as TransferStatus)) {
-          clearPending(input.ownerUserId, input.transferId);
-        }
-        return;
-      }
-      if (phase === "delivered") {
-        // Receipts load ONLY for backend-confirmed DELIVERED transfers.
-        const receiptRes = await getReceipt(input.transferId);
-        if (runId.current !== id) return;
-        if (receiptRes.ok) {
-          setState({
-            phase: "delivered",
-            transferId: input.transferId,
-            transferStatus: status,
-            statusLabel,
-            providerStatus: view.latest.providerStatus,
-            claimReady: false,
-            message: copyFor("delivered").body,
-            receipt: receiptRes.data.receipt,
-            verifyVerdict: "VERIFIED",
-          });
-          clearClaimRecord(input.transferId, input.ownerUserId);
-          // Terminal: the interrupted-payment pointer is now stale.
-          clearPending(input.ownerUserId, input.transferId);
-          return;
-        }
-        setState({
-          phase: "finishing",
-          transferId: input.transferId,
-          transferStatus: status,
-          statusLabel,
-          providerStatus: view.latest.providerStatus,
-          claimReady: false,
-          message: "The receipt is still being put together. Check back shortly.",
-          receipt: null,
-          verifyVerdict: null,
-        });
-        return;
-      }
-      // In-flight: one bounded reconcile, then re-read; repeat while rounds remain.
-      if (round < POLL_DELAYS_MS.length && isReconcilable(status)) {
-        const reconciled = await postReconcile(input.transferId);
-        if (runId.current !== id) return;
-        if (!reconciled.ok && reconciled.kind !== "unauthorized") {
-          setState({
-            phase: "checking",
-            transferId: input.transferId,
-            transferStatus: status,
-            statusLabel,
-            providerStatus: view.latest.providerStatus,
-            claimReady: view.latest.claimReady,
-            message: reconciled.code === "RATE_LIMITED" || reconciled.kind === "rate-limited" ? "Too many tries at once. Checking again shortly — do not resend." : "The network check is temporarily unavailable. Checking again shortly — do not resend.",
-            receipt: null,
-            verifyVerdict: null,
-          });
-          later(POLL_DELAYS_MS[round] ?? 15000, resume, id);
-          return;
-        }
-        if (!reconciled.ok && reconciled.kind === "unauthorized") {
-          setState({
-            phase: "attention",
-            transferId: input.transferId,
-            transferStatus: status,
-            statusLabel,
-            providerStatus: view.latest.providerStatus,
-            claimReady: false,
-            message: "Your session has ended. Sign in again.",
-            receipt: null,
-            verifyVerdict: null,
-          });
-          return;
-        }
-      }
-      const fresh = await getReconciliation(input.transferId);
-      if (runId.current !== id) return;
-      if (fresh.ok) setClaimInfo({ claimDeadlineMs: deadlineMsFrom(fresh.data.latest.claimDeadlineAt ?? fresh.data.swap?.claimDeadline), identityMismatch: fresh.data.latest.identityMismatch === true });
-      if (!fresh.ok) {
-        setState({
-          phase: "checking",
-          transferId: input.transferId,
-          transferStatus: status,
-          statusLabel,
-          providerStatus: view.latest.providerStatus,
-          claimReady: view.latest.claimReady,
-          message: "Checking your payment — do not resend.",
-          receipt: null,
-          verifyVerdict: null,
-        });
-        return;
-      }
-      const nextPhase = progressForStatus(fresh.data.transfer.status);
-      const nextCopy = copyFor(nextPhase === "delivered" ? "finishing" : nextPhase);
-      setState({
-        phase: nextPhase === "delivered" ? "finishing" : nextPhase,
-        transferId: input.transferId,
-        transferStatus: fresh.data.transfer.status,
-        statusLabel: fresh.data.transfer.statusLabel,
-        providerStatus: fresh.data.latest.providerStatus,
-        claimReady: fresh.data.latest.claimReady,
-        message: view.latest.ambiguous || fresh.data.latest.ambiguous ? "Checking your payment — do not resend." : nextCopy.body,
-        receipt: null,
-        verifyVerdict: null,
-      });
-      if (isReconcilable(fresh.data.transfer.status) && round + 1 < POLL_DELAYS_MS.length) {
-        later(POLL_DELAYS_MS[round] ?? 15000, resume, id);
-      }
-    },
-    [later],
-  );
+      setState({ ...base, phase: "finishing", claimReady: false, message: "The receipt is still being put together. Check back shortly." });
+      return;
+    }
+    const copy = copyFor(phase);
+    const message = snapshot.refreshError && snapshot.refreshError.kind !== "conflict"
+      ? refreshFailureMessage(snapshot.refreshError)
+      : view.latest.ambiguous
+        ? "Checking your payment — do not resend."
+        : copy.body;
+    setState({ ...base, phase, claimReady: view.latest.claimReady, message });
+  }, []);
 
   const track = useCallback(
     async (input: SettlementInput) => {
@@ -378,35 +267,25 @@ export function useSettlement(): {
         setState((s) => ({ ...s, phase: "attention", transferId: input.transferId || null, message: "This payment isn't ready yet." }));
         return;
       }
-      const id = ++runId.current;
-      clearTimers();
-      lastInput.current = input;
-      const { transferRes, reconRes } = await readAuthoritative(input.transferId);
-      if (runId.current !== id) return;
-      if (!transferRes.ok || !reconRes.ok) {
-        const unauthorized = (!transferRes.ok && transferRes.kind === "unauthorized") || (!reconRes.ok && reconRes.kind === "unauthorized");
-        setState({
-          phase: unauthorized ? "attention" : "checking",
-          transferId: input.transferId,
-          transferStatus: null,
-          statusLabel: null,
-          providerStatus: null,
-          claimReady: false,
-          message: unauthorized ? "Your session has ended. Sign in again." : "Checking your payment — do not resend.",
-          receipt: null,
-          verifyVerdict: null,
-        });
+      const same = tracked.current?.transferId === input.transferId && tracked.current.ownerUserId === input.ownerUserId;
+      if (same && unsubscribe.current) {
+        kickPaymentTracker(input.transferId);
         return;
       }
-      // The resume callback is invoked later, after this stable track callback exists.
-      // eslint-disable-next-line react-hooks/immutability
-      await settleFromView(input, transferRes.data.transfer.status as string, transferRes.data.transfer.statusLabel ?? null, reconRes.data, 0, id, () => void track(input));
+      stop();
+      const id = ++runId.current;
+      tracked.current = { transferId: input.transferId, ownerUserId: input.ownerUserId };
+      receiptFor.current = null;
+      unsubscribe.current = subscribePaymentTracker(input.transferId, input.ownerUserId, (snapshot) => {
+        void applySnapshot(input, snapshot, id);
+      });
     },
-    [clearTimers, readAuthoritative, settleFromView],
+    [applySnapshot, stop],
   );
 
   const runVerifyLoopRef = useRef<((input: SettlementInput, round: number) => Promise<void>) | null>(null);
 
+  /** Manual "Check again": wake the shared driver now (coalesced, rate-safe). */
   const checkAgain = useCallback(
     async (input: SettlementInput) => {
       await track(input);

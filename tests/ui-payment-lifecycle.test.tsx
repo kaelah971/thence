@@ -8,11 +8,13 @@
  * No database, no network, no provider, no wallet: global fetch is the fake;
  * the browser Satora claim module is a spy that must never be called.
  *
- * Convention (no fixes in this milestone):
- * - `it(...)` characterizes today's behavior and passes.
- * - `it.fails(...)` states REQUIRED behavior that is expected to fail until
- *   the named plan step (P1/P2/P4) lands; a fix flips it and forces removal
- *   of the marker in the fixing change.
+ * P4, P2 and P1 have converted every former `it.fails` marker in this file
+ * into an ordinary test (named "P1: …", "P2: …", "P4: …").
+ *
+ * P1 tracking is ONE shared driver per (owner, transfer)
+ * (src/ui/lib/payment-tracker.ts); the claim module is a spy, and the claim
+ * flag is OFF unless a test explicitly opens every gate to prove that even
+ * then nothing claims without a click, and never twice.
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,9 +30,17 @@ vi.mock("next/link", () => ({
 
 const claimSpy = vi.hoisted(() => ({ claimStoredSwap: vi.fn(), readBackSwap: vi.fn() }));
 vi.mock("@/ui/lib/satora-browser", () => claimSpy);
+const claimFlag = vi.hoisted(() => ({ on: false }));
+vi.mock("@/ui/lib/claim-gate", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/ui/lib/claim-gate")>();
+  return { ...original, isClaimFlagEnabled: () => claimFlag.on };
+});
 
 import { SettlementProgress } from "@/ui/screens/send/SettlementProgress";
 import { Activity } from "@/ui/screens/activity/Activity";
+import { activePaymentTrackerCount, resetPaymentTrackersForTests } from "@/ui/lib/payment-tracker";
+import { reportHandoffResult } from "@/ui/lib/handoff-client";
+import { createMemoryVault, RECOVERY_VAULT_VERSION } from "@/ui/lib/recovery-vault";
 
 const DEADLINE_MS = INCIDENT.satora.getSwap.evm_refund_locktime * 1000;
 const FIRST_OBSERVED = INCIDENT.observations[0]!.observed_at; // 21:30:26Z, serverfunded
@@ -56,6 +66,8 @@ beforeAll(() => {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
   hidden = false;
+  claimFlag.on = false;
+  (globalThis as { __thenceVault?: unknown }).__thenceVault = undefined;
   claimSpy.claimStoredSwap.mockReset();
   claimSpy.readBackSwap.mockReset();
   try {
@@ -67,9 +79,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetPaymentTrackersForTests();
   api?.restore();
   vi.useRealTimers();
 });
+
+async function setVisible(visible: boolean): Promise<void> {
+  hidden = !visible;
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
+const ownerWrites = () => api.calls.filter((c) => c.method === "POST" && /\/(claim|close-expired|prepare|attach|authorize-handoff)$|^\/api\/transfers$/.test(c.path));
 
 /** Advance fake time and let React and pending promises settle. */
 async function advance(ms: number): Promise<void> {
@@ -124,17 +146,8 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(api.calls.some((c) => /claim|cancel|handoff-result|prepare|attach|authorize/.test(c.path))).toBe(false);
   });
 
-  it("while funded, polling never backs off: the round counter is stuck at 0 (every 3 s, indefinitely)", async () => {
-    vi.setSystemTime(new Date(FIRST_OBSERVED));
-    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
-    renderSend();
-    await advance(0);
-    const start = api.count("POST", "/reconcile");
-    await advance(60_000);
-    expect(api.count("POST", "/reconcile") - start).toBeGreaterThanOrEqual(19);
-  });
-
-  it.fails("REQUIRED (P1): tracking follows the bounded backoff (≤ 8 provider refreshes per minute)", async () => {
+  // P1 (was it.fails): tracking follows the bounded backoff (≤ 8 provider refreshes per minute).
+  it("P1: tracking follows the bounded backoff (≤ 8 provider refreshes per minute)", async () => {
     vi.setSystemTime(new Date(FIRST_OBSERVED));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     renderSend();
@@ -144,23 +157,28 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(api.count("POST", "/reconcile") - start).toBeLessThanOrEqual(8);
   });
 
-  it("backgrounding the app for more than 12 s stops tracking permanently, even after returning", async () => {
+  it("P1: backoff resets to fast polling when the payment makes progress, and stays within the write budget long-term", async () => {
     vi.setSystemTime(new Date(FIRST_OBSERVED));
-    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: FIRST_OBSERVED } });
     renderSend();
-    await advance(0);
-    hidden = true; // user switches to Nimiq Pay / locks the phone
-    await advance(3_000 + 13_000);
-    const beforeReturn = api.count("POST", "/reconcile");
-    hidden = false;
-    await act(async () => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await advance(5 * 60_000);
-    expect(api.count("POST", "/reconcile")).toBe(beforeReturn);
+    await advance(10 * 60_000);
+    // Pre-funding cap 15 s → at most ~4/min after the initial ramp (budget: 60 writes/min shared).
+    const settled = api.count("POST", "/reconcile");
+    await advance(60_000);
+    expect(api.count("POST", "/reconcile") - settled).toBeLessThanOrEqual(5);
+    // Funding lands: the next refresh sees it and the cadence resets to fast.
+    api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
+    await advance(15_000);
+    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    // Progress resets the cadence: the next read follows 3 s later (provider
+    // refreshes stay ≥ 5 s apart to protect the shared write budget).
+    const afterProgress = api.count("GET", "/reconciliation");
+    await advance(3_000);
+    expect(api.count("GET", "/reconciliation")).toBe(afterProgress + 1);
   });
 
-  it.fails("REQUIRED (P1): tracking resumes when the app becomes visible again", async () => {
+  // P1 (was it.fails): tracking resumes when the app becomes visible again.
+  it("P1: tracking resumes when the app becomes visible again", async () => {
     vi.setSystemTime(new Date(FIRST_OBSERVED));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     renderSend();
@@ -266,18 +284,244 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(screen.queryByText("Action needed — Finish delivery")).toBeNull();
   });
 
-  it("if mounted while still AWAITING_NIM_APPROVAL, the screen reads once and never polls again", async () => {
+  it("P1: mounted while AWAITING_NIM_APPROVAL, tracking continues through approval and funding", async () => {
     vi.setSystemTime(new Date(INCIDENT.attempt.created_at));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "AWAITING_NIM_APPROVAL", providerStatus: "pending", observedAt: INCIDENT.attempt.created_at } });
     renderSend();
     await advance(0);
     expect(screen.getAllByText("Waiting for approval").length).toBeGreaterThan(0);
-    const reads = api.count("GET", "/reconciliation");
-    // Approval and funding happen; the mounted screen does not notice.
+    // Owner approves in Nimiq Pay; provider funds Polygon 39 s later (real timeline).
+    api.set(INCIDENT.transfer.id, { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! });
+    await advance(15_000);
+    expect(screen.queryByText("Waiting for approval")).toBeNull();
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
-    await advance(30 * 60_000);
-    expect(api.count("GET", "/reconciliation")).toBe(reads);
-    expect(screen.getAllByText("Waiting for approval").length).toBeGreaterThan(0);
+    await advance(15_000);
+    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(ownerWrites()).toEqual([]);
+  });
+
+  it("P1 ACCEPTANCE: approval → funding → 5 min in the background → foreground shows the claimable status and Finish delivery at once", async () => {
+    vi.setSystemTime(new Date(INCIDENT.attempt.handoff_authorized_at!));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "AWAITING_NIM_APPROVAL", providerStatus: "pending", observedAt: INCIDENT.attempt.created_at } });
+    renderSend();
+    await advance(0);
+    // The owner leaves Thence for the Nimiq Pay approval sheet.
+    await setVisible(false);
+    // Meanwhile: approval recorded and the provider funds the HTLC (21:13:27Z).
+    api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: "2026-11-02T21:13:27.000Z" });
+    const beforeBackground = api.calls.length;
+    await advance(5 * 60_000);
+    // Hidden: no provider traffic burned while away (budget preserved)…
+    expect(api.calls.length).toBe(beforeBackground);
+    // …and on return the very next refresh happens immediately.
+    await setVisible(true);
+    await advance(0);
+    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
+    // 21:12:48 + 5 min = 21:17:48 → deadline 22:12:42 is 54 min away.
+    expect(document.body.textContent).toContain(`Finish delivery before ${clock(DEADLINE_MS)} — 54 min left`);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(ownerWrites()).toEqual([]);
+  });
+
+  it("P1: if the foreground return lands inside the unsafe window, the status is shown but Finish delivery is not", async () => {
+    vi.setSystemTime(new Date(DEADLINE_MS - 20 * 60_000));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: FIRST_OBSERVED } });
+    renderSend();
+    await advance(0);
+    await setVisible(false);
+    api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
+    await advance(17 * 60_000); // 3 min before the deadline
+    await setVisible(true);
+    await advance(0);
+    expect(screen.getByText("Too close to the delivery deadline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+  });
+
+  it("P1: returning from the Nimiq Pay host wakes tracking immediately (no waiting for backoff)", async () => {
+    vi.setSystemTime(new Date(INCIDENT.attempt.handoff_authorized_at!));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "AWAITING_NIM_APPROVAL", providerStatus: "pending", observedAt: INCIDENT.attempt.created_at } });
+    renderSend();
+    await advance(2 * 60_000); // backoff has grown to the 15 s pre-funding cap
+    api.set(INCIDENT.transfer.id, { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! });
+    const before = api.count("GET", "/reconciliation");
+    await act(async () => {
+      await reportHandoffResult(INCIDENT.transfer.id, "initiated");
+    });
+    await advance(2_000);
+    expect(api.count("GET", "/reconciliation")).toBeGreaterThan(before);
+    expect(screen.queryByText("Waiting for approval")).toBeNull();
+  });
+
+  it("P1: a reload rebuilds tracking from the persisted transfer — no new swap, invoice or payment", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    const first = renderSend();
+    await advance(0);
+    expect(activePaymentTrackerCount()).toBe(1);
+    first.unmount(); // page unload
+    expect(activePaymentTrackerCount()).toBe(0);
+    const before = api.calls.length;
+    await advance(60_000);
+    expect(api.calls.length).toBe(before); // nothing keeps running after unload
+    renderSend(); // reload: same transfer id from the persisted pointer / URL
+    await advance(0);
+    expect(activePaymentTrackerCount()).toBe(1);
+    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(ownerWrites()).toEqual([]);
+    expect(api.calls.every((c) => c.path.startsWith(`/api/transfers/${INCIDENT.transfer.id}`))).toBe(true);
+  });
+
+  it("P1: duplicate tracking is prevented — Send and Activity share one driver, one request at a time", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    api.latencyMs = 400;
+    renderSend();
+    renderSend(); // e.g. StrictMode double mount / a second view of the same payment
+    await advance(0);
+    expect(activePaymentTrackerCount()).toBe(1);
+    // Burst of wake-ups (focus, pageshow, online, visibility) coalesces.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("pageshow"));
+      window.dispatchEvent(new Event("online"));
+    });
+    await advance(60_000);
+    expect(api.maxInFlight).toBe(1);
+    expect(api.count("POST", "/reconcile")).toBeLessThanOrEqual(9);
+  });
+
+  it("P1: unmounting cancels the in-flight request (no work after leaving)", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    api.latencyMs = 5_000;
+    const view = renderSend();
+    await advance(1_000); // first request still in flight
+    view.unmount();
+    await advance(10_000);
+    expect(api.aborted).toBeGreaterThanOrEqual(1);
+    expect(activePaymentTrackerCount()).toBe(0);
+  });
+
+  it("P1: rate limiting backs off hard instead of exhausting the shared budget", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "OUTCOME_UNKNOWN", providerStatus: "pending", observedAt: FIRST_OBSERVED } });
+    api.rateLimitReconcile = true;
+    renderSend();
+    await advance(0);
+    await advance(3 * 60_000);
+    // 60 s floor after a 429: ~1 refresh per minute instead of 20.
+    expect(api.count("POST", "/reconcile")).toBeLessThanOrEqual(4);
+    expect(document.body.textContent).toContain("Too many tries at once");
+    // The last good server status is still shown (never a guessed outcome).
+    expect(screen.getAllByText("Checking your payment").length).toBeGreaterThan(0);
+  });
+
+  it("P1: an unknown outcome keeps tracking (bounded) and surfaces funding as soon as it is seen", async () => {
+    vi.setSystemTime(new Date(INCIDENT.attempt.handoff_authorized_at!));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "OUTCOME_UNKNOWN", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! } });
+    renderSend();
+    await advance(0);
+    expect(screen.getAllByText("Checking your payment").length).toBeGreaterThan(0);
+    await advance(5 * 60_000);
+    expect(api.count("POST", "/reconcile")).toBeLessThanOrEqual(26);
+    api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
+    await advance(15_000);
+    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+  });
+
+  it("P1: terminal outcomes stop tracking — refunded and expired-unfunded", async () => {
+    vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
+    api = installFakeApi({
+      [INCIDENT.transfer.id]: { status: "REFUNDED", providerStatus: "clientfundedserverrefunded", observedAt: INCIDENT.observations[1]!.observed_at },
+      [STALE.transfer.id]: { status: "EXPIRED_UNFUNDED", providerStatus: "expired", observedAt: "2026-11-03T12:59:00.000Z" },
+    });
+    renderSend(INCIDENT.transfer.id);
+    renderSend(STALE.transfer.id);
+    await advance(0);
+    expect(screen.getAllByText("Payment refunded").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Payment expired — not delivered").length).toBeGreaterThan(0);
+    const settled = api.calls.length;
+    await advance(10 * 60_000);
+    expect(api.calls.length).toBe(settled);
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+  });
+
+  it("P1: a deadline that becomes known (backfill) or changes is reflected without remounting", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED, claimDeadlineMs: null } });
+    renderSend();
+    await advance(0);
+    expect(screen.getByText(/we can't confirm the delivery deadline yet/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+    // Server backfills the authentic locktime on its next reconciliation.
+    api.set(INCIDENT.transfer.id, { claimDeadlineMs: DEADLINE_MS });
+    await advance(15_000);
+    expect(document.body.textContent).toContain(`Finish delivery before ${clock(DEADLINE_MS)}`);
+    expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
+    // A server-side change that moves the deadline into the unsafe window removes the action.
+    api.set(INCIDENT.transfer.id, { claimDeadlineMs: Date.now() + 2 * 60_000 });
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await advance(2_000);
+    expect(screen.getByText("Too close to the delivery deadline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+  });
+
+  it("P1: with every claim gate open, tracking never claims unattended, and a double click claims exactly once", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    claimFlag.on = true;
+    const vault = createMemoryVault();
+    await vault.saveAndVerify({
+      version: RECOVERY_VAULT_VERSION,
+      transferId: INCIDENT.transfer.id,
+      satoraSwapId: INCIDENT.attachment.satora_swap_id,
+      paymentHash: INCIDENT.attachment.payment_hash,
+      sourceSats: INCIDENT.attachment.source_sats,
+      targetAtomic: INCIDENT.transfer.target_amount_atomic,
+      destination: INCIDENT.transfer.destination,
+      routeId: INCIDENT.transfer.route_id,
+      quoteRevision: 1,
+      ownerUserId: OWNER_ID,
+      attemptToken: "owner-bound-test-token",
+      storedAt: INCIDENT.attempt.created_at,
+      verifiedAt: INCIDENT.attempt.created_at,
+    });
+    (globalThis as { __thenceVault?: unknown }).__thenceVault = vault;
+    claimSpy.readBackSwap.mockResolvedValue({
+      ok: true,
+      satoraSwapId: INCIDENT.attachment.satora_swap_id,
+      hasRecoveryMaterial: true,
+      paymentHash: INCIDENT.attachment.payment_hash,
+      evmRefundLocktime: INCIDENT.satora.getSwap.evm_refund_locktime,
+    });
+    claimSpy.claimStoredSwap.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ success: true, txHash: null, message: "" }), 2_000)),
+    );
+    renderSend();
+    // 30 min of tracking, foreground/background cycles, wake-ups: no claim.
+    await advance(10 * 60_000);
+    await setVisible(false);
+    await advance(5 * 60_000);
+    await setVisible(true);
+    await advance(10 * 60_000);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    // Explicit owner action, double-clicked.
+    const button = screen.getByRole("button", { name: "Finish delivery" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await advance(3_000);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
+    // Server still reports serverfunded; a later click is refused (already submitted).
+    await advance(30_000);
+    const again = screen.queryByRole("button", { name: "Finish delivery" });
+    if (again) fireEvent.click(again);
+    await advance(3_000);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
   });
 });
 
