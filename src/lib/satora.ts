@@ -359,6 +359,7 @@ export interface VerifiedSwapFacts {
   invoiceExpiresAt: Date | null;
   feeSats: number;
   /** Non-secret on-chain identifiers echoed by the provider, when present. */
+  evmHtlcAddress: string | null;
   evmFundTxid: string | null;
   evmClaimTxid: string | null;
 }
@@ -426,6 +427,7 @@ export async function getProviderSwap(swapId: string): Promise<VerifiedSwapFacts
     status: typeof s["status"] === "string" ? (s["status"] as string) : "",
     invoiceExpiresAt,
     feeSats: typeof s["fee_sats"] === "number" && Number.isFinite(s["fee_sats"]) ? (s["fee_sats"] as number) : 0,
+    evmHtlcAddress: readTxid(s["evm_htlc_address"] ?? s["evmHtlcAddress"]),
     evmFundTxid: readTxid(s["evm_fund_txid"] ?? s["evmFundTxid"]),
     evmClaimTxid: readTxid(s["evm_claim_txid"] ?? s["evmClaimTxid"]),
   };

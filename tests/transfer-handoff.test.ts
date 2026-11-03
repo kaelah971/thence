@@ -122,6 +122,7 @@ describe("swap verification logic (pure, no I/O)", () => {
     status: "pending",
     invoiceExpiresAt: new Date(Date.now() + 3600_000) as Date | null,
     feeSats: 35,
+    evmHtlcAddress: null,
     evmFundTxid: null,
     evmClaimTxid: null,
   };

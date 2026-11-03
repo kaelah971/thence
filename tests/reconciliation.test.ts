@@ -11,6 +11,7 @@ import { getDb } from "@/lib/db";
 import { reconciliationObservations, transfers, users } from "@/db/schema";
 import { AuthError } from "@/lib/auth";
 import { isClaimReady, planReconciliation } from "@/lib/reconcile";
+import { setSettlementChainForTests, SWAP_REFUNDED_EVENT_TOPIC, type ChainReads } from "@/lib/settlement";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransfer } from "../app/api/transfers/route";
@@ -35,6 +36,10 @@ let cc = 0;
 const withClient = (tag: string): Record<string, string> => ({ "x-forwarded-for": `b43-${RUN}-${tag}-${cc++}` });
 const login = (tag: string) => loginAs(withClient(`login-${tag}`), (id) => createdUserIds.push(id));
 const EVM_A = "0x0000000000000000000000000000000000000001";
+const REFUND_HTLC = "0x0000000000000000000000000000000000000002";
+const REFUND_TX = `0x${"ef".repeat(32)}`;
+const REFUND_BLOCK = 70_000_000n;
+const REFUND_BLOCK_HASH = `0x${"aa".repeat(32)}`;
 const ROUTES = "usdc-polygon,usdc-arbitrum,usdc-ethereum,usdt-polygon";
 const setRoutes = (value: string): string | undefined => {
   const previous = process.env["THENCE_ENABLED_ROUTES"];
@@ -48,6 +53,28 @@ const restoreRoutes = (previous: string | undefined): void => {
 /** Per-run swap ids: swap attachments are globally unique, so fixed ids would poison later runs after any crash-interrupted cleanup. */
 const uniqSwap = (name: string): string => `${name}-${RUN}`;
 
+function refundChain(): ChainReads {
+  return {
+    async getTransaction() { return { hash: REFUND_TX, blockNumber: REFUND_BLOCK }; },
+    async getReceipt() {
+      return {
+        status: "success" as const,
+        blockNumber: REFUND_BLOCK,
+        blockHash: REFUND_BLOCK_HASH,
+        logs: [{
+          address: REFUND_HTLC,
+          topics: [SWAP_REFUNDED_EVENT_TOPIC, `0x${"cd".repeat(32)}`, `0x${"01".repeat(32)}`],
+          data: "0x",
+          logIndex: 1,
+        }],
+      };
+    },
+    async getLatestBlockNumber() { return REFUND_BLOCK + 300n; },
+    async getFinalizedBlockNumber() { return REFUND_BLOCK + 300n; },
+    async getBlockHash() { return REFUND_BLOCK_HASH; },
+  };
+}
+
 function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: uniqSwap("swap-55555555-5555-5555-5555-555555555555"),
@@ -57,6 +84,7 @@ function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, un
     source_amount: "6327",
     target_amount: "5000000",
     evm_chain_id: 137,
+    evm_htlc_address: REFUND_HTLC,
     target_evm_address: EVM_A,
     target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" },
     status: "pending",
@@ -374,12 +402,15 @@ describe.skipIf(!LIVE)("read-only reconciliation (mocked provider)", () => {
     }
   });
 
-  it("marks a provider-funded refund terminal and non-claimable", async () => {
+  it("marks an independently verified provider-funded refund terminal and non-claimable", async () => {
     const previous = setRoutes(ROUTES);
+    const previousRpcs = process.env["THENCE_EVM_RPCS_JSON"];
+    process.env["THENCE_EVM_RPCS_JSON"] = JSON.stringify({ "137": "https://example.invalid" });
+    setSettlementChainForTests(refundChain());
     try {
       const { cookie } = await login("recon-refund");
       const { id } = await authorizedTransfer(cookie, "recon-refund", "refund");
-      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded" }));
+      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX }));
       try {
         const res = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund") }), { params: Promise.resolve({ id }) });
         expect(res.status).toBe(200);
@@ -392,6 +423,36 @@ describe.skipIf(!LIVE)("read-only reconciliation (mocked provider)", () => {
         setSatoraFetchersForTests(null);
       }
     } finally {
+      setSettlementChainForTests(null);
+      if (previousRpcs === undefined) delete process.env["THENCE_EVM_RPCS_JSON"];
+      else process.env["THENCE_EVM_RPCS_JSON"] = previousRpcs;
+      restoreRoutes(previous);
+    }
+  });
+
+  it("does not release a funded transfer when provider refund evidence is not independently verified", async () => {
+    const previous = setRoutes(ROUTES);
+    const previousRpcs = process.env["THENCE_EVM_RPCS_JSON"];
+    process.env["THENCE_EVM_RPCS_JSON"] = JSON.stringify({ "137": "https://example.invalid" });
+    setSettlementChainForTests(refundChain());
+    try {
+      const { cookie } = await login("recon-refund-unverified");
+      const { id } = await authorizedTransfer(cookie, "recon-refund-unverified", "refund-unverified");
+      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX, hash_lock: `0x${"ab".repeat(32)}` }));
+      try {
+        const res = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
+        expect(res.status).toBe(200);
+        const body = ((await res.json()) as { reconciliation: { status: string; advanced: boolean; lastError: string | null } }).reconciliation;
+        expect(body.status).toBe("AWAITING_NIM_APPROVAL");
+        expect(body.advanced).toBe(false);
+        expect(body.lastError).toBe("REFUND_INVALID");
+      } finally {
+        setSatoraFetchersForTests(null);
+      }
+    } finally {
+      setSettlementChainForTests(null);
+      if (previousRpcs === undefined) delete process.env["THENCE_EVM_RPCS_JSON"];
+      else process.env["THENCE_EVM_RPCS_JSON"] = previousRpcs;
       restoreRoutes(previous);
     }
   });

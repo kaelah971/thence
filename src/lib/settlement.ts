@@ -35,6 +35,9 @@ import { getEnv } from "@/lib/env";
 /** ERC20 Transfer(address,address,uint256) event topic (protocol constant). */
 export const TRANSFER_EVENT_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" as const;
+/** HTLC refund event: SwapRefunded(bytes32 indexed preimageHash, bytes32 indexed key). */
+export const SWAP_REFUNDED_EVENT_TOPIC =
+  "0xdb5ade4effa253aae9bef95994b76da3fe75eb0d634e715ec4261c6fd55c06f1" as const;
 
 type Db = ReturnType<typeof getDb>;
 
@@ -189,6 +192,31 @@ export interface LogMatch {
   logIndexes: number[];
 }
 
+export interface RefundLogMatch {
+  matched: boolean;
+  logIndexes: number[];
+}
+
+/**
+ * Pure HTLC refund matcher. A refund is attributable only when the provider's
+ * transaction receipt emitted SwapRefunded from the exact bound HTLC and the
+ * exact swap hash lock. Provider status and a transaction pointer alone never
+ * count as refund proof.
+ */
+export function matchRefundEvent(logs: ChainLog[], htlcAddress: string, hashLock: string): RefundLogMatch {
+  const htlc = htlcAddress.toLowerCase();
+  const lock = hashLock.toLowerCase();
+  const indexes: number[] = [];
+  for (const log of logs) {
+    if (log.address.toLowerCase() !== htlc) continue;
+    if (log.topics.length < 3 || log.topics[0]?.toLowerCase() !== SWAP_REFUNDED_EVENT_TOPIC) continue;
+    if (log.topics[1]?.toLowerCase() !== lock) continue;
+    if (typeof log.logIndex === "number") indexes.push(log.logIndex);
+  }
+  indexes.sort((a, b) => a - b);
+  return { matched: indexes.length > 0, logIndexes: indexes };
+}
+
 /**
  * Pure ERC20 settlement matcher. Sums every Transfer log in the receipt
  * where the emitting token is the canonical contract AND the recipient is
@@ -223,6 +251,103 @@ export function matchSettlementTransfers(
   }
   indexes.sort((a, b) => a - b);
   return { matched: total >= requiredAtomic && total > 0n, totalAtomic: total, logIndexes: indexes };
+}
+
+export type RefundVerificationVerdict =
+  | "VERIFIED"
+  | "PENDING"
+  | "INSUFFICIENT_CONFIRMATIONS"
+  | "INCONCLUSIVE"
+  | "INVALID"
+  | "UNAVAILABLE";
+
+export interface RefundVerificationResult {
+  verdict: RefundVerificationVerdict;
+  reason: string;
+  confirmations: number | null;
+}
+
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const HASH_LOCK_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/**
+ * Independently verify a provider-reported EVM refund. This is read-only and
+ * deliberately narrower than settlement verification: it proves the exact
+ * bound HTLC emitted SwapRefunded for the exact hash lock, then applies the
+ * same reorg and finality policy before callers may release exposure.
+ */
+export async function verifyEvmRefundEvidence(input: {
+  chainId: number;
+  refundTxHash: string;
+  htlcAddress: string | null;
+  hashLock: string;
+}): Promise<RefundVerificationResult> {
+  if (input.chainId !== 137) {
+    return { verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon in this pilot.", confirmations: null };
+  }
+  if (!TX_HASH_RE.test(input.refundTxHash) || !input.htlcAddress || !EVM_ADDRESS_RE.test(input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
+    return { verdict: "INVALID", reason: "Provider refund evidence is missing a valid transaction, HTLC, or hash-lock identity.", confirmations: null };
+  }
+  const htlcAddress = input.htlcAddress;
+  if (!(input.chainId in SETTLEMENT_CHAINS)) {
+    return { verdict: "INCONCLUSIVE", reason: `Chain ${input.chainId} is not supported for refund verification.`, confirmations: null };
+  }
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) {
+    return { verdict: "INCONCLUSIVE", reason: `No trusted RPC is configured for chain ${input.chainId}; refusing to guess.`, confirmations: null };
+  }
+
+  const chain = reads();
+  let receipt: ChainReceipt | null;
+  try {
+    receipt = await chain.getReceipt(input.chainId, input.refundTxHash);
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+  if (!receipt) {
+    return { verdict: "PENDING", reason: "Refund transaction is not yet mined.", confirmations: 0 };
+  }
+  if (receipt.status === "reverted") {
+    return { verdict: "INVALID", reason: "Refund transaction reverted on-chain.", confirmations: null };
+  }
+  const match = matchRefundEvent(receipt.logs, htlcAddress, input.hashLock);
+  if (!match.matched) {
+    return { verdict: "INVALID", reason: "Refund receipt does not contain a matching SwapRefunded event for this HTLC.", confirmations: null };
+  }
+
+  try {
+    const atHeight = await chain.getBlockHash(input.chainId, receipt.blockNumber);
+    if (!atHeight) return { verdict: "INCONCLUSIVE", reason: "Chain header evidence is unavailable; refusing to decide.", confirmations: null };
+    if (atHeight.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+      return { verdict: "INCONCLUSIVE", reason: "Block hash changed at the refund height; possible reorg.", confirmations: null };
+    }
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+
+  const overrides = getEnv().THENCE_SETTLEMENT_FINALITY_JSON as Record<string, { mode: string; confirmations: number }>;
+  const policy = overrides[String(input.chainId)] ?? DEFAULT_FINALITY_POLICY[input.chainId]!;
+  try {
+    if (policy.mode === "finalized") {
+      const finalized = await chain.getFinalizedBlockNumber(input.chainId);
+      if (finalized === null) return { verdict: "INCONCLUSIVE", reason: "RPC cannot provide finalized-block evidence; refusing to decide.", confirmations: null };
+      const latest = await chain.getLatestBlockNumber(input.chainId);
+      const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
+      if (receipt.blockNumber > finalized) {
+        return { verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Refund is confirmed but not yet covered by finalized ancestry.", confirmations };
+      }
+      return { verdict: "VERIFIED", reason: "Polygon refund independently verified on-chain.", confirmations };
+    }
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
+    if (confirmations < policy.confirmations) {
+      return { verdict: "INSUFFICIENT_CONFIRMATIONS", reason: `Refund has ${confirmations} confirmations; policy requires ${policy.confirmations}.`, confirmations };
+    }
+    return { verdict: "VERIFIED", reason: "Polygon refund independently verified on-chain.", confirmations };
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
 }
 
 export type SettlementVerdict =

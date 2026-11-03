@@ -194,20 +194,32 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
     }
   });
 
-  it("releases a stale funded row after the latest provider refund evidence", async () => {
+  it("releases exactly one slot only after durable REFUNDED reconciliation", async () => {
     const saved = snapshotEnv();
     try {
       const me = await login("refund-release");
-      await armFor(me.address, { THENCE_PILOT_MAX_TRANSFERS: "1", THENCE_PILOT_MAX_SPEND_ATOMIC: "300000" });
+      await armFor(me.address, { THENCE_PILOT_MAX_TRANSFERS: "1", THENCE_PILOT_MAX_SPEND_ATOMIC: "600000" });
       const refunded = await createDirect(me.cookie, "refund-release", "refunded", "300000");
       expect(refunded.status).toBe(201);
       await getDb().update(transfers).set({ status: "SERVER_FUNDED" }).where(eq(transfers.id, refunded.body.transfer.id));
+      // Provider observations alone are not independent refund proof and do
+      // not spoof Activity or release the exposure slot.
       await getDb().insert(reconciliationObservations).values({
         transferId: refunded.body.transfer.id,
         satoraSwapId: "swap-refunded",
         providerStatus: "clientfundedserverrefunded",
         kind: "observation",
       });
+      const before = await transfersGet(new Request("http://localhost/api/transfers", { headers: { cookie: me.cookie } }));
+      const beforeBody = (await before.json()) as { transfers: Array<{ id: string; status: string }> };
+      expect(beforeBody.transfers.find((row) => row.id === refunded.body.transfer.id)?.status).toBe("SERVER_FUNDED");
+      const blocked = await createDirect(me.cookie, "refund-release", "blocked", "300000");
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error).toBe("PILOT_EXPOSURE_LIMIT");
+
+      // The reconciler is the only path that may durably release the slot;
+      // model its terminal result here without a provider or wallet action.
+      await getDb().update(transfers).set({ status: "REFUNDED" }).where(eq(transfers.id, refunded.body.transfer.id));
       const listed = await transfersGet(new Request("http://localhost/api/transfers", { headers: { cookie: me.cookie } }));
       const listedBody = (await listed.json()) as { transfers: Array<{ id: string; status: string; statusLabel: string }> };
       expect(listedBody.transfers.find((row) => row.id === refunded.body.transfer.id)).toMatchObject({

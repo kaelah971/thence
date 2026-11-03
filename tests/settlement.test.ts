@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { transferProofs, transfers, users } from "@/db/schema";
-import { matchSettlementTransfers, setSettlementChainForTests, TRANSFER_EVENT_TOPIC } from "@/lib/settlement";
+import { matchRefundEvent, matchSettlementTransfers, setSettlementChainForTests, SWAP_REFUNDED_EVENT_TOPIC, TRANSFER_EVENT_TOPIC } from "@/lib/settlement";
 import { planReconciliation } from "@/lib/reconcile";
 import type { ChainReads } from "@/lib/settlement";
 import { transition } from "@/domain/transfers";
@@ -256,6 +256,22 @@ describe("settlement log matcher (pure, no I/O)", () => {
         1n,
       ).matched,
     ).toBe(false);
+  });
+});
+
+describe("refund log matcher (pure, no I/O)", () => {
+  it("requires the exact HTLC, hash lock and refund event", () => {
+    const htlc = "0x0000000000000000000000000000000000000002";
+    const lock = `0x${"ab".repeat(32)}`;
+    const event = {
+      address: htlc,
+      topics: [SWAP_REFUNDED_EVENT_TOPIC, lock, `0x${"01".repeat(32)}`],
+      data: "0x",
+      logIndex: 4,
+    };
+    expect(matchRefundEvent([event], htlc, lock)).toMatchObject({ matched: true, logIndexes: [4] });
+    expect(matchRefundEvent([event], htlc, `0x${"cd".repeat(32)}`).matched).toBe(false);
+    expect(matchRefundEvent([{ ...event, address: "0x0000000000000000000000000000000000000003" }], htlc, lock).matched).toBe(false);
   });
 });
 

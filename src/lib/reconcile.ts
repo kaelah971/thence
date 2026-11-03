@@ -39,6 +39,7 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
+import { verifyEvmRefundEvidence } from "@/lib/settlement";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -260,6 +261,8 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       targetAmountAtomic: transfer.targetAmountAtomic,
     };
     if (
+      facts.satoraSwapId !== attachment.satoraSwapId ||
+      facts.direction !== "lightning_to_evm" ||
       facts.targetAtomic !== expected.targetAmountAtomic ||
       facts.targetAddress.toLowerCase() !== expected.destination.toLowerCase()
     ) {
@@ -282,7 +285,33 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       return { ...summary, lastError: "PROVIDER_UNAVAILABLE", advanced: false, advancedPath: [] };
     }
 
-    const decision = planReconciliation(current, facts.status || "unknown");
+    const providerStatus = facts.status || "unknown";
+    if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && current !== "REFUNDED") {
+      const refundTxHash = facts.evmClaimTxid;
+      const refund = refundTxHash
+        ? await verifyEvmRefundEvidence({
+            chainId: facts.evmChainId,
+            refundTxHash,
+            htlcAddress: facts.evmHtlcAddress,
+            hashLock: facts.paymentHash,
+          })
+        : { verdict: "INCONCLUSIVE" as const, reason: "Provider has not reported a refund transaction yet.", confirmations: null };
+      if (refund.verdict !== "VERIFIED") {
+        const errorCode = `REFUND_${refund.verdict}`;
+        await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
+          providerStatus,
+          kind: "provider_error",
+          errorCode,
+          evmFundTxid: facts.evmFundTxid ?? null,
+          evmClaimTxid: facts.evmClaimTxid ?? null,
+        });
+        const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
+        if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+        return { ...summary, lastError: errorCode, advanced: false, advancedPath: [] };
+      }
+    }
+
+    const decision = planReconciliation(current, providerStatus);
     let advanced: TransferStatus[] = [];
     if (decision.action === "advance" || decision.action === "needs-attention") {
       let state = current;
@@ -507,7 +536,11 @@ export async function readBoundProviderEvidence(
     throw new AuthError(503, "PROVIDER_UNAVAILABLE", "Route provider is temporarily unavailable.");
   }
 
-  let identityMatch = facts.targetAtomic === transfer.targetAmountAtomic && facts.targetAddress.toLowerCase() === transfer.destination.toLowerCase();
+  let identityMatch =
+    facts.satoraSwapId === attachment.satoraSwapId &&
+    facts.direction === "lightning_to_evm" &&
+    facts.targetAtomic === transfer.targetAmountAtomic &&
+    facts.targetAddress.toLowerCase() === transfer.destination.toLowerCase();
   try {
     const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
     identityMatch =

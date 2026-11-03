@@ -56,6 +56,7 @@ function facts(over: Partial<VerifiedSwapFacts> = {}): VerifiedSwapFacts {
     status: "pending",
     invoiceExpiresAt: new Date(Date.now() + 3600_000),
     feeSats: 5,
+    evmHtlcAddress: null,
     evmFundTxid: null,
     evmClaimTxid: null,
     ...over,

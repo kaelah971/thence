@@ -1,7 +1,7 @@
 # API_SETTLEMENT (B4.4) — Verified Settlement Proofs & Receipts
 
 Backend-only evidence verification for Lightning → EVM transfers.
-No payments, claims, refunds, signing, or broadcasting exist in this slice.
+No payments, claim/refund initiation, signing, or broadcasting exist in this slice; settlement and refund checks are read-only.
 
 ## 1. Supported networks and settlement modes
 
@@ -115,7 +115,20 @@ result is `INCONCLUSIVE`/`UNAVAILABLE` — finality is never claimed.
 - The quoted sats figure is labelled an **estimate**: B4.4 never proves
   the actual debited amount, only the verified destination output.
 
-## 8. State machine
+## 8. Refund reconciliation
+
+A provider refund status is not sufficient to release exposure. For the Polygon
+Lightning → EVM path, owner-authorized reconciliation additionally requires the
+provider-named transaction receipt to be successful and to emit
+`SwapRefunded(bytes32 indexed preimageHash, bytes32 indexed key)` from the exact
+bound HTLC with the exact bound hash lock. The receipt block hash is rechecked
+for reorgs and the Polygon finality policy is applied. Only verified evidence
+may advance `SERVER_FUNDED` (or another legal pre-delivery state) to durable
+`REFUNDED`; provider observations never spoof Activity or release capacity.
+The transition is locked and idempotent, so one refunded transfer releases only
+its own exposure slot while unresolved `RECONCILING` transfers remain active.
+
+## 9. State machine
 
 `DELIVERED` is reachable only from `CLAIMING` or `SERVER_FUNDED` via
 `transition(from, "DELIVERED", { evidence: { destinationTxHash,
@@ -130,7 +143,7 @@ proof. A stale/unavailable RPC never regresses a verified delivery.
 Pre-finality conflicts and reorg evidence stay nonterminal
 (`INCONCLUSIVE`) and require reconciliation.
 
-## 9. RPC configuration and unavailable behavior
+## 10. RPC configuration and unavailable behavior
 
 - `THENCE_EVM_RPCS_JSON`: `{chainId: httpsUrl}`. Empty/missing chain =
   chain verification unavailable (`INCONCLUSIVE`, never public RPCs,
@@ -140,7 +153,7 @@ Pre-finality conflicts and reorg evidence stay nonterminal
   Prior verified observations are never overwritten by failures:
   non-`VERIFIED` verdicts persist nothing.
 
-## 10. Reorganization and ambiguity handling
+## 11. Reorganization and ambiguity handling
 
 - Reorg guard: the block hash at the receipt height is re-read; a
   mismatch (or unreadable header) yields `INCONCLUSIVE`.
@@ -150,7 +163,7 @@ Pre-finality conflicts and reorg evidence stay nonterminal
   reconcilable. A reverted receipt or a receipt with no (or insufficient)
   matching Transfer output is `INVALID` (422).
 
-## 11. Known limitations
+## 12. Known limitations
 
 - CCTP-bridged swaps (`bridge_target_chain` set) settle onward on another
   chain; this slice verifies only the first-leg EVM receipt and reports
@@ -161,7 +174,7 @@ Pre-finality conflicts and reorg evidence stay nonterminal
 - Proofs attest destination output only — never the funding source,
   Lightning payment, or fee breakdown.
 
-## 12. Future frontend and wallet integration
+## 13. Future frontend and wallet integration
 
 The eventual client will call `verify-settlement` after its claim
 confirms, poll through `PENDING`/`INSUFFICIENT_CONFIRMATIONS`, and render

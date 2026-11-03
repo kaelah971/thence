@@ -25,7 +25,7 @@ import { and, count, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
-import { paymentRequests, reconciliationObservations, recipientDestinations, recipients, transfers } from "@/db/schema";
+import { paymentRequests, recipientDestinations, recipients, transfers } from "@/db/schema";
 
 import { assertFundingExposure, assertPilotBudget, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
 import { isAtomicAmount, parseAtomicAmount } from "@/domain/money";
@@ -33,7 +33,6 @@ import {
   TRANSFER_STATUSES,
   USER_FACING_LABEL,
   canTransition,
-  isTerminal,
   type TransferStatus,
 } from "@/domain/transfers";
 import { pairForRouteId } from "@/domain/routes";
@@ -141,14 +140,6 @@ export interface TransferView {
 type Db = ReturnType<typeof getDb>;
 type TransferRow = typeof transfers.$inferSelect;
 
-const REFUNDED_PROVIDER_STATUSES = new Set([
-  "clientrefunded",
-  "clientfundedserverrefunded",
-  "clientrefundedserverfunded",
-  "clientrefundedserverrefunded",
-  "clientredeemedandclientrefunded",
-]);
-
 function quoteSnapshotOf(row: TransferRow): QuoteSnapshot | null {
   if (!row.quotedAt || !row.quotedNetTargetAtomic || !row.quotedSourceSats) return null;
   return {
@@ -172,16 +163,7 @@ async function toView(db: Db, row: TransferRow): Promise<TransferView> {
     const req = await db.select({ publicId: paymentRequests.publicId }).from(paymentRequests).where(eq(paymentRequests.id, row.requestId)).limit(1);
     requestPublicId = req[0]?.publicId ?? null;
   }
-  let displayStatus = row.status as TransferStatus;
-  if (!isTerminal(displayStatus)) {
-    const latest = await db
-      .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind })
-      .from(reconciliationObservations)
-      .where(eq(reconciliationObservations.transferId, row.id))
-      .orderBy(desc(reconciliationObservations.observedAt))
-      .limit(1);
-    if (latest[0]?.kind === "observation" && REFUNDED_PROVIDER_STATUSES.has(latest[0]?.providerStatus ?? "")) displayStatus = "REFUNDED";
-  }
+  const displayStatus = row.status as TransferStatus;
   return {
     id: row.id,
     status: displayStatus,
