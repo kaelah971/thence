@@ -13,7 +13,8 @@
 import { vi } from "vitest";
 import fixture from "../fixtures/incidents-2026-11-02.json";
 import { USER_FACING_LABEL, type TransferStatus } from "@/domain/transfers";
-import { isClaimReady } from "@/lib/reconcile";
+import { claimReadyNow } from "@/lib/reconcile";
+import { claimWindowAt } from "@/domain/claim-deadline";
 
 export const OWNER_ID = fixture._meta.redactions.ownerUserId;
 export const INCIDENT = fixture.incident_077770a1;
@@ -25,6 +26,8 @@ export interface ServerTransferState {
   status: TransferStatus;
   providerStatus: string;
   observedAt: string;
+  /** P2: latest provider read diverged from the bound identity (server records identity_mismatch). */
+  identityMismatch?: boolean;
 }
 
 export interface RecordedCall {
@@ -73,19 +76,29 @@ function transferRecord(c: Case, s: ServerTransferState) {
   };
 }
 
+/** P2: the persisted Polygon claim deadline = Satora evm_refund_locktime from the real fixture. */
+function claimDeadline(c: Case): string {
+  return new Date(c.satora.getSwap.evm_refund_locktime * 1000).toISOString();
+}
+
 function latest(c: Case, s: ServerTransferState, now: number) {
+  const deadline = claimDeadline(c);
+  const claimWindow = claimWindowAt(Date.parse(deadline), now);
   return {
     transferId: c.transfer.id,
     status: s.status,
     statusLabel: USER_FACING_LABEL[s.status],
     providerStatus: s.providerStatus,
     observedAt: s.observedAt,
-    claimReady: isClaimReady(s.status, s.providerStatus),
+    claimReady: claimReadyNow({ transferStatus: s.status, providerStatus: s.providerStatus, latestKind: s.identityMismatch ? "identity_mismatch" : "observation", claimWindow }),
     ambiguous: false,
     ambiguityReasons: [],
     invoiceExpired: new Date(c.attachment.invoice_expires_at!).getTime() <= now,
     unknownProviderState: false,
     lastError: null,
+    claimDeadlineAt: deadline,
+    claimWindow,
+    identityMismatch: s.identityMismatch === true,
   };
 }
 
@@ -115,6 +128,7 @@ function reconciliationView(c: Case, s: ServerTransferState, now: number) {
       paymentHash: c.attachment.payment_hash,
       invoiceBolt11: "lnbc-REDACTED",
       invoiceExpiresAt: c.attachment.invoice_expires_at,
+      claimDeadline: claimDeadline(c),
       providerStatus: s.providerStatus,
       verifiedAt: c.attachment.verified_at,
     },

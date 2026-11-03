@@ -41,6 +41,7 @@ import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { verifyEvmRefundEvidence } from "@/lib/settlement";
 import { recordPath } from "@/lib/transitions";
+import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -203,6 +204,12 @@ export interface ReconciliationBase {
   invoiceExpired: boolean;
   unknownProviderState: boolean;
   lastError: string | null;
+  /** P2: Polygon claim deadline (Satora evm_refund_locktime), ISO; null when unknown. */
+  claimDeadlineAt: string | null;
+  /** P2: server-side window at read time (unknown/open/closing/unsafe/passed). */
+  claimWindow: ClaimWindow;
+  /** P2: the latest provider read diverged from the bound swap identity. */
+  identityMismatch: boolean;
 }
 
 export interface ReconciliationSummary extends ReconciliationBase {
@@ -275,14 +282,22 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       destination: transfer.destination,
       targetAmountAtomic: transfer.targetAmountAtomic,
     };
+    // P2: the claim deadline is part of the swap identity once known.
+    const storedLocktimeSec = attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null;
+    const locktimeChanged = storedLocktimeSec !== null && facts.evmRefundLocktime !== null && facts.evmRefundLocktime !== storedLocktimeSec;
     if (
       facts.satoraSwapId !== attachment.satoraSwapId ||
       facts.direction !== "lightning_to_evm" ||
       facts.targetAtomic !== expected.targetAmountAtomic ||
-      facts.targetAddress.toLowerCase() !== expected.destination.toLowerCase()
+      facts.targetAddress.toLowerCase() !== expected.destination.toLowerCase() ||
+      facts.paymentHash.toLowerCase() !== attachment.paymentHash.toLowerCase() ||
+      locktimeChanged
     ) {
+      // P2: the mismatch observation must be DURABLE (it gates claim
+      // readiness and P4 closure). Throwing here rolled the record back, so
+      // return the committed summary instead; the route answers 409.
       await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" });
-      throw new AuthError(409, "SWAP_MISMATCH", "Provider swap no longer matches the bound transfer terms.");
+      return await mismatchSummary(tx, transfer.id);
     }
     // Chain/token identity revalidation against canonical config.
     try {
@@ -290,7 +305,7 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       const resolved = await resolveRoute(expected.asset, expected.network);
       if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
         await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" });
-        throw new AuthError(409, "SWAP_MISMATCH", "Provider swap token identity does not match the route registry.");
+        return await mismatchSummary(tx, transfer.id);
       }
     } catch (err) {
       if (err instanceof AuthError) throw err;
@@ -298,6 +313,16 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
       if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
       return { ...summary, lastError: "PROVIDER_UNAVAILABLE", advanced: false, advancedPath: [] };
+    }
+
+    // P2 backfill: rows bound before P2 lack the deadline. It is persisted
+    // only here, AFTER the full identity + route verification above, and
+    // only when plausible relative to the original bind time.
+    if (storedLocktimeSec === null && facts.evmRefundLocktime !== null) {
+      const validated = validateLocktime(facts.evmRefundLocktime, attachment.createdAt.getTime(), attachment.invoiceExpiresAt);
+      if (validated instanceof Date) {
+        await tx.update(swapAttachments).set({ evmRefundLocktime: validated }).where(eq(swapAttachments.id, attachment.id));
+      }
     }
 
     const providerStatus = facts.status || "unknown";
@@ -375,6 +400,13 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
   });
 }
 
+/** Committed summary after a recorded identity mismatch (no transition). */
+async function mismatchSummary(db: DbClient, transferId: string): Promise<ReconciliationSummary> {
+  const summary = await buildSummary(db, transferId);
+  if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+  return { ...summary, lastError: "SWAP_MISMATCH", advanced: false, advancedPath: [] };
+}
+
 async function buildSummary(
   db: DbClient,
   transferId: string,
@@ -397,6 +429,10 @@ async function buildSummary(
   const providerExpiry = opts?.providerInvoiceExpiresAt;
   const dbLive = await invoiceIsLive(db, transferId);
   const invoiceLive = providerExpiry instanceof Date ? providerExpiry.getTime() > Date.now() : dbLive;
+  const boundRows = await db.select({ evmRefundLocktime: swapAttachments.evmRefundLocktime }).from(swapAttachments).where(eq(swapAttachments.transferId, transferId)).limit(1);
+  const claimDeadline = boundRows[0]?.evmRefundLocktime ?? null;
+  const claimWindow = claimWindowAt(claimDeadline ? claimDeadline.getTime() : null, Date.now());
+  const identityMismatch = latest?.kind === "identity_mismatch";
   const unknownProviderState = !latest || (!!latest && !RECOGNIZED_STATUSES.has(latest.providerStatus) && latest.kind === "observation" && latest.providerStatus !== "unknown");
   const ambiguityReasons: string[] = [];
   if (invoiceLive === false) ambiguityReasons.push("Invoice expired; expiry alone does not establish whether payment was initiated.");
@@ -409,13 +445,34 @@ async function buildSummary(
     statusLabel: USER_FACING_LABEL[transfer.status as TransferStatus] ?? transfer.status,
     providerStatus,
     observedAt: latest?.observedAt.toISOString() ?? transfer.updatedAt.toISOString(),
-    claimReady: isClaimReady(transfer.status as TransferStatus, providerStatus),
+    claimReady: claimReadyNow({ transferStatus: transfer.status as TransferStatus, providerStatus, latestKind: latest?.kind ?? null, claimWindow }),
     ambiguous: ambiguityReasons.length > 0,
     ambiguityReasons,
     invoiceExpired: invoiceLive === false,
     unknownProviderState,
     lastError: latest?.kind === "provider_error" ? (latest.errorCode ?? "PROVIDER_ERROR") : null,
+    claimDeadlineAt: claimDeadline ? claimDeadline.toISOString() : null,
+    claimWindow,
+    identityMismatch,
   };
+}
+
+/**
+ * P2: claim-ready right now. Funded (isClaimReady) AND the latest provider
+ * read is a clean observation (never after an identity mismatch or a failed
+ * read) AND the deadline window still allows a claim. An UNKNOWN deadline
+ * stays claim-ready server-side for recovery visibility, but every client
+ * claim action requires a known, open window (fail closed).
+ */
+export function claimReadyNow(input: {
+  transferStatus: TransferStatus;
+  providerStatus: string;
+  latestKind: string | null;
+  claimWindow: ClaimWindow;
+}): boolean {
+  if (!isClaimReady(input.transferStatus, input.providerStatus)) return false;
+  if (input.latestKind !== "observation") return false;
+  return input.claimWindow === "unknown" || claimActionAllowed(input.claimWindow);
 }
 
 const RECOGNIZED_STATUSES = new Set([
@@ -463,6 +520,8 @@ export interface ResumeView {
     paymentHash: string;
     invoiceBolt11: string;
     invoiceExpiresAt: string | null;
+    /** P2: Polygon claim deadline (Satora evm_refund_locktime), ISO; null when unknown. */
+    claimDeadline: string | null;
     providerStatus: string;
     verifiedAt: string;
   } | null;
@@ -517,6 +576,7 @@ export async function getReconciliation(userId: string, transferId: string): Pro
           paymentHash: attachment.paymentHash,
           invoiceBolt11: attachment.invoiceBolt11,
           invoiceExpiresAt: attachment.invoiceExpiresAt?.toISOString() ?? null,
+          claimDeadline: attachment.evmRefundLocktime?.toISOString() ?? null,
           providerStatus: latest.providerStatus,
           verifiedAt: attachment.verifiedAt.toISOString(),
         }

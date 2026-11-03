@@ -438,6 +438,13 @@ export const swapAttachments = pgTable(
     /** Exact destination atomic units; must equal the transfer amount. */
     targetAtomic: text("target_atomic").notNull(),
     invoiceExpiresAt: timestamp("invoice_expires_at", { withTimezone: true }),
+    /**
+     * P2: Polygon claim deadline = Satora `evm_refund_locktime`, stored only
+     * after strict identity verification. Fixed at swap creation. NOT the
+     * Lightning invoice expiry and NOT Nimiq Pay's NIM HTLC timeout.
+     * Nullable: rows bound before P2 are backfilled by reconciliation.
+     */
+    evmRefundLocktime: timestamp("evm_refund_locktime", { withTimezone: true }),
     /** Provider status snapshot at verification time (e.g. pending). */
     providerStatus: varchar("provider_status", { length: 64 }),
     verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull().defaultNow(),

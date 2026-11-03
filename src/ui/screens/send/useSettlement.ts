@@ -13,6 +13,7 @@ import {
   type SettlementVerdict,
 } from "@/ui/lib/settlement-client";
 import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRetryClaim } from "@/ui/lib/claim-gate";
+import { claimActionAllowed, claimWindowAt } from "@/domain/claim-deadline";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap } from "@/ui/lib/satora-browser";
 import { canHaveReceipt, getReceipt, type ApiReceipt } from "@/ui/lib/transfers-api";
@@ -36,6 +37,17 @@ export interface SettlementState {
   message: string;
   receipt: ApiReceipt | null;
   verifyVerdict: SettlementVerdict | null;
+  /** P2: Polygon claim deadline (ms epoch) from the server; null when unknown. */
+  claimDeadlineMs?: number | null;
+  /** P2: the server's latest provider read diverged from the bound identity. */
+  identityMismatch?: boolean;
+}
+
+/** P2: parse a server deadline; anything unparseable is unknown (fail closed). */
+export function deadlineMsFrom(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
 /** Bounded polling: short backoff, stops at terminal insight, never aggressive. */
@@ -149,6 +161,7 @@ export function useSettlement(): {
     receipt: null,
     verifyVerdict: null,
   });
+  const [claimInfo, setClaimInfo] = useState<{ claimDeadlineMs: number | null; identityMismatch: boolean }>({ claimDeadlineMs: null, identityMismatch: false });
   const runId = useRef(0);
   const claimInFlight = useRef(false);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
@@ -186,6 +199,7 @@ export function useSettlement(): {
 
   const readAuthoritative = useCallback(async (transferId: string) => {
     const [transferRes, reconRes] = await Promise.all([fetchTransfer(transferId), getReconciliation(transferId)]);
+    if (reconRes.ok) setClaimInfo({ claimDeadlineMs: deadlineMsFrom(reconRes.data.latest.claimDeadlineAt ?? reconRes.data.swap?.claimDeadline), identityMismatch: reconRes.data.latest.identityMismatch === true });
     return { transferRes, reconRes };
   }, []);
 
@@ -323,6 +337,7 @@ export function useSettlement(): {
       }
       const fresh = await getReconciliation(input.transferId);
       if (runId.current !== id) return;
+      if (fresh.ok) setClaimInfo({ claimDeadlineMs: deadlineMsFrom(fresh.data.latest.claimDeadlineAt ?? fresh.data.swap?.claimDeadline), identityMismatch: fresh.data.latest.identityMismatch === true });
       if (!fresh.ok) {
         setState({
           phase: "checking",
@@ -422,6 +437,12 @@ export function useSettlement(): {
         readback.hasRecoveryMaterial &&
         typeof readback.paymentHash === "string" &&
         readback.paymentHash.toLowerCase() === swap.paymentHash.toLowerCase();
+      // P2: the server-verified deadline must be known, still allow a claim,
+      // and equal the locktime the SDK reads back (identity cross-check).
+      const serverDeadlineMs = deadlineMsFrom(swap.claimDeadline ?? view.data.latest.claimDeadlineAt);
+      const serverWindowOk = claimActionAllowed(claimWindowAt(serverDeadlineMs, Date.now()));
+      const deadlinesAgree =
+        serverDeadlineMs !== null && typeof readback.evmRefundLocktime === "number" && readback.evmRefundLocktime * 1000 === serverDeadlineMs;
       const record = loadClaimRecord(input.transferId, input.ownerUserId);
       const claimRetryAllowed = record !== null && record.unknownAt !== null
         ? mayRetryClaim({ earlierClaimUnknown: true, verifyCompletedSinceClaim: record.verifyCompletedSinceClaim, claimReadyNow: view.data.latest.claimReady, knownClaimTxHash: record.txHash !== null })
@@ -431,7 +452,7 @@ export function useSettlement(): {
         flagEnabled: isClaimFlagEnabled(),
         explicitAuthorization: input.explicitClaimAuthorization === true,
         sessionValid: input.sessionValid,
-        timelockSafe: readbackIdentityMatched && isClaimWindowOpen(readback.evmRefundLocktime),
+        timelockSafe: readbackIdentityMatched && isClaimWindowOpen(readback.evmRefundLocktime) && serverWindowOk && deadlinesAgree,
         claimAlreadySubmitted,
         transferStatus: transfer.status,
         providerStatus: view.data.latest.providerStatus,
@@ -535,5 +556,5 @@ export function useSettlement(): {
     runVerifyLoopRef.current = runVerifyLoop;
   }, [runVerifyLoop]);
 
-  return { state, track, stop, attemptClaim, checkAgain };
+  return { state: { ...state, ...claimInfo }, track, stop, attemptClaim, checkAgain };
 }

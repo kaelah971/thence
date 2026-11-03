@@ -20,7 +20,8 @@ import { USER_FACING_LABEL, canTransition, isTerminal } from "@/domain/transfers
 import { assessNonChainEvidence, chainRefusal, scanWindow } from "@/lib/expiry-resolution";
 import { EXPIRED_UNFUNDED_BODY } from "@/ui/lib/settlement-client";
 import { assertFundingExposure, getPilotConfig, isActualSpendStatus, isFundingExposureStatus } from "@/lib/pilot";
-import { isClaimReady, planReconciliation } from "@/lib/reconcile";
+import { claimReadyNow, isClaimReady, planReconciliation } from "@/lib/reconcile";
+import { CLAIM_UNSAFE_WINDOW_MS, claimActionAllowed, claimWindowAt, validateLocktime } from "@/domain/claim-deadline";
 import { getProviderSwap, setSatoraFetchersForTests } from "@/lib/satora";
 import {
   SWAP_REFUNDED_EVENT_TOPIC,
@@ -151,8 +152,10 @@ describe("incident 077770a1 — approval → funded swap → no claim → deadli
     expect(fixture._meta.htlcEventTopics.swapRefunded).toBe(SWAP_REFUNDED_EVENT_TOPIC);
   });
 
-  it("the client claim gate closed 60 s before the deadline and the refund landed ~4 min after it", () => {
+  it("the client claim gate closes 5 min before the deadline (P2: was 60 s) and the refund landed ~4 min after it", () => {
     const lock = INC.satora.getSwap.evm_refund_locktime;
+    expect(CLAIM_TIMELOCK_MARGIN_MS).toBe(CLAIM_UNSAFE_WINDOW_MS);
+    expect(CLAIM_UNSAFE_WINDOW_MS).toBe(5 * 60_000);
     expect(isClaimWindowOpen(lock, lock * 1000 - CLAIM_TIMELOCK_MARGIN_MS - 1)).toBe(true);
     expect(isClaimWindowOpen(lock, lock * 1000 - CLAIM_TIMELOCK_MARGIN_MS)).toBe(false);
     const refundAt = blockTime(PROVIDER_CLAIM_TX);
@@ -183,14 +186,60 @@ describe("incident 077770a1 — approval → funded swap → no claim → deadli
     expect(isFundingExposureStatus("REFUNDED")).toBe(false);
   });
 
-  it("characterization: the server-side swap facts carry NO refund deadline (P2 gap)", async () => {
-    const facts = await getProviderSwap(INC.satora.getSwap.id);
-    expect(Object.keys(facts)).not.toContain("evmRefundLocktime");
-  });
-
-  it.fails("REQUIRED (P2): the server knows the claim deadline for a bound swap", async () => {
+  // P2 (was it.fails): the server knows the claim deadline for a bound swap.
+  it("P2: the server knows the claim deadline for a bound swap", async () => {
     const facts = (await getProviderSwap(INC.satora.getSwap.id)) as unknown as { evmRefundLocktime?: number };
     expect(facts.evmRefundLocktime).toBe(INC.satora.getSwap.evm_refund_locktime);
+  });
+
+  it("P2: the real deadline is plausible at bind time and is accepted for persistence", async () => {
+    const facts = await getProviderSwap(INC.satora.getSwap.id);
+    const bindMs = at(INC.attachment.created_at);
+    const validated = validateLocktime(facts.evmRefundLocktime, bindMs, facts.invoiceExpiresAt);
+    expect(validated).toBeInstanceOf(Date);
+    expect((validated as Date).toISOString()).toBe("2026-11-02T22:12:42.000Z");
+    // Implausible values are refused as identity anomalies, not stored.
+    expect(validateLocktime(facts.evmRefundLocktime! + 3600, bindMs, facts.invoiceExpiresAt)).toBe("implausible"); // after invoice expiry
+    expect(validateLocktime(Math.floor(bindMs / 1000) + 60, bindMs, facts.invoiceExpiresAt)).toBe("implausible"); // 1 min after bind
+    expect(validateLocktime(null, bindMs, facts.invoiceExpiresAt)).toBeNull();
+  });
+
+  it("P2: the deadline counts from swap CREATION, not funding, and is not the invoice or NIM timer", () => {
+    const deadline = INC.satora.getSwap.evm_refund_locktime * 1000;
+    const created = at(INC.satora.getSwap.created_at);
+    const funded = blockTime(FUND_TX);
+    expect(Math.round((deadline - created) / 60_000)).toBe(60);
+    // Funding 43 s after creation already consumed claim time: 59 min left, not 60.
+    expect(Math.floor((deadline - funded) / 60_000)).toBe(59);
+    expect(claimWindowAt(deadline, funded)).toBe("open");
+    // When Thence first observed funding (21:30:26) only 42 min remained.
+    expect(Math.floor((deadline - at(INC.observations[0]!.observed_at)) / 60_000)).toBe(42);
+    // The Lightning invoice expiry is 30 min LATER: using it would overstate the window.
+    expect(at(INC.attachment.invoice_expires_at!) - deadline).toBe(30 * 60_000);
+  });
+
+  it("P2: the window is time-aware — open, closing, unsafe, passed", () => {
+    const d = INC.satora.getSwap.evm_refund_locktime * 1000;
+    expect(claimWindowAt(d, d - 42 * 60_000)).toBe("open");
+    expect(claimWindowAt(d, d - 10 * 60_000)).toBe("closing");
+    expect(claimWindowAt(d, d - 4 * 60_000)).toBe("unsafe");
+    expect(claimWindowAt(d, d + 1)).toBe("passed");
+    expect(claimWindowAt(null, d)).toBe("unknown");
+    expect(claimActionAllowed("open") && claimActionAllowed("closing")).toBe(true);
+    expect(["unknown", "unsafe", "passed"].some((w) => claimActionAllowed(w as never))).toBe(false);
+  });
+
+  it("P2: no claim action when refunded, expired, identity-mismatched or inside the unsafe window", () => {
+    const funded = { transferStatus: "SERVER_FUNDED" as const, providerStatus: "serverfunded", latestKind: "observation" };
+    expect(claimReadyNow({ ...funded, claimWindow: "open" })).toBe(true);
+    expect(claimReadyNow({ ...funded, claimWindow: "closing" })).toBe(true);
+    expect(claimReadyNow({ ...funded, claimWindow: "unsafe" })).toBe(false);
+    expect(claimReadyNow({ ...funded, claimWindow: "passed" })).toBe(false);
+    expect(claimReadyNow({ ...funded, latestKind: "identity_mismatch", claimWindow: "open" })).toBe(false);
+    expect(claimReadyNow({ ...funded, latestKind: "provider_error", claimWindow: "open" })).toBe(false);
+    expect(claimReadyNow({ transferStatus: "REFUNDED", providerStatus: "clientfundedserverrefunded", latestKind: "observation", claimWindow: "open" })).toBe(false);
+    expect(claimReadyNow({ transferStatus: "RECONCILING", providerStatus: "expired", latestKind: "observation", claimWindow: "open" })).toBe(false);
+    expect(claimReadyNow({ transferStatus: "EXPIRED_UNFUNDED", providerStatus: "expired", latestKind: "observation", claimWindow: "open" })).toBe(false);
   });
 });
 

@@ -38,6 +38,7 @@ const FIRST_OBSERVED = INCIDENT.observations[0]!.observed_at; // 21:30:26Z, serv
 const DEADLINE_COPY = /deadline|time left|minutes? left|before \d{1,2}:\d{2}|expires? (at|in)|\b\d{1,2}:\d{2}\b.*(left|remaining)/i;
 
 let api: FakeApi;
+const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 let hidden = false;
 
 beforeAll(() => {
@@ -93,7 +94,7 @@ function renderSend(transferId = INCIDENT.transfer.id) {
 }
 
 describe("Send settlement screen — Nov 2 incident: approval → funded swap → no claim → deadline → refund", () => {
-  it("after approval the funded swap reads as 'on its way' with a manual-only action and no deadline; nothing claims on its own", async () => {
+  it("P2: after approval the funded swap is 'Action needed — Finish delivery' with the real deadline and time left; nothing claims on its own", async () => {
     vi.setSystemTime(new Date(INCIDENT.attempt.handoff_authorized_at!));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! } });
     renderSend();
@@ -103,16 +104,22 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     // Provider funds the Polygon HTLC (real: block 96632367, 21:13:27Z).
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
     await advance(3_000);
-    expect(screen.getAllByText("Payment on its way").length).toBeGreaterThan(0);
-    // Customer copy implies Thence is completing delivery by itself…
-    expect(screen.getAllByText(/Thence is moving it to their wallet now/).length).toBeGreaterThan(0);
-    // …but completion actually needs an explicit owner click.
+    // No reassuring "Thence is moving it" while the owner must act.
+    expect(screen.queryByText(/Thence is moving it to their wallet now/)).toBeNull();
+    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    const text = () => document.body.textContent ?? "";
+    // Real deadline 22:12:42Z (evm_refund_locktime, fixed at swap creation 21:12:44Z):
+    // right after approval only 59 min remain, not a fresh hour from funding.
+    expect(text()).toContain(`Finish delivery before ${clock(DEADLINE_MS)} — 59 min left`);
+    expect(text()).toMatch(DEADLINE_COPY);
+    // Deadline is the Polygon one, explicitly not Nimiq Pay's NIM timer, and not the invoice expiry.
+    expect(text()).toContain("separate from Nimiq Pay's own timer for returning NIM");
+    expect(text()).not.toContain(clock(Date.parse(INCIDENT.attachment.invoice_expires_at!)));
     expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
-    // No deadline anywhere, although the refund locktime is fixed and near.
-    expect(document.body.textContent ?? "").not.toMatch(DEADLINE_COPY);
 
-    // Ten minutes of tracking: the UI never claims on its own.
+    // Ten minutes of tracking: the countdown advances; the UI never claims on its own.
     await advance(10 * 60_000);
+    expect(text()).toContain("49 min left");
     expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
     expect(api.calls.some((c) => /claim|cancel|handoff-result|prepare|attach|authorize/.test(c.path))).toBe(false);
   });
@@ -169,7 +176,8 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(api.count("POST", "/reconcile")).toBeGreaterThan(beforeReturn);
   });
 
-  it.fails("REQUIRED (P2): while claim-ready, the owner sees that action is needed before a deadline", async () => {
+  // P2 (was it.fails): while claim-ready, the owner sees that action is needed before a deadline.
+  it("P2: while claim-ready, the owner sees that action is needed before a deadline", async () => {
     vi.setSystemTime(new Date(FIRST_OBSERVED));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     renderSend();
@@ -178,7 +186,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
   });
 
   it("after the deadline passes unclaimed, the provider refunds and the screen ends at 'Payment refunded'", async () => {
-    vi.setSystemTime(new Date(DEADLINE_MS - 5 * 60_000));
+    vi.setSystemTime(new Date(DEADLINE_MS - 20 * 60_000));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     renderSend();
     await advance(0);
@@ -194,6 +202,68 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     const settled = api.count("POST", "/reconcile");
     await advance(60_000);
     expect(api.count("POST", "/reconcile")).toBe(settled);
+  });
+
+  it("P2: deadline expiry — closing warning, then no action inside the unsafe window, then 'deadline has passed'", async () => {
+    vi.setSystemTime(new Date(DEADLINE_MS - 20 * 60_000));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    const { container } = renderSend();
+    await advance(0);
+    const windowState = () => container.querySelector("[data-claim-window]")?.getAttribute("data-claim-window");
+    expect(windowState()).toBe("open");
+    expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
+
+    await advance(8 * 60_000); // 12 min left
+    expect(windowState()).toBe("closing");
+    expect(document.body.textContent).toContain("12 min left");
+    expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
+
+    await advance(8 * 60_000); // 4 min left: unsafe — preimage must not be revealed now
+    expect(windowState()).toBe("unsafe");
+    expect(screen.getByText("Too close to the delivery deadline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+    // Still framed as the owner's payment needing attention, never "on its way".
+    expect(screen.queryByText(/Thence is moving it/)).toBeNull();
+
+    await advance(5 * 60_000); // past the deadline, provider has not refunded yet
+    expect(windowState()).toBe("passed");
+    expect(screen.getByText("The delivery deadline has passed")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+  });
+
+  it("P2: returning to the foreground re-evaluates the deadline immediately (no stale time or stale action)", async () => {
+    vi.setSystemTime(new Date(DEADLINE_MS - 30 * 60_000));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    const { container } = renderSend();
+    await advance(0);
+    expect(document.body.textContent).toContain("30 min left");
+    expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
+    // Backgrounded (e.g. switched to Nimiq Pay). Jump the wall clock without
+    // running timers, as a suspended mobile webview does.
+    hidden = true;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    vi.setSystemTime(new Date(DEADLINE_MS - 3 * 60_000));
+    // Foreground again: the very first render must already reflect real time.
+    hidden = false;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(container.querySelector("[data-claim-window]")?.getAttribute("data-claim-window")).toBe("unsafe");
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+    expect(document.body.textContent).not.toContain("30 min left");
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+  });
+
+  it("P2: an identity-mismatched swap never shows a claim action", async () => {
+    vi.setSystemTime(new Date(FIRST_OBSERVED));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED, identityMismatch: true } });
+    renderSend();
+    await advance(3_000);
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+    expect(screen.queryByText("Action needed — Finish delivery")).toBeNull();
   });
 
   it("if mounted while still AWAITING_NIM_APPROVAL, the screen reads once and never polls again", async () => {
@@ -222,16 +292,26 @@ async function openActivityDetail(rowName: RegExp): Promise<void> {
 }
 
 describe("Activity — the two real incident payments", () => {
-  it("funded 077770a1 during its window: one-time manual finish offered, no deadline shown, nothing automatic", async () => {
+  it("P2: funded 077770a1 in Activity: 'Action needed — Finish delivery' with time left; nothing automatic", async () => {
     vi.setSystemTime(new Date(FIRST_OBSERVED));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     await openActivityDetail(/They/);
     await advance(3_000);
-    expect(screen.getByText("Ready to finish delivery")).toBeTruthy();
+    expect(screen.getByText("Action needed — Finish delivery")).toBeTruthy();
+    expect(document.body.textContent).toContain(`Finish delivery before ${clock(DEADLINE_MS)} — 42 min left`);
     expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
-    expect(document.body.textContent ?? "").not.toMatch(DEADLINE_COPY);
     await advance(5 * 60_000);
+    expect(document.body.textContent).toContain("37 min left");
     expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+  });
+
+  it("P2: funded 077770a1 in Activity inside the unsafe window: no finish action", async () => {
+    vi.setSystemTime(new Date(DEADLINE_MS - 2 * 60_000));
+    api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
+    await openActivityDetail(/They/);
+    await advance(3_000);
+    expect(screen.getByText("Too close to the delivery deadline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
   });
 
   it("refunded 077770a1: closed with 'Payment refunded — no delivery'; no check or finish actions", async () => {

@@ -125,6 +125,7 @@ describe("swap verification logic (pure, no I/O)", () => {
     evmHtlcAddress: null,
     evmFundTxid: null,
     evmClaimTxid: null,
+    evmRefundLocktime: null as number | null,
   };
   it("accepts an exactly matching swap", () => {
     expect(() => verifySwapMatch({ ...base, swap: goodSwap })).not.toThrow();

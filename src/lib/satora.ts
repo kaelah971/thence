@@ -362,6 +362,13 @@ export interface VerifiedSwapFacts {
   evmHtlcAddress: string | null;
   evmFundTxid: string | null;
   evmClaimTxid: string | null;
+  /**
+   * P2: Satora `evm_refund_locktime` (unix seconds) — the Polygon claim
+   * deadline, fixed at swap CREATION. Null when the provider omits it or it
+   * is not a positive safe integer. Plausibility is checked by callers
+   * against the bind time (src/domain/claim-deadline.ts).
+   */
+  evmRefundLocktime: number | null;
 }
 
 function assertNonEmptyString(value: unknown, label: string): string {
@@ -430,6 +437,10 @@ export async function getProviderSwap(swapId: string): Promise<VerifiedSwapFacts
     evmHtlcAddress: readTxid(s["evm_htlc_address"] ?? s["evmHtlcAddress"]),
     evmFundTxid: readTxid(s["evm_fund_txid"] ?? s["evmFundTxid"]),
     evmClaimTxid: readTxid(s["evm_claim_txid"] ?? s["evmClaimTxid"]),
+    evmRefundLocktime: (() => {
+      const raw = s["evm_refund_locktime"];
+      return typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 ? raw : null;
+    })(),
   };
 }
 

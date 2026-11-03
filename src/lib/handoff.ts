@@ -44,6 +44,7 @@ import {
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
 import { assertFundingExposure, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
 import { canTransition, transition } from "@/domain/transfers";
+import { validateLocktime } from "@/domain/claim-deadline";
 import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
@@ -106,6 +107,8 @@ export interface BoundSwapView {
   /** BOLT11 hold invoice (viewing is safe; paying costs money). */
   invoiceBolt11: string;
   invoiceExpiresAt: string | null;
+  /** P2: Polygon claim deadline (Satora evm_refund_locktime), ISO; null when unknown. */
+  claimDeadline: string | null;
   providerStatus: string | null;
   verifiedAt: string;
 }
@@ -153,6 +156,12 @@ export function verifySwapMatch(args: {
   }
   if (!swap.invoiceExpiresAt || swap.invoiceExpiresAt.getTime() <= Date.now()) {
     throw new AuthError(409, "INVOICE_EXPIRED", "Provider swap invoice is missing or expired.");
+  }
+  // P2: a reported claim deadline must be plausible for a swap bound now
+  // and must precede the Lightning invoice expiry. Absent stays unknown
+  // (claim actions then fail closed); implausible is an identity anomaly.
+  if (validateLocktime(swap.evmRefundLocktime, Date.now(), swap.invoiceExpiresAt) === "implausible") {
+    throw new AuthError(409, "SWAP_MISMATCH", "Provider swap claim deadline is not plausible for this swap.");
   }
 }
 
@@ -412,6 +421,8 @@ export async function attachSwap(
         sourceSats: facts.sourceSats,
         targetAtomic: facts.targetAtomic,
         invoiceExpiresAt: facts.invoiceExpiresAt,
+        // P2: verified above (identity + plausibility); null when unreported.
+        evmRefundLocktime: facts.evmRefundLocktime === null ? null : new Date(facts.evmRefundLocktime * 1000),
         providerStatus: facts.status,
       })
       .returning();
@@ -445,6 +456,7 @@ function toBoundView(row: typeof swapAttachments.$inferSelect): BoundSwapView {
     paymentHash: row.paymentHash,
     invoiceBolt11: row.invoiceBolt11,
     invoiceExpiresAt: row.invoiceExpiresAt?.toISOString() ?? null,
+    claimDeadline: row.evmRefundLocktime?.toISOString() ?? null,
     providerStatus: row.providerStatus,
     verifiedAt: row.verifiedAt.toISOString(),
   };

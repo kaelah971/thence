@@ -59,6 +59,7 @@ function facts(over: Partial<VerifiedSwapFacts> = {}): VerifiedSwapFacts {
     evmHtlcAddress: null,
     evmFundTxid: null,
     evmClaimTxid: null,
+    evmRefundLocktime: null,
     ...over,
   };
 }

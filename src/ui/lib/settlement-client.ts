@@ -16,6 +16,7 @@
  * Unknown outcomes are never collapsed into failed or cancelled.
  */
 import type { TransferStatus } from "@/domain/transfers";
+import type { ClaimWindow } from "@/domain/claim-deadline";
 import { apiRequest, type ApiOptions, type ApiResult } from "./api";
 
 export type SettlementVerdict =
@@ -38,6 +39,11 @@ export interface ReconciliationLatest {
   invoiceExpired: boolean;
   unknownProviderState: boolean;
   lastError: string | null;
+  /** P2: Polygon claim deadline (ISO) — Satora evm_refund_locktime; null when unknown. */
+  claimDeadlineAt?: string | null;
+  /** P2: server window at read time. Clients recompute from claimDeadlineAt with their clock. */
+  claimWindow?: ClaimWindow;
+  identityMismatch?: boolean;
 }
 
 export interface ReconciliationView {
@@ -65,6 +71,8 @@ export interface ReconciliationView {
     paymentHash: string;
     invoiceBolt11: string;
     invoiceExpiresAt: string | null;
+    /** P2: Polygon claim deadline (ISO); NOT the invoice expiry and NOT Nimiq Pay's NIM timeout. */
+    claimDeadline?: string | null;
     providerStatus: string;
     verifiedAt: string;
   } | null;
@@ -202,6 +210,30 @@ export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiRe
  */
 export const EXPIRED_UNFUNDED_BODY =
   "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on Polygon for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+
+const OWNER_CLAIM_PROVIDER = new Set(["serverfunded", "clientredeeming", "clientredeemed"]);
+
+/**
+ * P2: the payment is funded on Polygon and waiting for the OWNER's claim —
+ * an action, never "on its way". True regardless of the deadline window so
+ * the screen keeps explaining the deadline (closing / unsafe / passed)
+ * instead of falling back to reassuring copy. Never true after an identity
+ * mismatch, or once the provider reports anything other than funded.
+ * Whether the finish control may render is decided separately
+ * (server claimReady AND the client-clock window).
+ */
+export function needsOwnerClaim(s: {
+  phase: string;
+  transferStatus: string | null;
+  providerStatus: string | null;
+  claimReady: boolean;
+  identityMismatch?: boolean;
+}): boolean {
+  if (s.identityMismatch === true) return false;
+  if (s.phase !== "on-its-way" && s.phase !== "finishing") return false;
+  if (s.claimReady) return true;
+  return (s.transferStatus === "SERVER_FUNDED" || s.transferStatus === "CLAIMING") && OWNER_CLAIM_PROVIDER.has(s.providerStatus ?? "");
+}
 
 export type ProgressPhase =
   | "waiting-approval"

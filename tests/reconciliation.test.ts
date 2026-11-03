@@ -438,7 +438,15 @@ describe.skipIf(!LIVE)("read-only reconciliation (mocked provider)", () => {
     try {
       const { cookie } = await login("recon-refund-unverified");
       const { id } = await authorizedTransfer(cookie, "recon-refund-unverified", "refund-unverified");
+      // P2: the hash lock is part of the bound identity, so a changed one is
+      // refused as SWAP_MISMATCH (409) before any refund evidence is read.
       mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX, hash_lock: `0x${"ab".repeat(32)}` }));
+      const changedLock = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
+      expect(changedLock.status).toBe(409);
+      expect(((await changedLock.json()) as { error: string }).error).toBe("SWAP_MISMATCH");
+      // Same identity, but the refund receipt names a different HTLC than the
+      // provider's: the refund cannot be attributed and must not release funds.
+      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX, evm_htlc_address: "0x0000000000000000000000000000000000000003" }));
       try {
         const res = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
         expect(res.status).toBe(200);

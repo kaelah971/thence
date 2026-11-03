@@ -18,6 +18,7 @@ import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, STAGE_OF, timelineF
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
 import {
   getProviderEvidence,
+  needsOwnerClaim,
   postCloseExpired,
   postHandoffCancel,
   EXPIRED_UNFUNDED_BODY,
@@ -30,6 +31,7 @@ import {
 import { invalidateData } from "@/ui/lib/resource";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { useSettlement } from "@/ui/screens/send/useSettlement";
+import { ClaimDeadlineNotice } from "@/ui/components/ClaimDeadline";
 import styles from "./activity.module.css";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -274,19 +276,20 @@ function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ownerUserId, transferId]);
 
-  const claimReady = state.claimReady && (state.phase === "on-its-way" || state.phase === "finishing");
-  const title = claimReady ? "Ready to finish delivery" : state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
-  const message = claimReady
-    ? "This uses the saved recovery information in this browser. Choose the one-time action below; do not start a new payment."
-    : state.message || "Checking the same payment — do not resend.";
+  const claimReady = needsOwnerClaim(state);
+  const title = state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
+  const message = state.message || "Checking the same payment — do not resend.";
 
   return (
     <div style={{ marginBottom: 12 }} data-recovery-transfer-id={transferId}>
-      <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
-        {message}
-      </Notice>
+      {!claimReady && (
+        <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
+          {message}
+        </Notice>
+      )}
       {claimReady && (
-        <>
+        <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
+          <p className={styles.latest}>This uses the saved recovery information in this browser. Do not start a new payment.</p>
           <Button
             variant="soft"
             size="md"
@@ -308,7 +311,7 @@ function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string
             {claiming ? "Checking delivery…" : "Finish delivery"}
           </Button>
           <p className={styles.latest}>One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.</p>
-        </>
+        </ClaimDeadlineNotice>
       )}
     </div>
   );

@@ -17,11 +17,16 @@
  * discipline, verify-after-claim) is implemented and unit-tested with mocks.
  */
 import type { TransferStatus } from "@/domain/transfers";
+import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
 
 export const CLAIM_FLAG_NAME = "NEXT_PUBLIC_THENCE_ENABLE_CLAIM";
 const CLAIM_FLAG_VALUE = process.env.NEXT_PUBLIC_THENCE_ENABLE_CLAIM;
-/** Stop starting a claim when the provider's refund deadline is too close. */
-export const CLAIM_TIMELOCK_MARGIN_MS = 60_000;
+/**
+ * Stop starting a claim when the provider's refund deadline is too close.
+ * P2: raised from 60 s to the shared unsafe window (5 min). A claim reveals
+ * the preimage; one that lands after the provider's refund loses both sides.
+ */
+export const CLAIM_TIMELOCK_MARGIN_MS = CLAIM_UNSAFE_WINDOW_MS;
 
 /**
  * Reads the build-time flag by default. An explicit env object is retained for
