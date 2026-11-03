@@ -1,2 +1,18 @@
 repro-tmp/
 .fast-build/
+
+# S0 (2026-11-03): never upload local environment or credential files.
+# The Vercel CLI does NOT read .gitignore and its defaults exclude only
+# .env.local / .env.*.local — plain .env was being uploaded with every
+# CLI deployment. Runtime configuration comes from Vercel project env vars.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+tsconfig.tsbuildinfo
+coverage/
+.claude/

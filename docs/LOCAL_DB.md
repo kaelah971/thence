@@ -25,6 +25,13 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/thence
 
 ## 3. Configure environment
 
+> S0 rule: `DATABASE_URL` in `.env` must never be production. `npm run dev`,
+> `start`, `db:migrate`, `db:push` and `db:studio` verify the target first
+> (`npm run db:guard`): localhost, or a database carrying the
+> `__thence_test_anchor` marker. The production URL is kept only in
+> `~/.thence/production.env` and used only by explicit `--production`
+> operator commands.
+
 ```bash
 cp .env.example .env
 # edit DATABASE_URL inside .env — placeholders only, never commit .env

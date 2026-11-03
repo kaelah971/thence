@@ -4,9 +4,10 @@
  * The database switch (KEY 2 of the two-key rule) is the ONLY instantaneous
  * pilot control: Vercel env changes need a redeploy, this UPDATE does not.
  *
- *   npx tsx scripts/pilot-switch.ts status
- *   npx tsx scripts/pilot-switch.ts disable --note "reason"
- *   npx tsx scripts/pilot-switch.ts enable --note "reason" --yes
+ *   npx tsx scripts/pilot-switch.ts status                          (local non-production DB)
+ *   npx tsx scripts/pilot-switch.ts status --production             (read-only)
+ *   npx tsx scripts/pilot-switch.ts disable --production --yes --note "reason"
+ *   npx tsx scripts/pilot-switch.ts enable  --production --yes --note "reason"
  *
  * - `status` is read-only: prints enabled/updated_at/note (never secrets).
  * - `disable` stops NEW funded pilot execution immediately. Recovery
@@ -17,14 +18,23 @@
  *   deployment that was verified healthy. Enabling here alone changes
  *   nothing unless the deployed env gate is also armed.
  *
- * DATABASE_URL selects the target. Point it at production ONLY for the real
- * activation/stop; local runs default to the dev database in .env.
+ * S0 TARGET SELECTION (explicit, never implicit):
+ * - Without --production the target is DATABASE_URL from .env and it must
+ *   be PROVEN non-production (localhost or test anchor; scripts/db-guard.ts).
+ *   Until S0, .env held the production URL, so a bare local run silently
+ *   wrote production.
+ * - With --production the target is DATABASE_URL from the operator-held
+ *   production env file OUTSIDE the repo (default ~/.thence/production.env,
+ *   override THENCE_PRODUCTION_ENV_FILE). It is parsed in isolation, never
+ *   merged into process.env, must NOT carry the test anchor, and any write
+ *   (enable OR disable) additionally requires --yes.
  * NEVER commit URLs or print connection strings (this script prints none).
  */
 import "dotenv/config";
 import { Client } from "pg";
+import { loadProductionDatabaseUrl, probeAnchor, productionEnvFile, verifyNonProductionTarget } from "./db-guard";
 
-const USAGE = "usage: npx tsx scripts/pilot-switch.ts status|enable|disable [--note \"...\"] [--yes]";
+const USAGE = "usage: npx tsx scripts/pilot-switch.ts status|enable|disable [--production] [--note \"...\"] [--yes]";
 
 function arg(name: string): string | null {
   const i = process.argv.indexOf(name);
@@ -36,27 +46,59 @@ function flag(name: string): boolean {
   return process.argv.includes(name);
 }
 
+async function resolveTarget(command: string): Promise<{ url: string; production: boolean }> {
+  if (flag("--production")) {
+    const prodUrl = loadProductionDatabaseUrl();
+    if (!prodUrl) {
+      console.error(`pilot-switch: --production requires DATABASE_URL in ${productionEnvFile()} (operator-held, outside the repo).`);
+      process.exit(2);
+    }
+    const anchor = await probeAnchor(prodUrl);
+    if (anchor.reason !== "no-anchor") {
+      console.error(`pilot-switch: production target refused (${anchor.reason === "anchored" ? "it carries the test anchor" : "unreachable"}); no change made.`);
+      process.exit(2);
+    }
+    if (command !== "status" && !flag("--yes")) {
+      console.error(`pilot-switch: refusing to ${command} PRODUCTION without --yes.`);
+      process.exit(2);
+    }
+    console.log("pilot-switch: target = PRODUCTION (operator production env file).");
+    return { url: prodUrl, production: true };
+  }
+  const url = (process.env["DATABASE_URL"] ?? "").trim();
+  const verdict = await verifyNonProductionTarget(url);
+  if (!verdict.ok) {
+    console.error(`pilot-switch: local DATABASE_URL is not proven non-production (${verdict.reason}); refusing. Use --production for the real switch.`);
+    process.exit(2);
+  }
+  console.log(`pilot-switch: target = non-production (${verdict.reason}).`);
+  return { url, production: false };
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command !== "status" && command !== "enable" && command !== "disable") {
     console.error(USAGE);
     process.exit(2);
   }
-  const url = (process.env["DATABASE_URL"] ?? "").trim();
-  if (!url) {
-    console.error("pilot-switch: DATABASE_URL is not configured.");
-    process.exit(2);
-  }
   if (command === "enable" && !flag("--yes")) {
     console.error("pilot-switch: refusing to enable without --yes. Confirm the deployed env is armed and verified first.");
     process.exit(2);
   }
+  const { url, production } = await resolveTarget(command);
   const note = arg("--note") ?? (command === "status" ? null : command === "enable" ? "enabled by operator" : "emergency stop by operator");
-  const client = new Client({ connectionString: url, connectionTimeoutMillis: 10_000, statement_timeout: 10_000 });
+  const client = new Client({
+    connectionString: url,
+    ssl: production ? { rejectUnauthorized: false } : undefined,
+    connectionTimeoutMillis: 10_000,
+    statement_timeout: 10_000,
+  });
   try {
     await client.connect();
     if (command === "status") {
+      await client.query("BEGIN TRANSACTION READ ONLY");
       const rows = await client.query("SELECT enabled, updated_at, note FROM pilot_controls WHERE id = 'pilot' LIMIT 1");
+      await client.query("ROLLBACK");
       const row = rows.rows[0] as { enabled: boolean; updated_at: string; note: string | null } | undefined;
       if (!row) {
         console.log("pilot database switch: MISSING (fail-closed: new funding is blocked; apply migrations).");
