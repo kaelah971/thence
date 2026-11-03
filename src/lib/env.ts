@@ -308,7 +308,7 @@ export function validateEnv(source: Record<string, string | undefined> = process
 }
 
 /** Names of secret-bearing variables — safe diagnostics must never include their values. */
-export const SECRET_ENV_KEYS = ["DATABASE_URL"] as const;
+export const SECRET_ENV_KEYS = ["DATABASE_URL", "CRON_SECRET"] as const;
 
 /**
  * Get validated config, throwing a value-free error when invalid.

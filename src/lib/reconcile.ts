@@ -243,81 +243,178 @@ async function recordObservation(
 }
 
 /**
- * One bounded read-only refresh of the bound swap. Records the observation,
- * advances along legal edges only, never fails unknown outcomes.
+ * P6: identical observations within this window are not re-inserted (the
+ * browser driver and the server cron may observe the same provider state
+ * seconds apart). Transitions are ALWAYS accompanied by an observation.
  */
-export async function reconcileTransfer(userId: string, transferId: string): Promise<ReconciliationSummary> {
+export const OBSERVATION_DEDUPE_MS = 60_000;
+
+type BoundAttachment = typeof swapAttachments.$inferSelect;
+
+/**
+ * P6: everything learned from the network for one reconciliation, gathered
+ * WITHOUT holding the transfer lock and without writing anything.
+ */
+type GatheredEvidence =
+  | { kind: "provider_error"; code: string }
+  | { kind: "route_error"; facts: VerifiedSwapFacts }
+  | { kind: "route_mismatch"; facts: VerifiedSwapFacts }
+  | { kind: "facts"; facts: VerifiedSwapFacts; refund: { verdict: string } | null };
+
+async function gatherEvidence(
+  transfer: typeof transfers.$inferSelect,
+  attachment: BoundAttachment,
+): Promise<GatheredEvidence> {
+  let facts: VerifiedSwapFacts;
+  try {
+    facts = await getProviderSwap(attachment.satoraSwapId);
+  } catch (err) {
+    const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
+    return { kind: "provider_error", code };
+  }
+  // Chain/token identity revalidation against canonical config.
+  try {
+    const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
+    if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
+      return { kind: "route_mismatch", facts };
+    }
+  } catch {
+    return { kind: "route_error", facts };
+  }
+  // Independent refund evidence is read here (chain I/O), never under the lock.
+  let refund: { verdict: string } | null = null;
+  const providerStatus = facts.status || "unknown";
+  if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && transfer.status !== "REFUNDED") {
+    refund = facts.evmClaimTxid
+      ? await verifyEvmRefundEvidence({
+          chainId: facts.evmChainId,
+          refundTxHash: facts.evmClaimTxid,
+          htlcAddress: facts.evmHtlcAddress,
+          hashLock: facts.paymentHash,
+        })
+      : { verdict: "INCONCLUSIVE" };
+  }
+  return { kind: "facts", facts, refund };
+}
+
+/** Identity of the provider swap vs the bound attachment and transfer terms. */
+function identityMatches(transfer: typeof transfers.$inferSelect, attachment: BoundAttachment, facts: VerifiedSwapFacts): boolean {
+  // P2: the claim deadline is part of the swap identity once known.
+  const storedLocktimeSec = attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null;
+  const locktimeChanged = storedLocktimeSec !== null && facts.evmRefundLocktime !== null && facts.evmRefundLocktime !== storedLocktimeSec;
+  return !(
+    facts.satoraSwapId !== attachment.satoraSwapId ||
+    facts.direction !== "lightning_to_evm" ||
+    facts.targetAtomic !== transfer.targetAmountAtomic ||
+    facts.targetAddress.toLowerCase() !== transfer.destination.toLowerCase() ||
+    facts.paymentHash.toLowerCase() !== attachment.paymentHash.toLowerCase() ||
+    locktimeChanged
+  );
+}
+
+/** Insert an observation unless an identical one was recorded moments ago (P6 dedupe). */
+async function recordObservationDeduped(
+  db: DbClient,
+  transferId: string,
+  swapId: string,
+  entry: Parameters<typeof recordObservation>[3],
+  force: boolean,
+): Promise<boolean> {
+  if (!force) {
+    const latest = await db
+      .select()
+      .from(reconciliationObservations)
+      .where(eq(reconciliationObservations.transferId, transferId))
+      .orderBy(desc(reconciliationObservations.observedAt))
+      .limit(1);
+    const last = latest[0];
+    if (
+      last &&
+      Date.now() - last.observedAt.getTime() < OBSERVATION_DEDUPE_MS &&
+      last.providerStatus === entry.providerStatus &&
+      last.kind === entry.kind &&
+      (last.errorCode ?? null) === (entry.errorCode ?? null) &&
+      (last.evmFundTxid ?? null) === (entry.evmFundTxid ?? null) &&
+      (last.evmClaimTxid ?? null) === (entry.evmClaimTxid ?? null)
+    ) {
+      return false;
+    }
+  }
+  await recordObservation(db, transferId, swapId, entry);
+  return true;
+}
+
+export interface ReconcileActor {
+  /** "owner" = session request; "system" = server cron (no session). */
+  kind: "owner" | "system";
+  /** Owner scope for session requests; null for the system reconciler. */
+  ownerUserId: string | null;
+}
+
+/**
+ * P6: the ONE reconciliation core, shared by the owner route (P1 browser
+ * driver) and the server cron. Phase A gathers network evidence with no lock
+ * and no writes; phase B commits under the per-transfer advisory lock,
+ * re-reading state, re-running identity checks against the fresh
+ * attachment, and planning from the CURRENT status — so concurrent callers
+ * converge (the second sees an empty path) and never double-transition.
+ * Never claims, refunds, pays, creates swaps, or applies P4's owner close.
+ */
+export async function reconcileCore(transferId: string, actor: ReconcileActor): Promise<ReconciliationSummary> {
   const db = getDb();
+  const scope = actor.ownerUserId
+    ? and(eq(transfers.id, transferId), eq(transfers.ownerUserId, actor.ownerUserId))
+    : eq(transfers.id, transferId);
+
+  // ---- Phase A: read + network, no lock ----
+  const rows = await db.select().from(transfers).where(scope).limit(1);
+  const initial = rows[0];
+  if (!initial) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+  const bound = await db.select().from(swapAttachments).where(eq(swapAttachments.transferId, initial.id)).limit(1);
+  const initialAttachment = bound[0];
+  // Observation requires something to observe; advancement is decided
+  // purely by the state machine afterwards (terminal states no-op).
+  if (!initialAttachment) throw new AuthError(409, "NOT_RECONCILABLE", "No bound swap to observe.");
+  const evidence = await gatherEvidence(initial, initialAttachment);
+
+  // ---- Phase B: short commit under the per-transfer lock ----
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
-    const rows = await tx
-      .select()
-      .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
-      .limit(1);
-    const transfer = rows[0];
+    const fresh = await tx.select().from(transfers).where(scope).limit(1);
+    const transfer = fresh[0];
     if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
-    const bound = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
-    const attachment = bound[0];
-    // Observation requires something to observe; advancement is decided
-    // purely by the state machine afterwards (terminal states no-op).
-    if (!attachment) throw new AuthError(409, "NOT_RECONCILABLE", "No bound swap to observe.");
+    const boundNow = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
+    const attachment = boundNow[0];
+    if (!attachment || attachment.satoraSwapId !== initialAttachment.satoraSwapId) {
+      throw new AuthError(409, "NOT_RECONCILABLE", "The bound swap changed during reconciliation.");
+    }
     const current = transfer.status as TransferStatus;
 
-    let facts: VerifiedSwapFacts;
-    try {
-      const { getProviderSwap } = await import("@/lib/satora");
-      facts = await getProviderSwap(attachment.satoraSwapId);
-    } catch (err) {
-      const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
-      await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: "unknown", kind: "provider_error", errorCode: code });
+    if (evidence.kind === "provider_error") {
+      await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: "unknown", kind: "provider_error", errorCode: evidence.code }, false);
       const summary = await buildSummary(tx, transfer.id);
       if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
-      return { ...summary, lastError: code, advanced: false, advancedPath: [] };
+      return { ...summary, lastError: evidence.code, advanced: false, advancedPath: [] };
     }
-    // Identity revalidation on every read: never trust a drifting swap.
-    const expected = {
-      asset: transfer.targetAsset,
-      network: transfer.targetNetwork,
-      destination: transfer.destination,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-    };
-    // P2: the claim deadline is part of the swap identity once known.
-    const storedLocktimeSec = attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null;
-    const locktimeChanged = storedLocktimeSec !== null && facts.evmRefundLocktime !== null && facts.evmRefundLocktime !== storedLocktimeSec;
-    if (
-      facts.satoraSwapId !== attachment.satoraSwapId ||
-      facts.direction !== "lightning_to_evm" ||
-      facts.targetAtomic !== expected.targetAmountAtomic ||
-      facts.targetAddress.toLowerCase() !== expected.destination.toLowerCase() ||
-      facts.paymentHash.toLowerCase() !== attachment.paymentHash.toLowerCase() ||
-      locktimeChanged
-    ) {
-      // P2: the mismatch observation must be DURABLE (it gates claim
-      // readiness and P4 closure). Throwing here rolled the record back, so
-      // return the committed summary instead; the route answers 409.
-      await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" });
+    const facts = evidence.facts;
+    // Identity revalidation on every read: never trust a drifting swap. The
+    // mismatch observation must be DURABLE (it gates claim readiness and P4
+    // closure), so the committed summary is returned; the route answers 409.
+    if (!identityMatches(transfer, attachment, facts) || evidence.kind === "route_mismatch") {
+      await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" }, false);
       return await mismatchSummary(tx, transfer.id);
     }
-    // Chain/token identity revalidation against canonical config.
-    try {
-      const { resolveRoute } = await import("@/lib/satora");
-      const resolved = await resolveRoute(expected.asset, expected.network);
-      if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
-        await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" });
-        return await mismatchSummary(tx, transfer.id);
-      }
-    } catch (err) {
-      if (err instanceof AuthError) throw err;
-      await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "provider_error", errorCode: "PROVIDER_UNAVAILABLE" });
+    if (evidence.kind === "route_error") {
+      await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "provider_error", errorCode: "PROVIDER_UNAVAILABLE" }, false);
       const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
       if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
       return { ...summary, lastError: "PROVIDER_UNAVAILABLE", advanced: false, advancedPath: [] };
     }
 
-    // P2 backfill: rows bound before P2 lack the deadline. It is persisted
-    // only here, AFTER the full identity + route verification above, and
-    // only when plausible relative to the original bind time.
+    // P2 backfill: rows bound before P2 lack the deadline. Persisted only
+    // here, AFTER the full identity + route verification above, and only
+    // when plausible relative to the original bind time.
+    const storedLocktimeSec = attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null;
     if (storedLocktimeSec === null && facts.evmRefundLocktime !== null) {
       const validated = validateLocktime(facts.evmRefundLocktime, attachment.createdAt.getTime(), attachment.invoiceExpiresAt);
       if (validated instanceof Date) {
@@ -327,32 +424,26 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
 
     const providerStatus = facts.status || "unknown";
     if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && current !== "REFUNDED") {
-      const refundTxHash = facts.evmClaimTxid;
-      const refund = refundTxHash
-        ? await verifyEvmRefundEvidence({
-            chainId: facts.evmChainId,
-            refundTxHash,
-            htlcAddress: facts.evmHtlcAddress,
-            hashLock: facts.paymentHash,
-          })
-        : { verdict: "INCONCLUSIVE" as const, reason: "Provider has not reported a refund transaction yet.", confirmations: null };
-      if (refund.verdict !== "VERIFIED") {
-        const errorCode = `REFUND_${refund.verdict}`;
-        await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
-          providerStatus,
-          kind: "provider_error",
-          errorCode,
-          evmFundTxid: facts.evmFundTxid ?? null,
-          evmClaimTxid: facts.evmClaimTxid ?? null,
-        });
+      const verdict = evidence.refund?.verdict ?? "INCONCLUSIVE";
+      if (verdict !== "VERIFIED") {
+        const errorCode = `REFUND_${verdict}`;
+        await recordObservationDeduped(
+          tx,
+          transfer.id,
+          attachment.satoraSwapId,
+          { providerStatus, kind: "provider_error", errorCode, evmFundTxid: facts.evmFundTxid ?? null, evmClaimTxid: facts.evmClaimTxid ?? null },
+          false,
+        );
         const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
         if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
         return { ...summary, lastError: errorCode, advanced: false, advancedPath: [] };
       }
     }
 
+    // Planned from the CURRENT (locked) status: a concurrent reconciliation
+    // that already advanced makes this path empty — no double transition.
     const decision = planReconciliation(current, providerStatus);
-    let advanced: TransferStatus[] = [];
+    const advanced: TransferStatus[] = [];
     if (decision.action === "advance" || decision.action === "needs-attention") {
       let state = current;
       for (const next of decision.path) {
@@ -368,11 +459,12 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
           {
             transferId: transfer.id,
             actor: "reconciler",
-            actorUserId: userId,
+            actorUserId: actor.ownerUserId,
             reasonCode: `PROVIDER_${providerStatus.toUpperCase()}`,
             evidence: {
               providerStatus,
               decision: decision.action,
+              trigger: actor.kind === "system" ? "server-cron" : "owner-session",
               evmFundTxid: facts.evmFundTxid ?? null,
               evmClaimTxid: facts.evmClaimTxid ?? null,
               refundVerified: REFUNDED_PROVIDER_STATUSES.has(providerStatus) ? true : null,
@@ -383,21 +475,28 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
         );
       }
     }
-    await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
-      providerStatus: facts.status || "unknown",
-      kind: "observation",
-      evmFundTxid: facts.evmFundTxid ?? null,
-      evmClaimTxid: facts.evmClaimTxid ?? null,
-    });
+    await recordObservationDeduped(
+      tx,
+      transfer.id,
+      attachment.satoraSwapId,
+      { providerStatus, kind: "observation", evmFundTxid: facts.evmFundTxid ?? null, evmClaimTxid: facts.evmClaimTxid ?? null },
+      advanced.length > 0,
+    );
     // Read inside the same transaction: the status advance and observation
-    // above are uncommitted until return, so an outer-DB read would see
-    // stale state (the TS2345-class bug: Db transaction vs database).
-    const summary = await buildSummary(tx, transfer.id, {
-      providerInvoiceExpiresAt: facts.invoiceExpiresAt,
-    });
+    // above are uncommitted until return.
+    const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
     if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     return { ...summary, advanced: advanced.length > 0, advancedPath: advanced };
   });
+}
+
+/**
+ * One bounded read-only refresh of the bound swap for its owner (session).
+ * Records the observation, advances along legal edges only, never fails
+ * unknown outcomes.
+ */
+export async function reconcileTransfer(userId: string, transferId: string): Promise<ReconciliationSummary> {
+  return reconcileCore(transferId, { kind: "owner", ownerUserId: userId });
 }
 
 /** Committed summary after a recorded identity mismatch (no transition). */

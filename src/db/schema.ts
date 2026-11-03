@@ -534,6 +534,27 @@ export const transferTransitions = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* job_leases (P6: single-runner lease for scheduled jobs)             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One row per scheduled job. A run acquires the lease with a single atomic
+ * upsert (no long-held database lock): only when the previous lease expired
+ * AND the previous start is older than the minimum spacing. This absorbs
+ * overlapping invocations and duplicate deliveries of the same scheduled run.
+ * `last_summary` holds non-secret counters for observability.
+ */
+export const jobLeases = pgTable("job_leases", {
+  name: varchar("name", { length: 64 }).primaryKey(),
+  holder: varchar("holder", { length: 64 }).notNull(),
+  acquiredAt: timestamp("acquired_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
+  lastFinishedAt: timestamp("last_finished_at", { withTimezone: true }),
+  lastSummary: jsonb("last_summary"),
+});
+
+/* ------------------------------------------------------------------ */
 /* route_observations (availability diagnostics, not a pricing promise) */
 /* ------------------------------------------------------------------ */
 

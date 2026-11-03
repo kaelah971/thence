@@ -120,6 +120,13 @@
       "when": 1793723608844,
       "tag": "0016_p2_claim_deadline",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793727525095,
+      "tag": "0017_p6_job_leases",
+      "breakpoints": true
     }
   ]
 }
