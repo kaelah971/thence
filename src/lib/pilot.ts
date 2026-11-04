@@ -283,6 +283,32 @@ export async function assertPilotDbEnabled(
 }
 
 /**
+ * Read-only payment availability for the client (GET /api/pilot/status).
+ *
+ * "available" only when a nominal pilot intent for this owner would pass the
+ * env gate (KEY 1: enabled, allowlist, route) AND the database kill switch
+ * (KEY 2). Any refusal reads as "paused". Writes nothing and exposes no caps,
+ * allowlist or reason. Advisory only: createTransfer/prepare enforce the same
+ * gates regardless of what the UI shows. Per-payment checks (amount cap,
+ * spend, funding exposure) are deliberately NOT folded in; they stay enforced
+ * at create/prepare with their own messages.
+ */
+export async function pilotPaymentAvailability(
+  ownerAddress: string | null,
+  config: PilotConfig = getPilotConfig(),
+  db: KillSwitchDb = getDb(),
+): Promise<"available" | "paused"> {
+  try {
+    assertPilotIntent({ routeId: PILOT_ROUTE_ID, targetAmountAtomic: "1", ownerAddress }, config);
+    await assertPilotDbEnabled(config, db);
+    return "available";
+  } catch (err) {
+    if (err instanceof AuthError) return "paused";
+    throw err;
+  }
+}
+
+/**
  * Creation-time spend check. This is deliberately not a transfer-count
  * check: a quoted intent has no funding exposure and must not lock the owner
  * out of creating another independent intent. Actual exposure is reserved at

@@ -281,6 +281,25 @@ export function isPendingTransferResumable(status: string): boolean {
 }
 
 /**
+ * What the Send "earlier payment" banner may offer for a saved pointer,
+ * from the AUTHORITATIVE server status (never the pointer alone):
+ * - "continue": unpaid pre-approval states the preparation flow can resume
+ *   on the SAME transfer (QUOTED, SWAP_CREATED, AWAITING_NIM_APPROVAL).
+ * - "activity": anything in flight, being checked, funded or needing
+ *   attention (e.g. the Nov 2 RECONCILING payment). Not resumable from Send;
+ *   Activity shows its real state and any gated action (Finish delivery).
+ *   Unknown statuses also land here. The pointer is KEPT.
+ * - "finished": known terminal state; the pointer is stale.
+ */
+export type PendingBannerAction = "continue" | "activity" | "finished";
+
+export function pendingBannerAction(status: string): PendingBannerAction {
+  if (!(TRANSFER_STATUSES as readonly string[]).includes(status)) return "activity";
+  if (isTerminal(status as TransferStatus)) return "finished";
+  return status === "QUOTED" || status === "SWAP_CREATED" || status === "AWAITING_NIM_APPROVAL" ? "continue" : "activity";
+}
+
+/**
  * Display amount for the handoff hero. Request-fixed amounts win; otherwise
  * the exact human amount is derived from the transfer's atomic terms (which
  * survive a reload when the calculator is empty); the live-review value is
@@ -375,6 +394,8 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
       return { title: "Checking payment — do not resend", body: "A different payment already used this reference. Continue it instead of starting over.", retryable: true, action: "resume" };
     case "PILOT_ATTEMPTS_EXCEEDED":
       return { title: "You already have this payment in progress", body: "Continue it from Activity instead of starting over — nothing new was created.", retryable: true, action: "resume" };
+    case "PILOT_DISABLED":
+      return { title: "Payments temporarily unavailable", body: "Thence isn't accepting new payments right now. Nothing was created or charged.", retryable: false, action: "abort" };
     case "PILOT_EXPOSURE_LIMIT":
     case "PAYMENT_EXPOSURE_UNCERTAIN":
       return { title: "Another payment is still being checked", body: "This separate payment was not prepared. Starting it now could pay twice, so check the earlier payment in Activity before continuing.", retryable: false, action: "abort" };
@@ -493,6 +514,17 @@ export async function authorizeTransferHandoff(
         : { attemptToken, acceptRepricedSourceSats: opts.acceptRepricedSourceSats },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
   });
+}
+
+/**
+ * Advisory payment availability (GET /api/pilot/status). The server enforces
+ * the same gates on create/prepare; this only lets the UI say "paused" before
+ * an actionable approval screen.
+ */
+export async function fetchPaymentAvailability(
+  opts: { fetch?: FetchFn; signal?: AbortSignal } = {},
+): Promise<ApiResult<{ payments: "available" | "paused" }>> {
+  return apiRequest("/api/pilot/status", { ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.signal ? { signal: opts.signal } : {}) });
 }
 
 export async function fetchTransfer(

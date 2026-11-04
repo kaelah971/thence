@@ -401,3 +401,50 @@ switch `DISABLED`; data unchanged since step 5 (row counts + fingerprints of
 Payment initiation stays blocked: `assertPilotDbEnabled` gates
 create/requote/prepare/attach/authorize in both the deployed and release code
 and the switch is FALSE.
+
+## 16. Step 7 result — production deployment (2026-11-04)
+
+**Pre-merge (read-only):** pilot switch DISABLED; 18 migrations, none pending;
+genuine in-flight only eddaa6de (RECONCILING, unfunded); 0 live attempts; data
+identical to step 5; `main`=`1f28983`, PR head=`e740dd7`. Rollback target:
+`thence-5x3boyuyb` = `dpl_EAUWRHRGhH17wfsKVMMnuUQ3PmkP`.
+
+**Cron paused before merge (owner-authorized):** the merge adds the
+`/api/cron/reconcile` (`17 6 * * *`) definition and the deployment carries
+`CRON_SECRET`, which would have made authenticated, record-writing runs from
+the next 06:17 UTC. Project crons were disabled via the Vercel API
+(`PATCH /v1/projects/{id}/crons enabled=false`, `disabledAt`
+2026-11-04T19:33:20.804Z) **before** merging. Re-enabling needs separate
+approval after the historical-test-row review.
+
+**Merge/deploy:** PR #33 merged with a merge commit (head pinned to
+`e740dd7`) → `main` = **`9fddc47`**. Vercel git deployment
+**`dpl_2a5j43sdKneRfhWjUFC1soZusxzv`** (`thence-h9xqwvirj`), target
+production, READY, source git `main`@`9fddc47`; aliases
+`paywiththence.vercel.app`, `thence-two.vercel.app`,
+`thence-kaelah-s-projects.vercel.app`. Project crons still disabled with the
+new definition registered.
+
+**Smoke (no financial action):**
+- `/api/health` 200, env production, db reachable — both public aliases.
+- Database access is via `thence_app` (server connections: the app's only
+  connection is `thence_app`).
+- Compiled bundle: payment flag `"1"`, claim flag `"1"`; P7 code present.
+- `/api/cron/reconcile`: no auth → 401, wrong bearer → 401. The authenticated
+  call was **not** made (it writes production records).
+- Pages `/app/welcome`, `/app/send`, `/app/activity` 200; `/` 307 → app.
+- Pilot switch DISABLED; payment preparation is refused server-side
+  (`assertPilotDbEnabled` → 403 `PILOT_DISABLED`) before any record or Nimiq
+  Pay call.
+- Data: row counts and content fingerprints of 10 money/account tables
+  identical to step 5; `transfer_transitions`/`job_leases` empty; 0014 hash
+  unchanged.
+- Runtime logs (24 entries): 0 × 5xx, 0 permission errors, 0 secret leaks;
+  only the `pg` sslmode deprecation warning (benign; set
+  `sslmode=verify-full` explicitly in a later change).
+
+**Open items:** owner phone checks (below); the `PILOT_DISABLED` refusal
+renders as the generic "Check the details" copy (safe, misleading — copy fix
+later); recipients default-switch risk (accepted, open); historical test rows
+(preserved; cron/Hermes paused until a plan exists); owner credential
+rotation (deferred until smoke passes).
