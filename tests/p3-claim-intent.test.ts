@@ -211,6 +211,9 @@ beforeEach(() => {
   latestBlock = FUND_BLOCK + 1_000n;
   chainDown = false;
   logsDown = false;
+  // All synthetic swaps share the real 077770a1 hash lock, and HTLC logs are
+  // keyed by hash lock: a redeem simulated in one test must not leak into the next.
+  spentFunds.clear();
   setSettlementChainForTests(syntheticChain());
   installProvider();
 });

@@ -45,3 +45,20 @@ at P3). Any new test file must be assigned to a shard.
 - Then, and only with explicit approval: production migrations 0015 + 0016 + 0017
   (operator, `THENCE_MIGRATE_PRODUCTION=I_UNDERSTAND`), deploy, and the
   credential rotation sequence in docs/CREDENTIAL_ROTATION_PLAN.md.
+
+## Browser E2E (P7)
+
+Real production build (`.next-e2e`, payment + claim flags on), real backend,
+real browser Satora SDK, anchor-proven TEST database; SIMULATED Nimiq Pay host,
+Satora API and Polygon RPC (see `e2e/README.md` — this is not proof of the real
+wallet, provider or chain). On a memory-constrained machine run ONE scenario per
+invocation, one worker, after a free-memory check:
+
+```
+E2E_SKIP_BUILD=1 npx playwright test --project=chromium-desktop --workers=1 -g "<scenario>"
+```
+
+Build `.next-e2e` once per code change (global setup rebuilds unless
+`E2E_SKIP_BUILD=1`). Projects: `chromium-desktop` (all 14 scenarios),
+`webkit-iphone` (6), `chromium-mobile` (2). `scripts/release-shards.ts --check`
+must report every test file in exactly one shard.
