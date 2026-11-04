@@ -4,8 +4,8 @@
  *
  * Checks, in order:
  * 1. Test URL is configured (else exit 2).
- * 2. Test URL is not byte-identical to DATABASE_URL (else exit 3).
- * 3. Tuple differs from DATABASE_URL target (else exit 4).
+ * 2. Test target is not the production reference file's database (else exit 3).
+ * 3. Test target differs from any non-identical DATABASE_URL (else exit 4).
  * 4. Live anchor proof: the connection serves the test-project marker row
  *    (else exit 5). Production endpoints lack the marker regardless of
  *    hostname sharing.
@@ -26,6 +26,7 @@ import {
   resolveTestDatabaseUrl,
   testTargetConflictsProduction,
 } from "./test-db";
+import { loadProductionDatabaseUrl } from "../scripts/db-guard";
 
 async function main(): Promise<void> {
   const testUrl = resolveTestDatabaseUrl(process.env);
@@ -33,12 +34,15 @@ async function main(): Promise<void> {
     console.error(`CI-GUARD: missing ${TEST_DATABASE_URL_KEY}; refusing live tests.`);
     process.exit(2);
   }
+  // S0: production is identified by the operator-held production env file
+  // (outside the repo). DATABASE_URL may legitimately equal the test URL in
+  // local dev; any OTHER DATABASE_URL is still treated as possibly production.
   const appUrl = (process.env[APP_DATABASE_URL_KEY] ?? "").trim();
-  if (appUrl && appUrl === testUrl) {
-    console.error("CI-GUARD: test URL identical to app URL; refusing live tests.");
+  if (testTargetConflictsProduction(testUrl, loadProductionDatabaseUrl())) {
+    console.error("CI-GUARD: test target matches the production reference; refusing live tests.");
     process.exit(3);
   }
-  if (testTargetConflictsProduction(testUrl, appUrl || undefined)) {
+  if (appUrl && appUrl !== testUrl && testTargetConflictsProduction(testUrl, appUrl)) {
     console.error("CI-GUARD: test target matches production target; refusing live tests.");
     process.exit(4);
   }

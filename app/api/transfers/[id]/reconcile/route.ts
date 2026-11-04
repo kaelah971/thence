@@ -28,6 +28,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // Provider-read failures still record a durable observation (committed
     // inside reconcileTransfer) but surface as 503 so callers retry;
     // state never advances on an unreadable provider view.
+    // P2: identity mismatches are now committed as durable observations and
+    // reported here (same 409 contract as before).
+    if (summary.lastError === "SWAP_MISMATCH") {
+      return NextResponse.json({ error: "SWAP_MISMATCH", message: "Provider swap no longer matches the bound transfer terms." }, { status: 409 });
+    }
     if (summary.lastError && summary.lastError.startsWith("PROVIDER_")) {
       return NextResponse.json({ error: summary.lastError, message: "Route provider is temporarily unavailable." }, { status: 503 });
     }

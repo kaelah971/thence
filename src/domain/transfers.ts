@@ -32,6 +32,10 @@ export const TRANSFER_STATUSES = [
   "REFUNDED",
   "DELIVERED",
   "FAILED",
+  // P4: authorized payment whose provider swap expired with independently
+  // verified evidence that nothing was funded on the provider/EVM side.
+  // Says NOTHING about the NIM side (Nimiq Pay refunds its own HTLC).
+  "EXPIRED_UNFUNDED",
 ] as const;
 
 export type TransferStatus = (typeof TRANSFER_STATUSES)[number];
@@ -43,6 +47,7 @@ export const TERMINAL_STATUSES: ReadonlySet<TransferStatus> = new Set([
   "REFUNDED",
   "DELIVERED",
   "FAILED",
+  "EXPIRED_UNFUNDED",
 ]);
 
 /**
@@ -69,7 +74,10 @@ export const TRANSITIONS: Readonly<Record<TransferStatus, ReadonlyArray<Transfer
   USER_CANCELLED: [],
   LIGHTNING_HANDOFF: ["CLIENT_FUNDED", "OUTCOME_UNKNOWN"],
   OUTCOME_UNKNOWN: ["RECONCILING"],
-  RECONCILING: ["CLIENT_FUNDED", "SERVER_FUNDED", "NEEDS_ATTENTION", "CLAIMING", "REFUNDED", "OUTCOME_UNKNOWN"],
+  // P4: RECONCILING -> EXPIRED_UNFUNDED only through the evidence-gated,
+  // audited resolution in src/lib/expiry-resolution.ts (never the planner's
+  // automatic advance).
+  RECONCILING: ["CLIENT_FUNDED", "SERVER_FUNDED", "NEEDS_ATTENTION", "CLAIMING", "REFUNDED", "OUTCOME_UNKNOWN", "EXPIRED_UNFUNDED"],
   CLIENT_FUNDED: ["SERVER_FUNDED", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED"],
   SERVER_FUNDED: ["CLAIMING", "DELIVERED", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED"],
   CLAIMING: ["DELIVERED", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED", "FAILED"],
@@ -77,6 +85,7 @@ export const TRANSITIONS: Readonly<Record<TransferStatus, ReadonlyArray<Transfer
   REFUNDED: [],
   DELIVERED: [],
   FAILED: [],
+  EXPIRED_UNFUNDED: [],
 };
 
 export function isTerminal(status: TransferStatus): boolean {
@@ -142,10 +151,12 @@ export const USER_FACING_LABEL: Record<TransferStatus, string> = {
   OUTCOME_UNKNOWN: "Checking payment — do not resend",
   RECONCILING: "Checking payment — do not resend",
   CLIENT_FUNDED: "Converting",
-  SERVER_FUNDED: "Sending",
-  CLAIMING: "Sending",
+  // P3: funded on Polygon = the OWNER must act (Finish delivery), never "on its way".
+  SERVER_FUNDED: "Action needed — finish delivery",
+  CLAIMING: "Finishing delivery",
   NEEDS_ATTENTION: "Needs attention",
-  REFUNDED: "Payment refunded — no delivery",
+  REFUNDED: "Not delivered — Polygon lock refunded",
   DELIVERED: "Delivered",
   FAILED: "Needs attention",
+  EXPIRED_UNFUNDED: "Expired — not delivered",
 };

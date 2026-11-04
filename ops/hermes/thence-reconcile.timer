@@ -1,0 +1,15 @@
+# PREPARED, NOT INSTALLED — see ops/hermes/README.md
+[Unit]
+Description=Run the Thence reconciliation trigger every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+RandomizedDelaySec=5s
+# Missed runs are not replayed in a burst; the next tick reconciles everything due.
+Persistent=false
+Unit=thence-reconcile.service
+
+[Install]
+WantedBy=timers.target

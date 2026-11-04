@@ -1,49 +1,54 @@
 /**
- * F6.2.1 — test database isolation guard.
+ * F6.2.1 + S0 — test database isolation guard.
  *
  * RULE: a generic `DATABASE_URL` NEVER authorizes live integration tests.
  * Live database tests run only against an explicitly configured
- * `THENCE_TEST_DATABASE_URL` that provably targets a different database
- * than production.
+ * `THENCE_TEST_DATABASE_URL` that has been PROVEN, over the network, to be
+ * the isolated test project (anchor row `__thence_test_anchor`, which
+ * production lacks). The proof runs once per `vitest run` in
+ * `tests/global-setup.ts`; workers receive only a SHA-256 of the proven URL
+ * and install the test URL only when it hashes to the same value.
  *
- * What "provably different" means (no hostname-only check — Neon databases
- * can share hostnames):
- * - The test URL must parse as postgres:// with user, host and database.
- * - The (user, host, port, database) tuple must differ from production's.
- * - Unparseable test URLs fail closed (treated as conflicting).
+ * S0 hardening over F6.2.1:
+ * - The anchor proof is now MANDATORY for live tests (previously only the
+ *   CI script ran it; vitest relied on a tuple comparison alone).
+ * - Neon `-pooler` hosts are normalized, and the role is ignored, so the
+ *   pooled endpoint or another role on the production database can no
+ *   longer pass as "different" (see scripts/db-guard.ts).
+ * - When live tests are NOT installed, `DATABASE_URL` is scrubbed from the
+ *   test process. Previously it was left untouched — so a database-touching
+ *   test without a LIVE gate would have reached whatever `.env` held, which
+ *   until S0 was production.
  *
  * This module never prints, logs, or returns connection strings or
- * passwords. Refusal reasons are static strings. Identity comparisons use
- * parsed components only.
+ * passwords. Refusal reasons are static strings.
  */
+import { createHash } from "node:crypto";
+import {
+  TEST_ANCHOR_TABLE,
+  TEST_PROJECT_ID,
+  loadProductionDatabaseUrl,
+  parseDbTarget,
+  probeAnchor,
+  sameDatabase,
+  type DbTarget,
+} from "../scripts/db-guard";
+
+export { TEST_ANCHOR_TABLE, TEST_PROJECT_ID, parseDbTarget, type DbTarget };
 
 export const TEST_DATABASE_URL_KEY = "THENCE_TEST_DATABASE_URL";
 export const APP_DATABASE_URL_KEY = "DATABASE_URL";
+/** Worker-local marker: SHA-256 of the test URL that was installed after an anchor proof. */
+export const TEST_DB_PROOF_KEY = "THENCE_TEST_DB_PROOF";
 
-export interface DbTarget {
-  /** Role (user), e.g. "staging_owner". Never a password. */
-  user: string;
-  host: string;
-  port: string;
-  database: string;
+/** Proof handed from global setup to workers. Contains no URL or credential. */
+export interface TestDbProof {
+  urlHash: string;
+  projectId: string;
 }
 
-/** Parse a postgres connection string into non-secret identity components. Null when unparseable. */
-export function parseDbTarget(url: string): DbTarget | null {
-  try {
-    const parsed = new URL(String(url ?? "").trim());
-    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") return null;
-    const database = parsed.pathname.replace(/^\/+/, "").split("/")[0] ?? "";
-    if (!parsed.hostname || !database) return null;
-    return {
-      user: decodeURIComponent(parsed.username),
-      host: parsed.hostname.toLowerCase(),
-      port: parsed.port || "5432",
-      database,
-    };
-  } catch {
-    return null;
-  }
+export function hashDatabaseUrl(url: string): string {
+  return createHash("sha256").update(url.trim()).digest("hex");
 }
 
 /** Explicit test URL, or null when not configured. Never throws. */
@@ -53,43 +58,86 @@ export function resolveTestDatabaseUrl(env: Record<string, string | undefined> =
 }
 
 /**
- * True when the test target must be refused: unparseable, or identical to
- * production in (user, host, port, database). Fail-closed on any doubt.
+ * True when the test target must be refused: unparseable, or the same
+ * database as the given production reference (pooler-normalized, role
+ * ignored). Fail-closed on any doubt about the test URL itself.
  */
-export function testTargetConflictsProduction(testUrl: string, prodUrl: string | undefined): boolean {
-  const test = parseDbTarget(testUrl);
-  if (!test) return true;
+export function testTargetConflictsProduction(testUrl: string, prodUrl: string | null | undefined): boolean {
+  if (!parseDbTarget(testUrl)) return true;
   if (!prodUrl || !prodUrl.trim()) return false;
-  const prod = parseDbTarget(prodUrl);
-  if (!prod) return false;
-  return test.user === prod.user && test.host === prod.host && test.port === prod.port && test.database === prod.database;
+  if (!parseDbTarget(prodUrl)) return false;
+  return sameDatabase(testUrl, prodUrl);
 }
 
 /**
- * Original production URL per environment object, captured before the first
- * install. After installation `DATABASE_URL` holds the test target, so the
- * conflict check must compare against this snapshot — never against the
- * already-swapped value. WeakMap: no env pollution, no cross-test leakage.
+ * Production references for a given env: the operator-held production env
+ * file (outside the repo) and, when it differs from the test URL, the
+ * original `DATABASE_URL` (captured before installation).
  */
 const prodSnapshots = new WeakMap<object, string | undefined>();
 
-function prodReference(env: Record<string, string | undefined>): string | undefined {
-  if (prodSnapshots.has(env)) return prodSnapshots.get(env);
-  return env[APP_DATABASE_URL_KEY];
+function productionReferences(env: Record<string, string | undefined>, testUrl: string, productionFileUrl: string | null): string[] {
+  const refs: string[] = [];
+  if (productionFileUrl) refs.push(productionFileUrl);
+  const app = prodSnapshots.has(env) ? prodSnapshots.get(env) : env[APP_DATABASE_URL_KEY];
+  // A DATABASE_URL byte-identical to the proven test URL is the local dev
+  // configuration (dev runs against the anchored test project), not a
+  // production reference. Any other value is treated as possibly production.
+  if (app && app.trim() && app.trim() !== testUrl) refs.push(app);
+  return refs;
 }
 
-/** Live integration tests are enabled only with a safe explicit test URL. */
+function conflictsAny(testUrl: string, refs: string[]): boolean {
+  return !parseDbTarget(testUrl) || refs.some((ref) => testTargetConflictsProduction(testUrl, ref));
+}
+
+/** Live integration tests are enabled only after an anchor-proven install. */
 export function isLiveTestingEnabled(env: Record<string, string | undefined> = process.env): boolean {
   const testUrl = resolveTestDatabaseUrl(env);
   if (!testUrl) return false;
-  if (testTargetConflictsProduction(testUrl, prodReference(env))) return false;
+  const marker = env[TEST_DB_PROOF_KEY];
+  if (!marker || marker !== hashDatabaseUrl(testUrl)) return false;
+  if ((env[APP_DATABASE_URL_KEY] ?? "").trim() !== testUrl) return false;
   return true;
 }
 
-/** Neon project that owns the isolated automated-test database. */
-export const TEST_PROJECT_ID = "empty-wildflower-93415146";
-/** Marker row proving a connection reached the test project (see table `__thence_test_anchor`). Absent in production. */
-export const TEST_ANCHOR_TABLE = "__thence_test_anchor";
+export interface InstallResult {
+  installed: boolean;
+  /** Static reason string — never contains a URL or credential. */
+  reason: string;
+}
+
+function scrub(env: Record<string, string | undefined>, reason: string): InstallResult {
+  // Fail closed: never leave a possibly-production DATABASE_URL reachable
+  // from a test process that did not prove its target.
+  delete env[APP_DATABASE_URL_KEY];
+  delete env[TEST_DB_PROOF_KEY];
+  return { installed: false, reason };
+}
+
+/**
+ * Route application database access at `DATABASE_URL` to the proven test
+ * database. Call once from `vitest.setup.ts` before app modules initialize
+ * their lazy pools. Without a matching proof, or on any production conflict,
+ * `DATABASE_URL` is REMOVED from `env` and live tests stay disabled.
+ */
+export function installTestDatabaseUrl(
+  env: Record<string, string | undefined> = process.env,
+  proof: TestDbProof | null = null,
+  productionFileUrl: string | null = loadProductionDatabaseUrl(env),
+): InstallResult {
+  const testUrl = resolveTestDatabaseUrl(env);
+  if (!prodSnapshots.has(env)) prodSnapshots.set(env, env[APP_DATABASE_URL_KEY]);
+  if (!testUrl) return scrub(env, `missing ${TEST_DATABASE_URL_KEY}`);
+  if (conflictsAny(testUrl, productionReferences(env, testUrl, productionFileUrl))) {
+    return scrub(env, "test target matches production target");
+  }
+  if (!proof || proof.projectId !== TEST_PROJECT_ID) return scrub(env, "test database identity not proven (anchor)");
+  if (proof.urlHash !== hashDatabaseUrl(testUrl)) return scrub(env, "test URL changed after identity proof");
+  env[APP_DATABASE_URL_KEY] = testUrl;
+  env[TEST_DB_PROOF_KEY] = proof.urlHash;
+  return { installed: true, reason: "installed" };
+}
 
 export interface IdentityProof {
   ok: boolean;
@@ -100,58 +148,13 @@ export interface IdentityProof {
 }
 
 /**
- * Endpoint-agnostic identity proof: connects with the candidate URL and
- * requires the test-project anchor row. Any endpoint of production lacks
- * the table, so this refuses regardless of hostname sharing. Error text is
- * static (pg errors can embed hosts/database names).
+ * Endpoint-agnostic identity proof: connects (read-only) with the candidate
+ * URL and requires the test-project anchor row. Any endpoint of production
+ * lacks the table, so this refuses regardless of hostname sharing.
  */
 export async function verifyTestProjectIdentity(url: string): Promise<IdentityProof> {
-  const fail = (reason: string): IdentityProof => ({ ok: false, projectId: null, reason });
-  try {
-    const { Client } = await import("pg");
-    const client = new Client({
-      connectionString: url,
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 15000,
-      statement_timeout: 15000,
-    });
-    try {
-      await client.connect();
-      const rows = await client.query(`SELECT project_id FROM ${TEST_ANCHOR_TABLE} LIMIT 1`);
-      const projectId = rows.rows[0]?.project_id;
-      if (projectId === TEST_PROJECT_ID) return { ok: true, projectId, reason: "verified" };
-      return { ok: false, projectId: typeof projectId === "string" ? projectId : null, reason: "unexpected-project" };
-    } finally {
-      try {
-        await client.end();
-      } catch {
-        // Ignore close errors; identity already decided.
-      }
-    }
-  } catch {
-    return fail("unreachable-or-unmarked");
-  }
-}
-
-export interface InstallResult {
-  installed: boolean;
-  /** Static reason string — never contains a URL or credential. */
-  reason: string;
-}
-
-/**
- * Route application database access at `DATABASE_URL` to the isolated test
- * database. Call once from `vitest.setup.ts` before app modules initialize
- * their lazy pools. Refuses (leaving `DATABASE_URL` untouched) when the test
- * URL is missing or targets production.
- */
-export function installTestDatabaseUrl(env: Record<string, string | undefined> = process.env): InstallResult {
-  const testUrl = resolveTestDatabaseUrl(env);
-  if (!testUrl) return { installed: false, reason: `missing ${TEST_DATABASE_URL_KEY}` };
-  if (!prodSnapshots.has(env)) prodSnapshots.set(env, env[APP_DATABASE_URL_KEY]);
-  if (testTargetConflictsProduction(testUrl, prodReference(env))) {
-    return { installed: false, reason: "test target matches production target" };
-  }
-  env[APP_DATABASE_URL_KEY] = testUrl;
-  return { installed: true, reason: "installed" };
+  const probe = await probeAnchor(url);
+  if (!probe.anchored) return { ok: false, projectId: null, reason: probe.reason === "unreachable" ? "unreachable-or-unmarked" : "unmarked" };
+  if (probe.projectId === TEST_PROJECT_ID) return { ok: true, projectId: probe.projectId, reason: "verified" };
+  return { ok: false, projectId: probe.projectId, reason: "unexpected-project" };
 }

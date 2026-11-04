@@ -43,7 +43,9 @@ import {
 } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
 import { assertFundingExposure, assertPilotDbEnabled, assertPilotIntent, getOwnerAddress, getPilotConfig, lockPilotCreate } from "@/lib/pilot";
-import { canTransition, transition } from "@/domain/transfers";
+import { transition } from "@/domain/transfers";
+import { recordTransition } from "@/lib/transitions";
+import { validateLocktime } from "@/domain/claim-deadline";
 import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
@@ -106,6 +108,8 @@ export interface BoundSwapView {
   /** BOLT11 hold invoice (viewing is safe; paying costs money). */
   invoiceBolt11: string;
   invoiceExpiresAt: string | null;
+  /** P2: Polygon claim deadline (Satora evm_refund_locktime), ISO; null when unknown. */
+  claimDeadline: string | null;
   providerStatus: string | null;
   verifiedAt: string;
 }
@@ -153,6 +157,12 @@ export function verifySwapMatch(args: {
   }
   if (!swap.invoiceExpiresAt || swap.invoiceExpiresAt.getTime() <= Date.now()) {
     throw new AuthError(409, "INVOICE_EXPIRED", "Provider swap invoice is missing or expired.");
+  }
+  // P2: a reported claim deadline must be plausible for a swap bound now
+  // and must precede the Lightning invoice expiry. Absent stays unknown
+  // (claim actions then fail closed); implausible is an identity anomaly.
+  if (validateLocktime(swap.evmRefundLocktime, Date.now(), swap.invoiceExpiresAt) === "implausible") {
+    throw new AuthError(409, "SWAP_MISMATCH", "Provider swap claim deadline is not plausible for this swap.");
   }
 }
 
@@ -303,8 +313,137 @@ export async function attachSwap(
     throw new AuthError(400, "RECOVERY_NOT_CONFIRMED", "Client must confirm durable recovery persistence before attaching.");
   }
   const db = getDb();
+  const args = { userId, transferId, attemptToken, expectedQuoteRevision: expectedQuoteRevision as number | undefined, satoraSwapId };
+
+  // ---- P5 phase A: every gate read-only (short, unlocked), then the
+  // provider reads with NO transaction or lock held ----
+  const pre = await db.transaction((tx) => attachPreconditions(tx, args));
+  if (pre.kind === "replay") return pre.result;
+  const live = await readAttachEvidence(pre.transfer, satoraSwapId);
+
+  // ---- phase B: short commit under the per-transfer lock; every gate re-run ----
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
+    const ctx = await attachPreconditions(tx, args);
+    if (ctx.kind === "replay") return ctx.result;
+    const { transfer, attempt } = ctx;
+    if (Date.now() - live.gatheredAt > PROVIDER_EVIDENCE_MAX_AGE_MS) {
+      throw new AuthError(409, "VERSION_CONFLICT", "Provider check took too long; retry the attach.");
+    }
+    const { facts, resolved } = live;
+    if (facts.satoraSwapId !== satoraSwapId) {
+      throw new AuthError(409, "SWAP_MISMATCH", "Provider returned a different swap than requested.");
+    }
+    verifySwapMatch({
+      asset: transfer.targetAsset,
+      network: transfer.targetNetwork,
+      chainId: resolved.chainId,
+      tokenAddress: resolved.tokenAddress,
+      destination: transfer.destination,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      swap: facts,
+    });
+    const attached = await tx
+      .insert(swapAttachments)
+      .values({
+        transferId: transfer.id,
+        attemptId: attempt.id,
+        satoraSwapId: facts.satoraSwapId,
+        invoiceBolt11: facts.bolt11Invoice,
+        paymentHash: facts.paymentHash,
+        sourceSats: facts.sourceSats,
+        targetAtomic: facts.targetAtomic,
+        invoiceExpiresAt: facts.invoiceExpiresAt,
+        // P2: verified above (identity + plausibility); null when unreported.
+        evmRefundLocktime: facts.evmRefundLocktime === null ? null : new Date(facts.evmRefundLocktime * 1000),
+        providerStatus: facts.status,
+      })
+      .returning();
+    const attachment = attached[0];
+    if (!attachment) throw new AuthError(500, "ATTACH_FAILED", "Could not bind the swap.");
+    await tx
+      .update(handoffAttempts)
+      .set({ status: "SWAP_ATTACHED", satoraSwapId: facts.satoraSwapId, recoveryAcknowledged: true, updatedAt: new Date() })
+      .where(eq(handoffAttempts.id, attempt.id));
+    // Mirror the public swap id into the receipt-bound proofs row (upsert).
+    await tx
+      .insert(transferProofs)
+      .values({ transferId: transfer.id, satoraSwapId: facts.satoraSwapId, lightningHash: facts.paymentHash })
+      .onConflictDoUpdate({
+        target: transferProofs.transferId,
+        set: { satoraSwapId: facts.satoraSwapId, lightningHash: facts.paymentHash },
+      });
+    const next = transition("QUOTED", "SWAP_CREATED");
+    await tx.update(transfers).set({ status: next, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+    // P5 audit: same transaction as the binding and the status write.
+    await recordTransition(tx, {
+      transferId: transfer.id,
+      from: "QUOTED",
+      to: next,
+      actor: "owner",
+      actorUserId: userId,
+      reasonCode: "SWAP_ATTACHED",
+      evidence: { attemptId: attempt.id, quoteRevision: transfer.quoteRevision, providerStatus: facts.status || "pending", recoveryAcknowledged: true },
+    });
+    return { attachment: toBoundView(attachment), transferStatus: next, deduplicated: false };
+  });
+}
+
+/** P5: provider evidence older than this at commit time is refused (client retries). */
+export const PROVIDER_EVIDENCE_MAX_AGE_MS = 2 * 60_000;
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type AttachArgs = {
+  userId: string;
+  transferId: string;
+  attemptToken: string;
+  expectedQuoteRevision: number | undefined;
+  satoraSwapId: string;
+};
+type AttachContext =
+  | { kind: "replay"; result: { attachment: BoundSwapView; transferStatus: string; deduplicated: boolean } }
+  | { kind: "attach"; transfer: TransferRow; attempt: typeof handoffAttempts.$inferSelect };
+
+function providerAuthError(err: unknown): AuthError {
+  if (err instanceof SatoraError) {
+    const status = err.code === "SWAP_NOT_FOUND" ? 404 : err.code === "PROVIDER_TIMEOUT" || err.code === "PROVIDER_UNAVAILABLE" ? 503 : 409;
+    return new AuthError(status, err.code, err.message);
+  }
+  return new AuthError(503, "PROVIDER_UNAVAILABLE", "Route provider is temporarily unavailable.");
+}
+
+/** Live read-only provider + canonical route facts for an attach (network; never under a lock). */
+async function readAttachEvidence(
+  transfer: TransferRow,
+  satoraSwapId: string,
+): Promise<{ facts: VerifiedSwapFacts; resolved: Awaited<ReturnType<typeof resolveRoute>>; gatheredAt: number }> {
+  let facts: VerifiedSwapFacts;
+  try {
+    facts = await getProviderSwap(satoraSwapId);
+  } catch (err) {
+    throw providerAuthError(err);
+  }
+  // Resolve the canonical token identity for comparison (never trusted from the client).
+  let resolved;
+  try {
+    resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
+  } catch (err) {
+    if (err instanceof SatoraError) {
+      throw new AuthError(err.code === "PROVIDER_UNAVAILABLE" || err.code === "PROVIDER_TIMEOUT" ? 503 : 409, err.code, err.message);
+    }
+    throw err;
+  }
+  return { facts, resolved, gatheredAt: Date.now() };
+}
+
+/**
+ * Every attach gate, database-only. Run once before the provider reads (so
+ * invalid requests never reach the network) and again under the lock (so the
+ * commit decides on current state, never on the pre-read).
+ */
+async function attachPreconditions(tx: Tx, args: AttachArgs): Promise<AttachContext> {
+  const { userId, transferId, attemptToken, expectedQuoteRevision, satoraSwapId } = args;
+  {
     const rows = await tx
       .select()
       .from(transfers)
@@ -321,9 +460,12 @@ export async function attachSwap(
         throw new AuthError(409, "SWAP_CONFLICT", "This transfer already has a bound swap; it cannot be replaced.");
       }
       return {
-        attachment: toBoundView(existingBinding),
-        transferStatus: transfer.status,
-        deduplicated: true,
+        kind: "replay",
+        result: {
+          attachment: toBoundView(existingBinding),
+          transferStatus: transfer.status,
+          deduplicated: true,
+        },
       };
     }
     if (transfer.status !== "QUOTED") {
@@ -366,75 +508,8 @@ export async function attachSwap(
     if (reused.length > 0) {
       throw new AuthError(409, "SWAP_ALREADY_BOUND", "This Satora swap is already bound to another transfer.");
     }
-    // Live read-only verification against independent provider facts.
-    let facts;
-    try {
-      const { getProviderSwap } = await import("@/lib/satora");
-      facts = await getProviderSwap(satoraSwapId);
-    } catch (err) {
-      if (err instanceof SatoraError) {
-        const status = err.code === "SWAP_NOT_FOUND" ? 404 : err.code === "PROVIDER_TIMEOUT" || err.code === "PROVIDER_UNAVAILABLE" ? 503 : 409;
-        throw new AuthError(status, err.code, err.message);
-      }
-      throw new AuthError(503, "PROVIDER_UNAVAILABLE", "Route provider is temporarily unavailable.");
-    }
-    // Resolve the canonical token identity for comparison (never trusted from the client).
-    let resolved;
-    try {
-      const { resolveRoute } = await import("@/lib/satora");
-      resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
-    } catch (err) {
-      if (err instanceof SatoraError) {
-        throw new AuthError(err.code === "PROVIDER_UNAVAILABLE" || err.code === "PROVIDER_TIMEOUT" ? 503 : 409, err.code, err.message);
-      }
-      throw err;
-    }
-    if (facts.satoraSwapId !== satoraSwapId) {
-      throw new AuthError(409, "SWAP_MISMATCH", "Provider returned a different swap than requested.");
-    }
-    verifySwapMatch({
-      asset: transfer.targetAsset,
-      network: transfer.targetNetwork,
-      chainId: resolved.chainId,
-      tokenAddress: resolved.tokenAddress,
-      destination: transfer.destination,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-      swap: facts,
-    });
-    const attached = await tx
-      .insert(swapAttachments)
-      .values({
-        transferId: transfer.id,
-        attemptId: attempt.id,
-        satoraSwapId: facts.satoraSwapId,
-        invoiceBolt11: facts.bolt11Invoice,
-        paymentHash: facts.paymentHash,
-        sourceSats: facts.sourceSats,
-        targetAtomic: facts.targetAtomic,
-        invoiceExpiresAt: facts.invoiceExpiresAt,
-        providerStatus: facts.status,
-      })
-      .returning();
-    const attachment = attached[0];
-    if (!attachment) throw new AuthError(500, "ATTACH_FAILED", "Could not bind the swap.");
-    await tx
-      .update(handoffAttempts)
-      .set({ status: "SWAP_ATTACHED", satoraSwapId: facts.satoraSwapId, recoveryAcknowledged: true, updatedAt: new Date() })
-      .where(eq(handoffAttempts.id, attempt.id));
-    // Mirror the public swap id into the receipt-bound proofs row (upsert).
-    await tx
-      .insert(transferProofs)
-      .values({ transferId: transfer.id, satoraSwapId: facts.satoraSwapId, lightningHash: facts.paymentHash })
-      .onConflictDoUpdate({
-        target: transferProofs.transferId,
-        set: { satoraSwapId: facts.satoraSwapId, lightningHash: facts.paymentHash },
-      });
-    if (!canTransition("QUOTED", "SWAP_CREATED")) {
-      throw new AuthError(500, "LIFECYCLE_FORBIDDEN", "Transfer cannot advance to swap-created.");
-    }
-    await tx.update(transfers).set({ status: "SWAP_CREATED", updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
-    return { attachment: toBoundView(attachment), transferStatus: "SWAP_CREATED", deduplicated: false };
-  });
+    return { kind: "attach", transfer, attempt };
+  }
 }
 
 function toBoundView(row: typeof swapAttachments.$inferSelect): BoundSwapView {
@@ -445,6 +520,7 @@ function toBoundView(row: typeof swapAttachments.$inferSelect): BoundSwapView {
     paymentHash: row.paymentHash,
     invoiceBolt11: row.invoiceBolt11,
     invoiceExpiresAt: row.invoiceExpiresAt?.toISOString() ?? null,
+    claimDeadline: row.evmRefundLocktime?.toISOString() ?? null,
     providerStatus: row.providerStatus,
     verifiedAt: row.verifiedAt.toISOString(),
   };
@@ -467,63 +543,29 @@ export async function authorizeHandoff(
     throw new AuthError(400, "BAD_BODY", "attemptToken is required.");
   }
   const db = getDb();
+
+  // ---- P5 phase A: gates read-only (short, unlocked), then the live
+  // provider revalidation with NO transaction or lock held ----
+  const pre = await db.transaction((tx) => authorizePreconditions(tx, userId, transferId, attemptToken));
+  let facts: VerifiedSwapFacts;
+  try {
+    facts = await getProviderSwap(pre.attachment.satoraSwapId);
+  } catch (err) {
+    throw providerAuthError(err);
+  }
+  const gatheredAt = Date.now();
+
+  // ---- phase B: short commit under the per-transfer lock; every gate re-run.
+  // The kill switch is re-checked here, so a stop landing while the provider
+  // was being read still blocks before any host payment (F8.2). ----
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
-    const rows = await tx
-      .select()
-      .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
-      .limit(1);
-    const transfer = rows[0];
-    if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
-    if (transfer.status !== "SWAP_CREATED") {
-      throw new AuthError(409, "NOT_AUTHORIZABLE", "Only swap-bound pre-funding transfers can authorize handoff.");
+    const { transfer, attempt, attachment } = await authorizePreconditions(tx, userId, transferId, attemptToken);
+    if (attachment.satoraSwapId !== pre.attachment.satoraSwapId || attempt.id !== pre.attempt.id) {
+      throw new AuthError(409, "VERSION_CONFLICT", "The payment changed while it was being checked; re-read it before authorizing.");
     }
-    // F8 restricted pilot: authorization is the last server gate before host payment.
-    // F8.2: database kill switch gates new authorizations (in-transaction,
-    // so a stop landing mid-handoff still blocks before any host payment).
-    {
-      const config = getPilotConfig();
-      assertPilotIntent({
-        routeId: transfer.routeId,
-        targetAmountAtomic: transfer.targetAmountAtomic,
-        ownerAddress: await getOwnerAddress(userId),
-      }, config);
-      await assertPilotDbEnabled(config, tx);
-    }
-    const attempts = await tx
-      .select()
-      .from(handoffAttempts)
-      .where(
-        and(
-          eq(handoffAttempts.transferId, transfer.id),
-          eq(handoffAttempts.attemptTokenHash, hashAttemptToken(attemptToken)),
-        ),
-      )
-      .limit(1);
-    const attempt = attempts[0];
-    if (!attempt || attempt.status !== "SWAP_ATTACHED" || attempt.expiresAt.getTime() <= Date.now()) {
-      throw new AuthError(409, "ATTEMPT_INVALID", "Handoff attempt is unknown, expired, or not attach-confirmed.");
-    }
-    if (!attempt.recoveryAcknowledged) {
-      throw new AuthError(409, "RECOVERY_NOT_CONFIRMED", "Recovery persistence was not acknowledged for this attempt.");
-    }
-    const bound = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
-    const attachment = bound[0];
-    if (!attachment || attachment.satoraSwapId !== attempt.satoraSwapId) {
-      throw new AuthError(409, "ATTEMPT_INVALID", "No bound swap matches this attempt.");
-    }
-    // Live revalidation: still pending, invoice still live.
-    let facts;
-    try {
-      const { getProviderSwap } = await import("@/lib/satora");
-      facts = await getProviderSwap(attachment.satoraSwapId);
-    } catch (err) {
-      if (err instanceof SatoraError) {
-        const status = err.code === "SWAP_NOT_FOUND" ? 404 : err.code === "PROVIDER_TIMEOUT" || err.code === "PROVIDER_UNAVAILABLE" ? 503 : 409;
-        throw new AuthError(status, err.code, err.message);
-      }
-      throw new AuthError(503, "PROVIDER_UNAVAILABLE", "Route provider is temporarily unavailable.");
+    if (Date.now() - gatheredAt > PROVIDER_EVIDENCE_MAX_AGE_MS) {
+      throw new AuthError(409, "VERSION_CONFLICT", "Provider check took too long; retry the authorization.");
     }
     if (facts.status !== "" && facts.status !== "pending") {
       throw new AuthError(409, "SWAP_STATE_UNEXPECTED", `Provider swap is no longer awaiting funding (status: ${facts.status}). Reconcile before retrying.`);
@@ -544,7 +586,8 @@ export async function authorizeHandoff(
       quotedSourceSats: locked?.toString() ?? "",
       liveSourceSats: live.toString(),
     };
-    if (locked === null || live > locked) {
+    const repriced = locked === null || live > locked;
+    if (repriced) {
       if (accepted === null || live > accepted) {
         throw new AuthError(409, "REPRICED_NEEDS_CONFIRMATION", "Swap source exceeds the quoted amount; explicit renewed confirmation is required.", figures);
       }
@@ -557,10 +600,23 @@ export async function authorizeHandoff(
     if (!authorized[0]) {
       throw new AuthError(409, "ALREADY_AUTHORIZED", "Handoff was already authorized for this attempt.");
     }
-    if (!canTransition("SWAP_CREATED", "AWAITING_NIM_APPROVAL")) {
-      throw new AuthError(500, "LIFECYCLE_FORBIDDEN", "Transfer cannot advance to approval.");
-    }
-    await tx.update(transfers).set({ status: "AWAITING_NIM_APPROVAL", updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+    const next = transition("SWAP_CREATED", "AWAITING_NIM_APPROVAL");
+    await tx.update(transfers).set({ status: next, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+    // P5 audit: same transaction as the authorization and the status write.
+    await recordTransition(tx, {
+      transferId: transfer.id,
+      from: "SWAP_CREATED",
+      to: next,
+      actor: "owner",
+      actorUserId: userId,
+      reasonCode: "HANDOFF_AUTHORIZED",
+      evidence: {
+        attemptId: attempt.id,
+        providerStatus: facts.status || "pending",
+        ...figures,
+        repricedAccepted: repriced,
+      },
+    });
     return {
       attemptId: attempt.id,
       invoiceBolt11: facts.bolt11Invoice,
@@ -568,6 +624,60 @@ export async function authorizeHandoff(
       authorizedAt: new Date().toISOString(),
     };
   });
+}
+
+/** Every authorize gate, database-only (run before the provider read and again under the lock). */
+async function authorizePreconditions(
+  tx: Tx,
+  userId: string,
+  transferId: string,
+  attemptToken: string,
+): Promise<{ transfer: TransferRow; attempt: typeof handoffAttempts.$inferSelect; attachment: typeof swapAttachments.$inferSelect }> {
+  const rows = await tx
+    .select()
+    .from(transfers)
+    .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+    .limit(1);
+  const transfer = rows[0];
+  if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+  if (transfer.status !== "SWAP_CREATED") {
+    throw new AuthError(409, "NOT_AUTHORIZABLE", "Only swap-bound pre-funding transfers can authorize handoff.");
+  }
+  // F8 restricted pilot: authorization is the last server gate before host payment.
+  // F8.2: database kill switch gates new authorizations (in-transaction,
+  // so a stop landing mid-handoff still blocks before any host payment).
+  {
+    const config = getPilotConfig();
+    assertPilotIntent({
+      routeId: transfer.routeId,
+      targetAmountAtomic: transfer.targetAmountAtomic,
+      ownerAddress: await getOwnerAddress(userId),
+    }, config);
+    await assertPilotDbEnabled(config, tx);
+  }
+  const attempts = await tx
+    .select()
+    .from(handoffAttempts)
+    .where(
+      and(
+        eq(handoffAttempts.transferId, transfer.id),
+        eq(handoffAttempts.attemptTokenHash, hashAttemptToken(attemptToken)),
+      ),
+    )
+    .limit(1);
+  const attempt = attempts[0];
+  if (!attempt || attempt.status !== "SWAP_ATTACHED" || attempt.expiresAt.getTime() <= Date.now()) {
+    throw new AuthError(409, "ATTEMPT_INVALID", "Handoff attempt is unknown, expired, or not attach-confirmed.");
+  }
+  if (!attempt.recoveryAcknowledged) {
+    throw new AuthError(409, "RECOVERY_NOT_CONFIRMED", "Recovery persistence was not acknowledged for this attempt.");
+  }
+  const bound = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
+  const attachment = bound[0];
+  if (!attachment || attachment.satoraSwapId !== attempt.satoraSwapId) {
+    throw new AuthError(409, "ATTEMPT_INVALID", "No bound swap matches this attempt.");
+  }
+  return { transfer, attempt, attachment };
 }
 
 /** Read-only resume contract: latest attempt + bound swap summary (no secrets). */

@@ -11,7 +11,7 @@ import { getDb } from "@/lib/db";
 import { reconciliationObservations, transfers, users } from "@/db/schema";
 import { AuthError } from "@/lib/auth";
 import { isClaimReady, planReconciliation } from "@/lib/reconcile";
-import { setSettlementChainForTests, SWAP_REFUNDED_EVENT_TOPIC, type ChainReads } from "@/lib/settlement";
+import { setSettlementChainForTests, SWAP_REFUNDED_EVENT_TOPIC, TRUSTED_HTLC_CONTRACTS, type ChainReads } from "@/lib/settlement";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransfer } from "../app/api/transfers/route";
@@ -36,7 +36,8 @@ let cc = 0;
 const withClient = (tag: string): Record<string, string> => ({ "x-forwarded-for": `b43-${RUN}-${tag}-${cc++}` });
 const login = (tag: string) => loginAs(withClient(`login-${tag}`), (id) => createdUserIds.push(id));
 const EVM_A = "0x0000000000000000000000000000000000000001";
-const REFUND_HTLC = "0x0000000000000000000000000000000000000002";
+// P5: refunds are attributable only to the pinned HTLC contract.
+const REFUND_HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
 const REFUND_TX = `0x${"ef".repeat(32)}`;
 const REFUND_BLOCK = 70_000_000n;
 const REFUND_BLOCK_HASH = `0x${"aa".repeat(32)}`;
@@ -438,7 +439,15 @@ describe.skipIf(!LIVE)("read-only reconciliation (mocked provider)", () => {
     try {
       const { cookie } = await login("recon-refund-unverified");
       const { id } = await authorizedTransfer(cookie, "recon-refund-unverified", "refund-unverified");
+      // P2: the hash lock is part of the bound identity, so a changed one is
+      // refused as SWAP_MISMATCH (409) before any refund evidence is read.
       mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX, hash_lock: `0x${"ab".repeat(32)}` }));
+      const changedLock = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
+      expect(changedLock.status).toBe(409);
+      expect(((await changedLock.json()) as { error: string }).error).toBe("SWAP_MISMATCH");
+      // Same identity, but the refund receipt names a different HTLC than the
+      // provider's: the refund cannot be attributed and must not release funds.
+      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX, evm_htlc_address: "0x0000000000000000000000000000000000000003" }));
       try {
         const res = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
         expect(res.status).toBe(200);

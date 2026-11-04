@@ -1,0 +1,6 @@
+# Hermes/systemd files run on Linux: always LF, whatever the checkout OS.
+*.sh text eol=lf
+ops/hermes/* text eol=lf
+# Drizzle hashes the raw SQL file: migrations must be byte-identical everywhere (LF).
+src/db/migrations/*.sql text eol=lf
+src/db/migrations/meta/*.json text eol=lf

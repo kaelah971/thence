@@ -117,7 +117,7 @@ export function decideResumeAction(
   if (status === "LIGHTNING_HANDOFF" || status === "OUTCOME_UNKNOWN" || status === "RECONCILING") {
     return { action: record && !record.outcomeReported ? "report-unknown" : "none", phase: "checking" };
   }
-  if (status === "USER_CANCELLED") return { action: "none", phase: "cancelled" };
+  if (status === "USER_CANCELLED" || status === "EXPIRED_UNFUNDED") return { action: "none", phase: "cancelled" };
   if (status === "AWAITING_NIM_APPROVAL") {
     // A stored unreported invocation means the native response was lost
     // (termination/timeout): outcome unknown until reconciled.

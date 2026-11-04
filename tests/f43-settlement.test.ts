@@ -272,8 +272,10 @@ describe("funded-swap claim eligibility (execution stays OFF)", () => {
     expect(evaluateClaimEligibility({ ...open, sessionValid: false }).allowed).toBe(false);
     expect(evaluateClaimEligibility({ ...open, timelockSafe: false }).allowed).toBe(false);
     const now = 1_000_000_000_000;
-    expect(isClaimWindowOpen(Math.floor((now + 61_000) / 1000), now)).toBe(true);
-    expect(isClaimWindowOpen(Math.floor((now + 60_000) / 1000), now)).toBe(false);
+    // P2: the unsafe window is 5 min (was 60 s): no claim inside it.
+    expect(isClaimWindowOpen(Math.floor((now + 301_000) / 1000), now)).toBe(true);
+    expect(isClaimWindowOpen(Math.floor((now + 300_000) / 1000), now)).toBe(false);
+    expect(isClaimWindowOpen(Math.floor((now + 61_000) / 1000), now)).toBe(false);
     expect(isClaimWindowOpen(null, now)).toBe(false);
   });
   it("wrong token/network/address/amount never permits a claim", () => {

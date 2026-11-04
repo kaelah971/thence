@@ -4,21 +4,22 @@
   "private": true,
   "description": "Thence — Recipient-first cross-asset payments inside Nimiq Pay (backend foundation, milestone B0)",
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx ./scripts/assert-nonprod-db.ts && next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "tsx ./scripts/assert-nonprod-db.ts && next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx ./src/db/migrate.ts",
+    "db:migrate": "tsx ./scripts/assert-nonprod-db.ts && tsx ./src/db/migrate.ts",
     "pilot:status": "tsx ./scripts/pilot-switch.ts status",
     "pilot:disable": "tsx ./scripts/pilot-switch.ts disable",
     "pilot:enable": "tsx ./scripts/pilot-switch.ts enable",
     "pilot:probe": "tsx ./scripts/probe-pilot-route.ts",
-    "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:push": "tsx ./scripts/assert-nonprod-db.ts && drizzle-kit push",
+    "db:studio": "tsx ./scripts/assert-nonprod-db.ts && drizzle-kit studio",
+    "db:guard": "tsx ./scripts/assert-nonprod-db.ts"
   },
   "dependencies": {
     "@nimiq/mini-app-sdk": "0.2.4",
@@ -33,6 +34,9 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@testing-library/dom": "10.4.0",
+    "@testing-library/react": "16.1.0",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.1",
     "@types/react": "^19.0.7",
@@ -40,6 +44,7 @@
     "drizzle-kit": "^0.30.1",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.3",
+    "jsdom": "25.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"

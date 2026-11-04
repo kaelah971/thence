@@ -8,3 +8,9 @@ coverage/
 tsconfig.tsbuildinfo
 
 .vercel/
+
+# P7 browser E2E artifacts (simulated environment; never committed)
+.next-e2e/
+e2e/.run/
+test-results/
+playwright-report/

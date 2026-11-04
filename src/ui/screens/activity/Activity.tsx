@@ -18,7 +18,10 @@ import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, STAGE_OF, timelineF
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
 import {
   getProviderEvidence,
+  needsOwnerClaim,
+  postCloseExpired,
   postHandoffCancel,
+  EXPIRED_UNFUNDED_BODY,
   postReconcile,
   providerEvidenceDisposition,
   providerStatusLabel,
@@ -28,6 +31,7 @@ import {
 import { invalidateData } from "@/ui/lib/resource";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { useSettlement } from "@/ui/screens/send/useSettlement";
+import { ClaimDeadlineNotice } from "@/ui/components/ClaimDeadline";
 import styles from "./activity.module.css";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -177,7 +181,14 @@ export function Activity(): React.JSX.Element {
   );
 }
 
-const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED"]);
+const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED", "EXPIRED_UNFUNDED"]);
+/**
+ * P3: the shared tracker runs for every in-flight payment opened in Activity,
+ * so funding that lands while the sheet is open surfaces Finish delivery at
+ * once (Nov 2: the action only mounted if the row was already funded).
+ */
+const TRACKED_DETAIL = new Set(["AWAITING_NIM_APPROVAL", "LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING"]);
+const FUNDED_DETAIL = new Set(["SERVER_FUNDED", "CLAIMING"]);
 
 /** Re-reads the transfer so the sheet shows the latest server status. */
 function LiveTransferDetail({
@@ -233,8 +244,15 @@ function LiveTransferDetail({
           {checkedNote && <p className={styles.latest}>{checkedNote}</p>}
         </div>
       )}
-      {userId && (item.status === "SERVER_FUNDED" || item.status === "CLAIMING") && (
-        <ActivityClaimRecovery transferId={item.id} ownerUserId={userId} />
+      {userId && TRACKED_DETAIL.has(item.status) && (
+        <ActivityClaimRecovery
+          transferId={item.id}
+          ownerUserId={userId}
+          knownStatus={item.status}
+          onStatusChange={() => {
+            if ("refresh" in resource) resource.refresh();
+          }}
+        />
       )}
       <ProviderEvidencePanel
         transferId={item.id}
@@ -260,10 +278,27 @@ function LiveTransferDetail({
   );
 }
 
-function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string; ownerUserId: string }): React.JSX.Element {
+function ActivityClaimRecovery({
+  transferId,
+  ownerUserId,
+  knownStatus,
+  onStatusChange,
+}: {
+  transferId: string;
+  ownerUserId: string;
+  knownStatus: string;
+  onStatusChange: () => void;
+}): React.JSX.Element | null {
   const settlement = useSettlement();
   const [claiming, setClaiming] = useState(false);
   const state = settlement.state;
+  const liveStatus = state.transferStatus;
+
+  // Keep the detail sheet's own status in step with the live tracker.
+  useEffect(() => {
+    if (liveStatus && liveStatus !== knownStatus) onStatusChange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveStatus]);
 
   useEffect(() => {
     void settlement.track({ transferId, ownerUserId, sessionValid: true, previewMode: false });
@@ -272,19 +307,28 @@ function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ownerUserId, transferId]);
 
-  const claimReady = state.claimReady && (state.phase === "on-its-way" || state.phase === "finishing");
-  const title = claimReady ? "Ready to finish delivery" : state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
-  const message = claimReady
-    ? "This uses the saved recovery information in this browser. Choose the one-time action below; do not start a new payment."
-    : state.message || "Checking the same payment — do not resend.";
+  const claimReady = needsOwnerClaim(state);
+  const title = state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
+  const message = state.message || "Checking the same payment — do not resend.";
+  // Before funding the tracker runs silently (the detail below shows status).
+  const funded = FUNDED_DETAIL.has(liveStatus ?? knownStatus);
+  if (!funded && !claimReady) return null;
 
   return (
     <div style={{ marginBottom: 12 }} data-recovery-transfer-id={transferId}>
-      <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
-        {message}
-      </Notice>
-      {claimReady && (
-        <>
+      {claimReady && state.claimPending && (
+        <Notice tone="info" icon="clock" title="Delivery submitted — confirming it arrived" live>
+          Thence is checking Polygon for the USDC reaching their wallet. Don&apos;t start another payment, and don&apos;t try again.
+        </Notice>
+      )}
+      {!claimReady && (
+        <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
+          {message}
+        </Notice>
+      )}
+      {claimReady && !state.claimPending && (
+        <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
+          <p className={styles.latest}>This uses the saved recovery information in this browser. Do not start a new payment.</p>
           <Button
             variant="soft"
             size="md"
@@ -306,7 +350,12 @@ function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string
             {claiming ? "Checking delivery…" : "Finish delivery"}
           </Button>
           <p className={styles.latest}>One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.</p>
-        </>
+        </ClaimDeadlineNotice>
+      )}
+      {state.claimMessage && !claiming && (
+        <p className={styles.latest} role="status" data-claim-result>
+          {state.claimMessage}
+        </p>
       )}
     </div>
   );
@@ -354,7 +403,7 @@ function ProviderEvidencePanel({
             <div><dt>{disposition === "REFUNDED" ? "Refund transaction" : "Claim transaction"}</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
           </dl>
           {disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
-          {disposition === "REFUNDED" && <p className={styles.latest}>The provider reports that its funded lock was refunded. Do not claim or start another payment; keep this payment open for reconciliation.</p>}
+          {disposition === "REFUNDED" && <p className={styles.latest}>The provider reports that its Polygon lock was refunded to the provider. That is not a refund of your NIM. Do not claim or start another payment; keep this payment open for reconciliation.</p>}
           {disposition === "EXPIRED_UNFUNDED" && <p className={styles.latest}>Satora reports this swap expired without funding. The server will re-check that evidence before closing it.</p>}
         </Notice>
       )}
@@ -384,6 +433,11 @@ function TransferDetail({
   // `expired` result is the only post-approval close affordance; funding and
   // uncertain evidence stay open.
   const canRetire = !preview && canShowCancelUnpaid(item.status, evidenceDisposition === "EXPIRED_UNFUNDED");
+  // P4: an authorized payment stuck in "checking" whose fresh provider
+  // evidence says it expired unfunded. The server re-proves everything
+  // (including an independent chain scan) before closing.
+  const canCloseExpired = !preview && item.status === "RECONCILING" && evidenceDisposition === "EXPIRED_UNFUNDED";
+  const [closedExpired, setClosedExpired] = useState(false);
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>
@@ -410,7 +464,18 @@ function TransferDetail({
         </div>
       )}
 
-      {stage === "checking" && (
+      {canCloseExpired && !closedExpired && (
+        <Notice tone="info" icon="info" title="This payment expired before any money moved">
+          The provider reports this payment expired without being funded. You can close it — Thence checks the provider and the
+          network again first, and keeps it open if anything doesn&apos;t match.
+        </Notice>
+      )}
+      {(item.status === "EXPIRED_UNFUNDED" || closedExpired) && (
+        <Notice tone="info" icon="info" title="Payment expired — not delivered">
+          {EXPIRED_UNFUNDED_BODY}
+        </Notice>
+      )}
+      {stage === "checking" && !canCloseExpired && !closedExpired && (
         <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
           We can&apos;t confirm the outcome yet. Starting another payment could pay them twice.
         </Notice>
@@ -440,6 +505,40 @@ function TransferDetail({
           <p className={styles.latest}>Continues the same payment — never starts a new one.</p>
         </div>
       )}
+      {canCloseExpired && !closedExpired && (
+        <div style={{ marginTop: 12 }}>
+          <Button
+            variant="soft"
+            size="md"
+            icon="close"
+            block
+            disabled={closing}
+            onClick={() => {
+              setClosing(true);
+              setClosedNote(null);
+              void postCloseExpired(item.id)
+                .then((result) => {
+                  if (result.ok && result.data.resolution.status === "EXPIRED_UNFUNDED") {
+                    setClosedExpired(true);
+                    setClosedNote("Closed. Nothing reached their network, and the payment is no longer counted as in progress.");
+                  } else if (!result.ok && result.kind === "unauthorized") {
+                    setClosedNote("Your session has ended. Sign in again.");
+                  } else if (!result.ok && result.message) {
+                    setClosedNote(result.message);
+                  } else {
+                    setClosedNote("We couldn't close it right now. It stays open — don't resend.");
+                  }
+                  invalidateData();
+                })
+                .finally(() => setClosing(false));
+            }}
+          >
+            {closing ? "Checking before closing…" : "Close expired payment"}
+          </Button>
+          <p className={styles.latest}>{closedNote ?? "History is kept. This never sends or refunds money."}</p>
+        </div>
+      )}
+      {closedExpired && closedNote && <p className={styles.latest}>{closedNote}</p>}
       {canRetire && (
         <div style={{ marginTop: 12 }}>
           <Button

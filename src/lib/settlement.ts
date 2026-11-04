@@ -31,6 +31,7 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { getEnv } from "@/lib/env";
+import { recordTransition } from "@/lib/transitions";
 
 /** ERC20 Transfer(address,address,uint256) event topic (protocol constant). */
 export const TRANSFER_EVENT_TOPIC =
@@ -63,6 +64,21 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
   42161: { mode: "finalized", confirmations: 1 },
 };
 
+/**
+ * HTLC contracts the pilot trusts per chain (Satora HTLCErc20 v6). Provider-
+ * named addresses outside this set are refused for both P4 no-activity proofs
+ * and P5 refund attribution: a provider pointer to another contract is never
+ * evidence about this swap.
+ */
+export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
+  137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
+};
+
+export function isTrustedHtlc(chainId: number, address: string | null | undefined): boolean {
+  if (!address) return false;
+  return (TRUSTED_HTLC_CONTRACTS[chainId] ?? []).includes(address.toLowerCase());
+}
+
 /** Bounded external-call budget (mirrors the Satora read timeout). */
 export const CHAIN_READ_TIMEOUT_MS = 15_000;
 
@@ -78,6 +94,8 @@ export interface ChainLog {
   topics: string[];
   data: string;
   logIndex: number | null;
+  /** P5: emitting transaction (present on eth_getLogs results; absent on receipt logs). */
+  transactionHash?: string | null;
 }
 
 export interface ChainReceipt {
@@ -96,15 +114,27 @@ export interface ChainReads {
   getFinalizedBlockNumber(chainId: number): Promise<bigint | null>;
   /** Block hash at a height (reorg detection); null when unavailable. */
   getBlockHash(chainId: number, blockNumber: bigint): Promise<string | null>;
+  /** P4: block timestamp in unix seconds. Optional: absent means "cannot scan". */
+  getBlockTimestamp?(chainId: number, blockNumber: bigint): Promise<number>;
+  /**
+   * P4: logs emitted by `address` whose topic[1] equals `topic1` in an
+   * inclusive block range. Optional: absent means "cannot scan".
+   */
+  getLogsByTopic1?(chainId: number, address: string, topic1: string, fromBlock: bigint, toBlock: bigint): Promise<ChainLog[]>;
 }
 
-function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+/**
+ * P5 fix: the race is AWAITED before `finally` clears the timer. Previously
+ * the promise was returned un-awaited, so `finally` cleared the timer
+ * immediately and chain reads had no timeout at all.
+ */
+export async function withChainTimeout<T>(promise: Promise<T>, label: string, ms = CHAIN_READ_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    return Promise.race([
+    return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out.`)), CHAIN_READ_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error(`${label} timed out.`)), ms);
       }),
     ]);
   } finally {
@@ -131,11 +161,11 @@ function liveReads(): ChainReads {
   };
   return {
     async getTransaction(chainId, hash) {
-      const tx = await withTimeout(clientFor(chainId).getTransaction({ hash: hash as Hex }), "getTransaction");
+      const tx = await withChainTimeout(clientFor(chainId).getTransaction({ hash: hash as Hex }), "getTransaction");
       return { hash: tx.hash, blockNumber: tx.blockNumber ?? null };
     },
     async getReceipt(chainId, hash) {
-      const r = await withTimeout(clientFor(chainId).getTransactionReceipt({ hash: hash as Hex }), "getReceipt");
+      const r = await withChainTimeout(clientFor(chainId).getTransactionReceipt({ hash: hash as Hex }), "getReceipt");
       return {
         status: r.status === "success" ? "success" : "reverted",
         blockNumber: r.blockNumber,
@@ -149,11 +179,11 @@ function liveReads(): ChainReads {
       };
     },
     async getLatestBlockNumber(chainId) {
-      return withTimeout(clientFor(chainId).getBlockNumber(), "getBlockNumber");
+      return withChainTimeout(clientFor(chainId).getBlockNumber(), "getBlockNumber");
     },
     async getFinalizedBlockNumber(chainId) {
       try {
-        const b = await withTimeout(clientFor(chainId).getBlock({ blockTag: "finalized" }), "getFinalizedBlock");
+        const b = await withChainTimeout(clientFor(chainId).getBlock({ blockTag: "finalized" }), "getFinalizedBlock");
         return b.number ?? null;
       } catch {
         return null;
@@ -161,11 +191,33 @@ function liveReads(): ChainReads {
     },
     async getBlockHash(chainId, blockNumber) {
       try {
-        const b = await withTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
+        const b = await withChainTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
         return b.hash ?? null;
       } catch {
         return null;
       }
+    },
+    async getBlockTimestamp(chainId, blockNumber) {
+      const b = await withChainTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
+      return Number(b.timestamp);
+    },
+    async getLogsByTopic1(chainId, address, topic1, fromBlock, toBlock) {
+      const toHex = (n: bigint): Hex => ("0x" + n.toString(16)) as Hex;
+      const raw = (await withChainTimeout(
+        clientFor(chainId).request({
+          method: "eth_getLogs",
+          params: [{ address: address as Hex, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock), topics: [null, topic1 as Hex] }],
+        }),
+        "getLogs",
+      )) as unknown as Array<{ address: string; topics: string[]; data: string; logIndex: string | null; transactionHash?: string | null }>;
+      if (!Array.isArray(raw)) throw new Error("Malformed getLogs response.");
+      return raw.map((l) => ({
+        address: l.address,
+        topics: [...l.topics],
+        data: l.data,
+        logIndex: l.logIndex === null ? null : Number(BigInt(l.logIndex)),
+        transactionHash: typeof l.transactionHash === "string" ? l.transactionHash : null,
+      }));
     },
   };
 }
@@ -177,8 +229,25 @@ export function setSettlementChainForTests(overrides: ChainReads | null): void {
   chainOverrides = overrides;
 }
 
+/**
+ * P5: every chain read — live or injected — is bounded by the timeout, so a
+ * hung RPC can never stall verification (callers map timeouts to UNAVAILABLE).
+ */
+function bounded(chain: ChainReads): ChainReads {
+  const t = <T,>(p: Promise<T>, label: string) => withChainTimeout(p, label);
+  return {
+    getTransaction: (c, h) => t(chain.getTransaction(c, h), "getTransaction"),
+    getReceipt: (c, h) => t(chain.getReceipt(c, h), "getReceipt"),
+    getLatestBlockNumber: (c) => t(chain.getLatestBlockNumber(c), "getBlockNumber"),
+    getFinalizedBlockNumber: (c) => t(chain.getFinalizedBlockNumber(c), "getFinalizedBlock"),
+    getBlockHash: (c, n) => t(chain.getBlockHash(c, n), "getBlock"),
+    ...(chain.getBlockTimestamp ? { getBlockTimestamp: (c: number, n: bigint) => t(chain.getBlockTimestamp!(c, n), "getBlock") } : {}),
+    ...(chain.getLogsByTopic1 ? { getLogsByTopic1: (c: number, a: string, l: string, f: bigint, e: bigint) => t(chain.getLogsByTopic1!(c, a, l, f, e), "getLogs") } : {}),
+  };
+}
+
 function reads(): ChainReads {
-  return chainOverrides ?? liveReads();
+  return bounded(chainOverrides ?? liveReads());
 }
 
 /** Test seam: drop cached viem clients (isolated RPC configuration). */
@@ -251,6 +320,130 @@ export function matchSettlementTransfers(
   }
   indexes.sort((a, b) => a - b);
   return { matched: total >= requiredAtomic && total > 0n, totalAtomic: total, logIndexes: indexes };
+}
+
+/* ------------------------------------------------------------------ */
+/* P4 — independent proof that an HTLC never moved for a hash lock      */
+/* ------------------------------------------------------------------ */
+
+/** eth_getLogs chunk size (public RPCs commonly cap ranges near 2–5k blocks). */
+export const HTLC_LOG_CHUNK_BLOCKS = 2_000n;
+/** Hard bound on one scan, so a request can never fan out unboundedly. */
+export const MAX_HTLC_SCAN_BLOCKS = 40_000n;
+
+export type HtlcActivityVerdict =
+  | "NO_ACTIVITY"
+  | "ACTIVITY_FOUND"
+  | "INSUFFICIENT_CONFIRMATIONS"
+  | "INCONCLUSIVE"
+  | "UNAVAILABLE";
+
+export interface HtlcActivityResult {
+  verdict: HtlcActivityVerdict;
+  reason: string;
+  fromBlock: string | null;
+  toBlock: string | null;
+  latestBlock: string | null;
+  logCount: number;
+  /** topic[0] of each matching log (event signatures only; no data). */
+  eventTopics: string[];
+}
+
+type TimestampReader = (chainId: number, blockNumber: bigint) => Promise<number>;
+
+/** Last block whose timestamp is <= ts (binary search; read-only). */
+async function blockAtOrBefore(getTs: TimestampReader, chainId: number, ts: number, latest: bigint): Promise<bigint | null> {
+  if ((await getTs(chainId, latest)) <= ts) return latest;
+  let lo = 0n;
+  let hi = latest; // invariant: ts(hi) > ts
+  if ((await getTs(chainId, lo)) > ts) return null;
+  while (hi - lo > 1n) {
+    const mid = (lo + hi) / 2n;
+    if ((await getTs(chainId, mid)) <= ts) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Prove that the bound HTLC contract emitted NO event for `hashLock` in the
+ * window [windowStart, windowEnd]. Read-only. Any doubt is not "no activity":
+ * missing chain capabilities, an unbounded range, unreadable chunks or a
+ * window end without the chain's finality depth all return non-NO_ACTIVITY.
+ *
+ * Absence is proven per HTLC address and hash lock (topic[1] of every
+ * HTLCErc20 v6 lifecycle event: fund, redeem, refund).
+ */
+export async function verifyNoHtlcActivity(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  windowStart: Date;
+  windowEnd: Date;
+}): Promise<HtlcActivityResult> {
+  const base = { fromBlock: null, toBlock: null, latestBlock: null, logCount: 0, eventTopics: [] as string[] };
+  if (input.chainId !== 137) return { ...base, verdict: "INCONCLUSIVE", reason: "HTLC scans are enabled only for Polygon in this pilot." };
+  if (!input.htlcAddress || !EVM_ADDRESS_RE.test(input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Missing a valid HTLC address or hash lock to scan." };
+  }
+  if (!(input.windowEnd.getTime() > input.windowStart.getTime())) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window is empty." };
+  }
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess." };
+  }
+  const chain = reads();
+  if (!chain.getBlockTimestamp || !chain.getLogsByTopic1) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs." };
+  }
+  const getTs: TimestampReader = chain.getBlockTimestamp.bind(chain);
+  const getLogs = chain.getLogsByTopic1.bind(chain);
+  try {
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const startTs = Math.floor(input.windowStart.getTime() / 1000);
+    const endTs = Math.ceil(input.windowEnd.getTime() / 1000);
+    const fromBlock = await blockAtOrBefore(getTs, input.chainId, startTs, latest);
+    if (fromBlock === null) return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window starts before chain history." };
+    const endBefore = await blockAtOrBefore(getTs, input.chainId, endTs, latest);
+    if (endBefore === null) return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window end is not resolvable." };
+    // Cover the whole window: include the first block at/after windowEnd.
+    const toBlock = endBefore < latest ? endBefore + 1n : latest;
+    const span = { fromBlock: fromBlock.toString(), toBlock: toBlock.toString(), latestBlock: latest.toString() };
+    if ((await getTs(input.chainId, toBlock)) < endTs) {
+      return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "The chain has not yet reached the end of the scan window." };
+    }
+    const policy = DEFAULT_FINALITY_POLICY[input.chainId]!;
+    if (latest - toBlock + 1n < BigInt(policy.confirmations)) {
+      return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Scan window end does not yet have the required confirmations." };
+    }
+    if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
+      return { ...base, ...span, verdict: "INCONCLUSIVE", reason: "Scan window exceeds the bounded block range." };
+    }
+    const htlc = input.htlcAddress.toLowerCase();
+    const lock = input.hashLock.toLowerCase();
+    const matches: ChainLog[] = [];
+    for (let s = fromBlock; s <= toBlock; s += HTLC_LOG_CHUNK_BLOCKS) {
+      const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > toBlock ? toBlock : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      const logs = await getLogs(input.chainId, input.htlcAddress, input.hashLock, s, e);
+      for (const log of logs) {
+        // Defensive re-filter: never trust the RPC's own filtering for a match.
+        if (log.address.toLowerCase() === htlc && log.topics[1]?.toLowerCase() === lock) matches.push(log);
+      }
+    }
+    if (matches.length > 0) {
+      return {
+        ...span,
+        verdict: "ACTIVITY_FOUND",
+        reason: "The HTLC emitted events for this hash lock; the swap was funded on-chain.",
+        logCount: matches.length,
+        eventTopics: matches.map((l) => (l.topics[0] ?? "").toLowerCase()),
+      };
+    }
+    return { ...span, verdict: "NO_ACTIVITY", reason: "No HTLC event for this hash lock in the finalized scan window.", logCount: 0, eventTopics: [] };
+  } catch {
+    return { ...base, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable." };
+  }
 }
 
 export type RefundVerificationVerdict =
@@ -350,6 +543,230 @@ export async function verifyEvmRefundEvidence(input: {
   }
 }
 
+/** HTLCErc20 v6 fund event topic (verified against the real 2026-11-02 fund receipt). */
+export const SWAP_FUNDED_EVENT_TOPIC =
+  "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f" as const;
+/**
+ * P3: confirmations the fund tx needs before the owner may reveal the
+ * preimage. Polygon reorgs this deep are not expected; the margin protects
+ * against releasing the preimage for a lock that later disappears. Small on
+ * purpose: every minute spent here is taken from the claim window.
+ */
+export const CLAIM_FUNDING_MIN_CONFIRMATIONS = 32;
+
+export type HtlcFundingVerdict = "VERIFIED" | "PENDING" | "INVALID" | "INCONCLUSIVE" | "UNAVAILABLE";
+
+export interface HtlcFundingResult {
+  verdict: HtlcFundingVerdict;
+  reason: string;
+  confirmations: number | null;
+}
+
+/**
+ * P3 — the pinned HTLC really holds THIS swap's lock with THIS deadline.
+ *
+ * Read-only. Requires the provider-named fund transaction to be mined,
+ * successful, reorg-consistent and sufficiently confirmed, and to contain
+ * the pinned HTLC's fund event with topic[1] = hash lock and the timelock
+ * (data word 2) equal to the deadline Thence stored at bind time. Anything
+ * else is not VERIFIED, and a claim is not authorized.
+ */
+export async function verifyHtlcFunding(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  fundTxHash: string | null;
+  expectedLocktimeSec: number;
+}): Promise<HtlcFundingResult> {
+  if (input.chainId !== 137) return { verdict: "INCONCLUSIVE", reason: "Funding verification is enabled only for Polygon in this pilot.", confirmations: null };
+  if (!isTrustedHtlc(input.chainId, input.htlcAddress)) return { verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
+  if (!HASH_LOCK_RE.test(input.hashLock)) return { verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
+  if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "PENDING", reason: "The provider has not reported a funding transaction yet.", confirmations: null };
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) return { verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess.", confirmations: null };
+  const chain = reads();
+  const htlc = input.htlcAddress!.toLowerCase();
+  try {
+    const receipt = await chain.getReceipt(input.chainId, input.fundTxHash);
+    if (!receipt) return { verdict: "PENDING", reason: "Funding transaction is not yet mined.", confirmations: 0 };
+    if (receipt.status === "reverted") return { verdict: "INVALID", reason: "Funding transaction reverted on-chain.", confirmations: null };
+    const fund = receipt.logs.find(
+      (l) => l.address.toLowerCase() === htlc && l.topics[0]?.toLowerCase() === SWAP_FUNDED_EVENT_TOPIC && l.topics[1]?.toLowerCase() === input.hashLock.toLowerCase(),
+    );
+    if (!fund) return { verdict: "INVALID", reason: "Funding receipt has no fund event for this hash lock on the pinned HTLC.", confirmations: null };
+    const words = fund.data.startsWith("0x") ? fund.data.slice(2) : fund.data;
+    const lockWord = words.slice(128, 192);
+    if (!/^[0-9a-fA-F]{64}$/.test(lockWord) || BigInt("0x" + lockWord) !== BigInt(input.expectedLocktimeSec)) {
+      return { verdict: "INVALID", reason: "On-chain HTLC deadline differs from the bound claim deadline.", confirmations: null };
+    }
+    const atHeight = await chain.getBlockHash(input.chainId, receipt.blockNumber);
+    if (!atHeight) return { verdict: "INCONCLUSIVE", reason: "Chain header evidence is unavailable; refusing to decide.", confirmations: null };
+    if (atHeight.toLowerCase() !== receipt.blockHash.toLowerCase()) return { verdict: "INCONCLUSIVE", reason: "Block hash changed at the funding height; possible reorg.", confirmations: null };
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
+    if (confirmations < CLAIM_FUNDING_MIN_CONFIRMATIONS) {
+      return { verdict: "PENDING", reason: `Funding has ${confirmations} confirmations; ${CLAIM_FUNDING_MIN_CONFIRMATIONS} are required before finishing.`, confirmations };
+    }
+    return { verdict: "VERIFIED", reason: "The pinned HTLC holds this swap's lock with the bound deadline.", confirmations };
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+}
+
+export type HtlcSpendVerdict = "UNSPENT" | "SPENT" | "INCONCLUSIVE" | "UNAVAILABLE";
+
+/**
+ * P7 — authoritative "the earlier claim did not execute" evidence for a retry.
+ *
+ * After an unknown claim outcome the provider's view (still `serverfunded`, no
+ * claim tx) is only an assertion. This reads the pinned HTLC's own log for
+ * this hash lock from the funding block to the chain head: UNSPENT only when
+ * the funding event is the ONLY event (no redeem, no refund) across a fully
+ * scanned, bounded range. Anything else — another event, an unreadable chunk,
+ * a range beyond the scan bound, a missing funding receipt — is not UNSPENT,
+ * and a retry is refused.
+ */
+export async function verifyHtlcUnspent(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  fundTxHash: string | null;
+}): Promise<{ verdict: HtlcSpendVerdict; reason: string }> {
+  if (input.chainId !== 137 || !isTrustedHtlc(input.chainId, input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
+    return { verdict: "INCONCLUSIVE", reason: "No pinned Polygon HTLC to check." };
+  }
+  if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "INCONCLUSIVE", reason: "No funding transaction to scan from." };
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) return { verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain." };
+  const chain = reads();
+  if (!chain.getLogsByTopic1) return { verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs." };
+  const htlc = input.htlcAddress!.toLowerCase();
+  const lock = input.hashLock.toLowerCase();
+  try {
+    const receipt = await chain.getReceipt(input.chainId, input.fundTxHash);
+    if (!receipt || receipt.status !== "success") return { verdict: "INCONCLUSIVE", reason: "Funding receipt is unavailable." };
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    if (latest - receipt.blockNumber + 1n > MAX_HTLC_SCAN_BLOCKS) return { verdict: "INCONCLUSIVE", reason: "Scan range exceeds the bound." };
+    for (let s = receipt.blockNumber; s <= latest; s += HTLC_LOG_CHUNK_BLOCKS) {
+      const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > latest ? latest : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      const logs = await chain.getLogsByTopic1(input.chainId, htlc, lock, s, e);
+      for (const log of logs) {
+        if (log.address.toLowerCase() !== htlc || log.topics[1]?.toLowerCase() !== lock) continue;
+        if (log.topics[0]?.toLowerCase() === SWAP_FUNDED_EVENT_TOPIC) continue;
+        return { verdict: "SPENT", reason: "The HTLC already emitted a redeem or refund event for this lock." };
+      }
+    }
+    return { verdict: "UNSPENT", reason: "Only the funding event exists for this lock on the pinned HTLC." };
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable." };
+  }
+}
+
+/** P5: the refund scan starts this long before the earliest possible refund (clock skew margin). */
+export const REFUND_SCAN_LEAD_MS = 5 * 60_000;
+
+export interface HtlcRefundResult extends RefundVerificationResult {
+  /** The refund transaction that was independently verified (or examined), when one was found. */
+  refundTxHash: string | null;
+  /** Where the refund transaction came from: Satora's pointer, or Thence's own HTLC log scan. */
+  source: "provider_pointer" | "htlc_log_scan" | null;
+}
+
+/**
+ * P5 — independent Polygon HTLC refund verification.
+ *
+ * A Polygon refund is real only when the pinned (trusted) HTLC contract
+ * emitted SwapRefunded for this swap's hash lock in a finalized, reorg-checked
+ * receipt. Satora's tx pointer (empirically reported in `evm_claim_txid`) is
+ * only a hint: when it is missing or does not contain that event, the HTLC's
+ * own logs are scanned for the refund, and the transaction found there is
+ * verified the same way. Says NOTHING about the Nimiq side: Thence cannot see
+ * Nimiq Pay's NIM HTLC, so a verified Polygon refund is never a NIM refund.
+ */
+export async function verifyHtlcRefund(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  providerRefundTxHash: string | null;
+  /** Earliest time a refund could exist on-chain (the EVM refund locktime, else the bind time). */
+  earliestRefundAt: Date;
+}): Promise<HtlcRefundResult> {
+  const none = { refundTxHash: null, source: null } as const;
+  if (input.chainId !== 137) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon in this pilot.", confirmations: null };
+  }
+  if (!isTrustedHtlc(input.chainId, input.htlcAddress)) {
+    return { ...none, verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
+  }
+  if (!HASH_LOCK_RE.test(input.hashLock)) {
+    return { ...none, verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
+  }
+  const htlc = input.htlcAddress!.toLowerCase();
+  const pointer = input.providerRefundTxHash && TX_HASH_RE.test(input.providerRefundTxHash) ? input.providerRefundTxHash : null;
+  if (pointer) {
+    const viaPointer = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: pointer, htlcAddress: htlc, hashLock: input.hashLock });
+    // Anything but INVALID (verified, still confirming, chain unavailable) is
+    // the answer. INVALID means the pointer is not this swap's refund: fall
+    // back to the HTLC's own event log rather than trusting or rejecting it.
+    if (viaPointer.verdict !== "INVALID") return { ...viaPointer, refundTxHash: pointer, source: "provider_pointer" };
+  }
+
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess.", confirmations: null };
+  }
+  const chain = reads();
+  if (!chain.getBlockTimestamp || !chain.getLogsByTopic1) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs.", confirmations: null };
+  }
+  const getTs: TimestampReader = chain.getBlockTimestamp.bind(chain);
+  const getLogs = chain.getLogsByTopic1.bind(chain);
+  const found = new Set<string>();
+  let truncated = false;
+  try {
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const startTs = Math.floor((input.earliestRefundAt.getTime() - REFUND_SCAN_LEAD_MS) / 1000);
+    const fromBlock = await blockAtOrBefore(getTs, input.chainId, startTs, latest);
+    if (fromBlock === null) {
+      return { ...none, verdict: "INCONCLUSIVE", reason: "Refund scan window starts before chain history.", confirmations: null };
+    }
+    let toBlock = latest;
+    if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
+      toBlock = fromBlock + MAX_HTLC_SCAN_BLOCKS - 1n;
+      truncated = true;
+    }
+    for (let s = fromBlock; s <= toBlock; s += HTLC_LOG_CHUNK_BLOCKS) {
+      const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > toBlock ? toBlock : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      const logs = await getLogs(input.chainId, htlc, input.hashLock, s, e);
+      for (const log of logs) {
+        // Defensive re-filter: never trust the RPC's own filtering for a match.
+        if (log.address.toLowerCase() !== htlc) continue;
+        if (log.topics[0]?.toLowerCase() !== SWAP_REFUNDED_EVENT_TOPIC) continue;
+        if (log.topics[1]?.toLowerCase() !== input.hashLock.toLowerCase()) continue;
+        if (log.transactionHash && TX_HASH_RE.test(log.transactionHash)) found.add(log.transactionHash.toLowerCase());
+      }
+    }
+  } catch {
+    return { ...none, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+  if (found.size > 1) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "More than one refund event names this hash lock; refusing to choose.", confirmations: null };
+  }
+  const [txHash] = [...found];
+  if (!txHash) {
+    return {
+      ...none,
+      verdict: "INCONCLUSIVE",
+      reason: truncated
+        ? "No refund event found in the bounded scan window."
+        : "No refund event for this hash lock on the HTLC yet.",
+      confirmations: null,
+    };
+  }
+  const viaScan = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: txHash, htlcAddress: htlc, hashLock: input.hashLock });
+  return { ...viaScan, refundTxHash: txHash, source: "htlc_log_scan" };
+}
+
 export type SettlementVerdict =
   | "VERIFIED"
   | "PENDING"
@@ -441,11 +858,28 @@ function parseLogIndexes(raw: string | null): number[] {
  * tx hash is never accepted (callers must not pass one through).
  */
 export async function verifySettlement(userId: string, transferId: string): Promise<SettlementResult> {
+  return verifySettlementCore(transferId, { kind: "owner", ownerUserId: userId });
+}
+
+export interface SettlementActor {
+  /** "owner" = session request; "system" = server reconciler (P3: browser closed). */
+  kind: "owner" | "system";
+  ownerUserId: string | null;
+}
+
+/**
+ * P3: the one settlement verifier, shared by the owner route and the server
+ * reconciler, so a claimed payment reaches DELIVERED (with proof) even when
+ * no browser is open. Read-only on chain; the only write is the proof +
+ * DELIVERED commit under the transfer lock.
+ */
+export async function verifySettlementCore(transferId: string, actor: SettlementActor): Promise<SettlementResult> {
+  const scope = actor.ownerUserId ? and(eq(transfers.id, transferId), eq(transfers.ownerUserId, actor.ownerUserId)) : eq(transfers.id, transferId);
   const db = getDb();
   const base = await db
     .select()
     .from(transfers)
-    .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+    .where(scope)
     .limit(1);
   const transfer = base[0];
   if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
@@ -487,7 +921,7 @@ export async function verifySettlement(userId: string, transferId: string): Prom
 
   // DELIVERED is reachable only from funded/claiming states with evidence.
   if (current !== "CLAIMING" && current !== "SERVER_FUNDED") {
-    if (current === "USER_CANCELLED" || current === "QUOTE_EXPIRED" || current === "FAILED" || current === "NEEDS_ATTENTION") {
+    if (current === "USER_CANCELLED" || current === "QUOTE_EXPIRED" || current === "FAILED" || current === "NEEDS_ATTENTION" || current === "EXPIRED_UNFUNDED") {
       throw new AuthError(409, "NOT_VERIFIABLE", "Transfer is in a terminal or attention state; settlement cannot be verified.");
     }
     return {
@@ -775,7 +1209,7 @@ export async function verifySettlement(userId: string, transferId: string): Prom
     const rows = await tx
       .select()
       .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+      .where(scope)
       .limit(1);
     const fresh = rows[0];
     if (!fresh) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
@@ -847,6 +1281,25 @@ export async function verifySettlement(userId: string, transferId: string): Prom
       evidence: { destinationTxHash: claimTx, amountVerified: true },
     });
     await tx.update(transfers).set({ status: next, updatedAt: new Date() }).where(eq(transfers.id, fresh.id));
+    // P5 audit: same transaction as the proof row and the status write, so a
+    // DELIVERED transfer always carries both (or neither, on rollback).
+    await recordTransition(tx, {
+      transferId: fresh.id,
+      from: freshStatus,
+      to: next,
+      actor: actor.kind === "system" ? "reconciler" : "owner",
+      actorUserId: actor.ownerUserId,
+      reasonCode: "SETTLEMENT_VERIFIED",
+      evidence: {
+        providerStatus: facts.status,
+        chainId,
+        claimTxHash: claimTx,
+        blockNumber: receipt.blockNumber.toString(),
+        logIndexes: match.logIndexes,
+        verifiedAmountAtomic: match.totalAtomic.toString(),
+        finalityLevel,
+      },
+    });
     const saved = await tx.select().from(transferProofs).where(eq(transferProofs.transferId, fresh.id)).limit(1);
     return {
       verdict: "VERIFIED",

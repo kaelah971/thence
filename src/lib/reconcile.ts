@@ -39,7 +39,9 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
-import { verifyEvmRefundEvidence } from "@/lib/settlement";
+import { verifyHtlcRefund, type HtlcRefundResult } from "@/lib/settlement";
+import { recordPath } from "@/lib/transitions";
+import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -69,7 +71,14 @@ const REFUND_NEGATIVE = new Set([
 export type ReconcileDecision =
   | { action: "none"; reason: string }
   | { action: "advance"; path: TransferStatus[]; reason: string }
-  | { action: "needs-attention"; path: TransferStatus[]; reason: string };
+  | { action: "needs-attention"; path: TransferStatus[]; reason: string }
+  /**
+   * P4: a terminal exit EXISTS but must never be applied by reconciliation
+   * itself. Only the owner-initiated, evidence-gated resolution in
+   * src/lib/expiry-resolution.ts may take it, after re-proving provider
+   * identity, local history, Nimiq-side records and on-chain HTLC absence.
+   */
+  | { action: "evidence-gated-close"; path: TransferStatus[]; reason: string };
 
 /**
  * Pure status-mapping: provider milestone → legal internal path.
@@ -130,6 +139,13 @@ export function planReconciliation(
   if (providerStatus === "pending" || providerStatus === "clientfundingseen") {
     return { action: "none", reason: "No provider-confirmed milestone yet." };
   }
+  if (providerStatus === "expired" && current === "RECONCILING") {
+    return {
+      action: "evidence-gated-close",
+      path: ["EXPIRED_UNFUNDED"],
+      reason: "Provider swap expired; closing requires independent no-funding evidence (owner action).",
+    };
+  }
   if (providerStatus === "expired") {
     // Reconciliation is intentionally read-only with respect to terminal
     // retirement. The owner Close action performs the stricter identity and
@@ -188,6 +204,12 @@ export interface ReconciliationBase {
   invoiceExpired: boolean;
   unknownProviderState: boolean;
   lastError: string | null;
+  /** P2: Polygon claim deadline (Satora evm_refund_locktime), ISO; null when unknown. */
+  claimDeadlineAt: string | null;
+  /** P2: server-side window at read time (unknown/open/closing/unsafe/passed). */
+  claimWindow: ClaimWindow;
+  /** P2: the latest provider read diverged from the bound swap identity. */
+  identityMismatch: boolean;
 }
 
 export interface ReconciliationSummary extends ReconciliationBase {
@@ -221,98 +243,210 @@ async function recordObservation(
 }
 
 /**
- * One bounded read-only refresh of the bound swap. Records the observation,
- * advances along legal edges only, never fails unknown outcomes.
+ * P6: identical observations within this window are not re-inserted (the
+ * browser driver and the server cron may observe the same provider state
+ * seconds apart). Transitions are ALWAYS accompanied by an observation.
  */
-export async function reconcileTransfer(userId: string, transferId: string): Promise<ReconciliationSummary> {
+export const OBSERVATION_DEDUPE_MS = 60_000;
+
+type BoundAttachment = typeof swapAttachments.$inferSelect;
+
+/**
+ * P6: everything learned from the network for one reconciliation, gathered
+ * WITHOUT holding the transfer lock and without writing anything.
+ */
+type GatheredEvidence =
+  | { kind: "provider_error"; code: string }
+  | { kind: "route_error"; facts: VerifiedSwapFacts }
+  | { kind: "route_mismatch"; facts: VerifiedSwapFacts }
+  | { kind: "facts"; facts: VerifiedSwapFacts; refund: HtlcRefundResult | null };
+
+async function gatherEvidence(
+  transfer: typeof transfers.$inferSelect,
+  attachment: BoundAttachment,
+): Promise<GatheredEvidence> {
+  let facts: VerifiedSwapFacts;
+  try {
+    facts = await getProviderSwap(attachment.satoraSwapId);
+  } catch (err) {
+    const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
+    return { kind: "provider_error", code };
+  }
+  // Chain/token identity revalidation against canonical config.
+  try {
+    const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
+    if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
+      return { kind: "route_mismatch", facts };
+    }
+  } catch {
+    return { kind: "route_error", facts };
+  }
+  // Independent refund evidence is read here (chain I/O), never under the lock.
+  // P5: the provider's refund pointer is a hint only. The refund must be a
+  // SwapRefunded event of the PINNED HTLC for the BOUND hash lock; a missing
+  // or wrong pointer falls back to scanning the HTLC's own logs.
+  let refund: HtlcRefundResult | null = null;
+  const providerStatus = facts.status || "unknown";
+  if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && transfer.status !== "REFUNDED") {
+    const locktimeSec = facts.evmRefundLocktime ?? (attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null);
+    refund = await verifyHtlcRefund({
+      chainId: facts.evmChainId,
+      htlcAddress: facts.evmHtlcAddress,
+      hashLock: attachment.paymentHash,
+      providerRefundTxHash: facts.evmClaimTxid,
+      earliestRefundAt: locktimeSec !== null ? new Date(locktimeSec * 1000) : attachment.createdAt,
+    });
+  }
+  return { kind: "facts", facts, refund };
+}
+
+/** Identity of the provider swap vs the bound attachment and transfer terms. */
+function identityMatches(transfer: typeof transfers.$inferSelect, attachment: BoundAttachment, facts: VerifiedSwapFacts): boolean {
+  // P2: the claim deadline is part of the swap identity once known.
+  const storedLocktimeSec = attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null;
+  const locktimeChanged = storedLocktimeSec !== null && facts.evmRefundLocktime !== null && facts.evmRefundLocktime !== storedLocktimeSec;
+  return !(
+    facts.satoraSwapId !== attachment.satoraSwapId ||
+    facts.direction !== "lightning_to_evm" ||
+    facts.targetAtomic !== transfer.targetAmountAtomic ||
+    facts.targetAddress.toLowerCase() !== transfer.destination.toLowerCase() ||
+    facts.paymentHash.toLowerCase() !== attachment.paymentHash.toLowerCase() ||
+    locktimeChanged
+  );
+}
+
+/** Insert an observation unless an identical one was recorded moments ago (P6 dedupe). */
+async function recordObservationDeduped(
+  db: DbClient,
+  transferId: string,
+  swapId: string,
+  entry: Parameters<typeof recordObservation>[3],
+  force: boolean,
+): Promise<boolean> {
+  if (!force) {
+    const latest = await db
+      .select()
+      .from(reconciliationObservations)
+      .where(eq(reconciliationObservations.transferId, transferId))
+      .orderBy(desc(reconciliationObservations.observedAt))
+      .limit(1);
+    const last = latest[0];
+    if (
+      last &&
+      Date.now() - last.observedAt.getTime() < OBSERVATION_DEDUPE_MS &&
+      last.providerStatus === entry.providerStatus &&
+      last.kind === entry.kind &&
+      (last.errorCode ?? null) === (entry.errorCode ?? null) &&
+      (last.evmFundTxid ?? null) === (entry.evmFundTxid ?? null) &&
+      (last.evmClaimTxid ?? null) === (entry.evmClaimTxid ?? null)
+    ) {
+      return false;
+    }
+  }
+  await recordObservation(db, transferId, swapId, entry);
+  return true;
+}
+
+export interface ReconcileActor {
+  /** "owner" = session request; "system" = server cron (no session). */
+  kind: "owner" | "system";
+  /** Owner scope for session requests; null for the system reconciler. */
+  ownerUserId: string | null;
+}
+
+/**
+ * P6: the ONE reconciliation core, shared by the owner route (P1 browser
+ * driver) and the server cron. Phase A gathers network evidence with no lock
+ * and no writes; phase B commits under the per-transfer advisory lock,
+ * re-reading state, re-running identity checks against the fresh
+ * attachment, and planning from the CURRENT status — so concurrent callers
+ * converge (the second sees an empty path) and never double-transition.
+ * Never claims, refunds, pays, creates swaps, or applies P4's owner close.
+ */
+export async function reconcileCore(transferId: string, actor: ReconcileActor): Promise<ReconciliationSummary> {
   const db = getDb();
+  const scope = actor.ownerUserId
+    ? and(eq(transfers.id, transferId), eq(transfers.ownerUserId, actor.ownerUserId))
+    : eq(transfers.id, transferId);
+
+  // ---- Phase A: read + network, no lock ----
+  const rows = await db.select().from(transfers).where(scope).limit(1);
+  const initial = rows[0];
+  if (!initial) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+  const bound = await db.select().from(swapAttachments).where(eq(swapAttachments.transferId, initial.id)).limit(1);
+  const initialAttachment = bound[0];
+  // Observation requires something to observe; advancement is decided
+  // purely by the state machine afterwards (terminal states no-op).
+  if (!initialAttachment) throw new AuthError(409, "NOT_RECONCILABLE", "No bound swap to observe.");
+  const evidence = await gatherEvidence(initial, initialAttachment);
+
+  // ---- Phase B: short commit under the per-transfer lock ----
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
-    const rows = await tx
-      .select()
-      .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
-      .limit(1);
-    const transfer = rows[0];
+    const fresh = await tx.select().from(transfers).where(scope).limit(1);
+    const transfer = fresh[0];
     if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
-    const bound = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
-    const attachment = bound[0];
-    // Observation requires something to observe; advancement is decided
-    // purely by the state machine afterwards (terminal states no-op).
-    if (!attachment) throw new AuthError(409, "NOT_RECONCILABLE", "No bound swap to observe.");
+    const boundNow = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
+    const attachment = boundNow[0];
+    if (!attachment || attachment.satoraSwapId !== initialAttachment.satoraSwapId) {
+      throw new AuthError(409, "NOT_RECONCILABLE", "The bound swap changed during reconciliation.");
+    }
     const current = transfer.status as TransferStatus;
 
-    let facts: VerifiedSwapFacts;
-    try {
-      const { getProviderSwap } = await import("@/lib/satora");
-      facts = await getProviderSwap(attachment.satoraSwapId);
-    } catch (err) {
-      const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
-      await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: "unknown", kind: "provider_error", errorCode: code });
+    if (evidence.kind === "provider_error") {
+      await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: "unknown", kind: "provider_error", errorCode: evidence.code }, false);
       const summary = await buildSummary(tx, transfer.id);
       if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
-      return { ...summary, lastError: code, advanced: false, advancedPath: [] };
+      return { ...summary, lastError: evidence.code, advanced: false, advancedPath: [] };
     }
-    // Identity revalidation on every read: never trust a drifting swap.
-    const expected = {
-      asset: transfer.targetAsset,
-      network: transfer.targetNetwork,
-      destination: transfer.destination,
-      targetAmountAtomic: transfer.targetAmountAtomic,
-    };
-    if (
-      facts.satoraSwapId !== attachment.satoraSwapId ||
-      facts.direction !== "lightning_to_evm" ||
-      facts.targetAtomic !== expected.targetAmountAtomic ||
-      facts.targetAddress.toLowerCase() !== expected.destination.toLowerCase()
-    ) {
-      await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" });
-      throw new AuthError(409, "SWAP_MISMATCH", "Provider swap no longer matches the bound transfer terms.");
+    const facts = evidence.facts;
+    // Identity revalidation on every read: never trust a drifting swap. The
+    // mismatch observation must be DURABLE (it gates claim readiness and P4
+    // closure), so the committed summary is returned; the route answers 409.
+    if (!identityMatches(transfer, attachment, facts) || evidence.kind === "route_mismatch") {
+      await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" }, false);
+      return await mismatchSummary(tx, transfer.id);
     }
-    // Chain/token identity revalidation against canonical config.
-    try {
-      const { resolveRoute } = await import("@/lib/satora");
-      const resolved = await resolveRoute(expected.asset, expected.network);
-      if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
-        await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" });
-        throw new AuthError(409, "SWAP_MISMATCH", "Provider swap token identity does not match the route registry.");
-      }
-    } catch (err) {
-      if (err instanceof AuthError) throw err;
-      await recordObservation(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "provider_error", errorCode: "PROVIDER_UNAVAILABLE" });
+    if (evidence.kind === "route_error") {
+      await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "provider_error", errorCode: "PROVIDER_UNAVAILABLE" }, false);
       const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
       if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
       return { ...summary, lastError: "PROVIDER_UNAVAILABLE", advanced: false, advancedPath: [] };
     }
 
+    // P2 backfill: rows bound before P2 lack the deadline. Persisted only
+    // here, AFTER the full identity + route verification above, and only
+    // when plausible relative to the original bind time.
+    const storedLocktimeSec = attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null;
+    if (storedLocktimeSec === null && facts.evmRefundLocktime !== null) {
+      const validated = validateLocktime(facts.evmRefundLocktime, attachment.createdAt.getTime(), attachment.invoiceExpiresAt);
+      if (validated instanceof Date) {
+        await tx.update(swapAttachments).set({ evmRefundLocktime: validated }).where(eq(swapAttachments.id, attachment.id));
+      }
+    }
+
     const providerStatus = facts.status || "unknown";
     if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && current !== "REFUNDED") {
-      const refundTxHash = facts.evmClaimTxid;
-      const refund = refundTxHash
-        ? await verifyEvmRefundEvidence({
-            chainId: facts.evmChainId,
-            refundTxHash,
-            htlcAddress: facts.evmHtlcAddress,
-            hashLock: facts.paymentHash,
-          })
-        : { verdict: "INCONCLUSIVE" as const, reason: "Provider has not reported a refund transaction yet.", confirmations: null };
-      if (refund.verdict !== "VERIFIED") {
-        const errorCode = `REFUND_${refund.verdict}`;
-        await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
-          providerStatus,
-          kind: "provider_error",
-          errorCode,
-          evmFundTxid: facts.evmFundTxid ?? null,
-          evmClaimTxid: facts.evmClaimTxid ?? null,
-        });
+      const verdict = evidence.refund?.verdict ?? "INCONCLUSIVE";
+      if (verdict !== "VERIFIED") {
+        const errorCode = `REFUND_${verdict}`;
+        await recordObservationDeduped(
+          tx,
+          transfer.id,
+          attachment.satoraSwapId,
+          { providerStatus, kind: "provider_error", errorCode, evmFundTxid: facts.evmFundTxid ?? null, evmClaimTxid: facts.evmClaimTxid ?? null },
+          false,
+        );
         const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
         if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
         return { ...summary, lastError: errorCode, advanced: false, advancedPath: [] };
       }
     }
 
+    // Planned from the CURRENT (locked) status: a concurrent reconciliation
+    // that already advanced makes this path empty — no double transition.
     const decision = planReconciliation(current, providerStatus);
-    let advanced: TransferStatus[] = [];
+    const advanced: TransferStatus[] = [];
     if (decision.action === "advance" || decision.action === "needs-attention") {
       let state = current;
       for (const next of decision.path) {
@@ -322,23 +456,68 @@ export async function reconcileTransfer(userId: string, transferId: string): Pro
       const final = advanced[advanced.length - 1];
       if (final) {
         await tx.update(transfers).set({ status: final, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+        // P4 audit: same transaction as the status write.
+        await recordPath(
+          tx,
+          {
+            transferId: transfer.id,
+            actor: "reconciler",
+            actorUserId: actor.ownerUserId,
+            reasonCode: `PROVIDER_${providerStatus.toUpperCase()}`,
+            evidence: {
+              providerStatus,
+              decision: decision.action,
+              trigger: actor.kind === "system" ? "server-cron" : "owner-session",
+              evmFundTxid: facts.evmFundTxid ?? null,
+              evmClaimTxid: facts.evmClaimTxid ?? null,
+              refundVerified: REFUNDED_PROVIDER_STATUSES.has(providerStatus) ? true : null,
+              ...(REFUNDED_PROVIDER_STATUSES.has(providerStatus) && evidence.refund
+                ? {
+                    // Polygon-side only: the provider's USDC lock went back to the
+                    // provider. Nimiq Pay's NIM side is not observable by Thence.
+                    refundScope: "polygon_htlc",
+                    refundTxHash: evidence.refund.refundTxHash,
+                    refundEvidenceSource: evidence.refund.source,
+                    refundConfirmations: evidence.refund.confirmations,
+                    nimiqSideRefund: "not_observable",
+                  }
+                : {}),
+            },
+          },
+          current,
+          advanced,
+        );
       }
     }
-    await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
-      providerStatus: facts.status || "unknown",
-      kind: "observation",
-      evmFundTxid: facts.evmFundTxid ?? null,
-      evmClaimTxid: facts.evmClaimTxid ?? null,
-    });
+    await recordObservationDeduped(
+      tx,
+      transfer.id,
+      attachment.satoraSwapId,
+      { providerStatus, kind: "observation", evmFundTxid: facts.evmFundTxid ?? null, evmClaimTxid: facts.evmClaimTxid ?? null },
+      advanced.length > 0,
+    );
     // Read inside the same transaction: the status advance and observation
-    // above are uncommitted until return, so an outer-DB read would see
-    // stale state (the TS2345-class bug: Db transaction vs database).
-    const summary = await buildSummary(tx, transfer.id, {
-      providerInvoiceExpiresAt: facts.invoiceExpiresAt,
-    });
+    // above are uncommitted until return.
+    const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
     if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     return { ...summary, advanced: advanced.length > 0, advancedPath: advanced };
   });
+}
+
+/**
+ * One bounded read-only refresh of the bound swap for its owner (session).
+ * Records the observation, advances along legal edges only, never fails
+ * unknown outcomes.
+ */
+export async function reconcileTransfer(userId: string, transferId: string): Promise<ReconciliationSummary> {
+  return reconcileCore(transferId, { kind: "owner", ownerUserId: userId });
+}
+
+/** Committed summary after a recorded identity mismatch (no transition). */
+async function mismatchSummary(db: DbClient, transferId: string): Promise<ReconciliationSummary> {
+  const summary = await buildSummary(db, transferId);
+  if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+  return { ...summary, lastError: "SWAP_MISMATCH", advanced: false, advancedPath: [] };
 }
 
 async function buildSummary(
@@ -363,6 +542,10 @@ async function buildSummary(
   const providerExpiry = opts?.providerInvoiceExpiresAt;
   const dbLive = await invoiceIsLive(db, transferId);
   const invoiceLive = providerExpiry instanceof Date ? providerExpiry.getTime() > Date.now() : dbLive;
+  const boundRows = await db.select({ evmRefundLocktime: swapAttachments.evmRefundLocktime }).from(swapAttachments).where(eq(swapAttachments.transferId, transferId)).limit(1);
+  const claimDeadline = boundRows[0]?.evmRefundLocktime ?? null;
+  const claimWindow = claimWindowAt(claimDeadline ? claimDeadline.getTime() : null, Date.now());
+  const identityMismatch = latest?.kind === "identity_mismatch";
   const unknownProviderState = !latest || (!!latest && !RECOGNIZED_STATUSES.has(latest.providerStatus) && latest.kind === "observation" && latest.providerStatus !== "unknown");
   const ambiguityReasons: string[] = [];
   if (invoiceLive === false) ambiguityReasons.push("Invoice expired; expiry alone does not establish whether payment was initiated.");
@@ -375,13 +558,34 @@ async function buildSummary(
     statusLabel: USER_FACING_LABEL[transfer.status as TransferStatus] ?? transfer.status,
     providerStatus,
     observedAt: latest?.observedAt.toISOString() ?? transfer.updatedAt.toISOString(),
-    claimReady: isClaimReady(transfer.status as TransferStatus, providerStatus),
+    claimReady: claimReadyNow({ transferStatus: transfer.status as TransferStatus, providerStatus, latestKind: latest?.kind ?? null, claimWindow }),
     ambiguous: ambiguityReasons.length > 0,
     ambiguityReasons,
     invoiceExpired: invoiceLive === false,
     unknownProviderState,
     lastError: latest?.kind === "provider_error" ? (latest.errorCode ?? "PROVIDER_ERROR") : null,
+    claimDeadlineAt: claimDeadline ? claimDeadline.toISOString() : null,
+    claimWindow,
+    identityMismatch,
   };
+}
+
+/**
+ * P2: claim-ready right now. Funded (isClaimReady) AND the latest provider
+ * read is a clean observation (never after an identity mismatch or a failed
+ * read) AND the deadline window still allows a claim. An UNKNOWN deadline
+ * stays claim-ready server-side for recovery visibility, but every client
+ * claim action requires a known, open window (fail closed).
+ */
+export function claimReadyNow(input: {
+  transferStatus: TransferStatus;
+  providerStatus: string;
+  latestKind: string | null;
+  claimWindow: ClaimWindow;
+}): boolean {
+  if (!isClaimReady(input.transferStatus, input.providerStatus)) return false;
+  if (input.latestKind !== "observation") return false;
+  return input.claimWindow === "unknown" || claimActionAllowed(input.claimWindow);
 }
 
 const RECOGNIZED_STATUSES = new Set([
@@ -429,6 +633,8 @@ export interface ResumeView {
     paymentHash: string;
     invoiceBolt11: string;
     invoiceExpiresAt: string | null;
+    /** P2: Polygon claim deadline (Satora evm_refund_locktime), ISO; null when unknown. */
+    claimDeadline: string | null;
     providerStatus: string;
     verifiedAt: string;
   } | null;
@@ -483,6 +689,7 @@ export async function getReconciliation(userId: string, transferId: string): Pro
           paymentHash: attachment.paymentHash,
           invoiceBolt11: attachment.invoiceBolt11,
           invoiceExpiresAt: attachment.invoiceExpiresAt?.toISOString() ?? null,
+          claimDeadline: attachment.evmRefundLocktime?.toISOString() ?? null,
           providerStatus: latest.providerStatus,
           verifiedAt: attachment.verifiedAt.toISOString(),
         }
@@ -588,45 +795,69 @@ const MOVEMENT_STATUSES = [
  * "expired without funding — nothing was locked." This helper is deliberately
  * narrower than that protocol statement because it is used to retire a local
  * owner-visible transfer. Any identity mismatch, transaction assertion or
- * prior movement observation fails closed.
+ * prior movement observation fails closed. Pure (no I/O): the provider read
+ * happens before the lock, the movement history is read under it (P5).
  */
-async function readExpiredUnfundedFacts(
-  tx: DbClient,
+function isExpiredUnfunded(
   transfer: typeof transfers.$inferSelect,
   attachment: typeof swapAttachments.$inferSelect,
-): Promise<VerifiedSwapFacts | null> {
+  facts: VerifiedSwapFacts,
+  routeMatches: boolean,
+): boolean {
+  return (
+    routeMatches &&
+    facts.satoraSwapId === attachment.satoraSwapId &&
+    facts.status === "expired" &&
+    facts.direction === "lightning_to_evm" &&
+    facts.evmFundTxid === null &&
+    facts.evmClaimTxid === null &&
+    facts.targetAtomic === transfer.targetAmountAtomic &&
+    facts.targetAddress.trim().toLowerCase() === transfer.destination.trim().toLowerCase() &&
+    !(facts.invoiceExpiresAt !== null && facts.invoiceExpiresAt.getTime() > Date.now())
+  );
+}
+
+async function hasPriorMovement(db: DbClient, transferId: string): Promise<boolean> {
+  const priorMovement = await db
+    .select({ id: reconciliationObservations.id })
+    .from(reconciliationObservations)
+    .where(and(eq(reconciliationObservations.transferId, transferId), inArray(reconciliationObservations.providerStatus, [...MOVEMENT_STATUSES])))
+    .limit(1);
+  return priorMovement.length > 0;
+}
+
+/** P5: cancellation evidence is gathered with no lock held and no writes. */
+type CancelEvidence = {
+  /** Transfer status the evidence was gathered for (commit requires it unchanged). */
+  forStatus: TransferStatus;
+  swapId: string;
+  gatheredAt: number;
+  read: { kind: "facts"; facts: VerifiedSwapFacts; routeMatches: boolean } | { kind: "error"; code: string };
+};
+
+/** Evidence older than this at commit time is refused (the client re-reads and retries). */
+export const CANCEL_EVIDENCE_MAX_AGE_MS = 2 * 60_000;
+
+async function gatherCancelEvidence(
+  transfer: typeof transfers.$inferSelect,
+  attachment: typeof swapAttachments.$inferSelect,
+): Promise<CancelEvidence> {
+  const base = { forStatus: transfer.status as TransferStatus, swapId: attachment.satoraSwapId };
   let facts: VerifiedSwapFacts;
   try {
     facts = await getProviderSwap(attachment.satoraSwapId);
-  } catch {
-    return null;
+  } catch (err) {
+    const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
+    return { ...base, gatheredAt: Date.now(), read: { kind: "error", code } };
   }
-  if (
-    facts.satoraSwapId !== attachment.satoraSwapId ||
-    facts.status !== "expired" ||
-    facts.direction !== "lightning_to_evm" ||
-    facts.evmFundTxid !== null ||
-    facts.evmClaimTxid !== null ||
-    facts.targetAtomic !== transfer.targetAmountAtomic ||
-    facts.targetAddress.trim().toLowerCase() !== transfer.destination.trim().toLowerCase() ||
-    (facts.invoiceExpiresAt !== null && facts.invoiceExpiresAt.getTime() > Date.now())
-  ) {
-    return null;
-  }
+  let routeMatches = false;
   try {
     const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
-    if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
-      return null;
-    }
+    routeMatches = String(resolved.chainId) === String(facts.evmChainId) && resolved.tokenAddress.toLowerCase() === facts.targetTokenAddress.toLowerCase();
   } catch {
-    return null;
+    routeMatches = false;
   }
-  const priorMovement = await tx
-    .select({ id: reconciliationObservations.id })
-    .from(reconciliationObservations)
-    .where(and(eq(reconciliationObservations.transferId, transfer.id), inArray(reconciliationObservations.providerStatus, [...MOVEMENT_STATUSES])))
-    .limit(1);
-  return priorMovement.length === 0 ? facts : null;
+  return { ...base, gatheredAt: Date.now(), read: { kind: "facts", facts, routeMatches } };
 }
 
 const handoffDiagnosticsSchema = z
@@ -674,22 +905,41 @@ export async function reportHandoffOutcome(
   }
   const outcome = parsed.data.outcome;
   const db = getDb();
+  const ownerScope = and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId));
+
+  // ---- P5 phase A: provider evidence for cancellation, no lock, no writes ----
+  // Only cancelling a bound, pre-handoff transfer needs the network;
+  // initiated/unknown reports are pure state-machine steps.
+  let gathered: CancelEvidence | null = null;
+  if (outcome === "cancelled") {
+    const pre = (await db.select().from(transfers).where(ownerScope).limit(1))[0];
+    if (!pre) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+    if (pre.status === "AWAITING_NIM_APPROVAL" || pre.status === "SWAP_CREATED") {
+      const preBound = (await db.select().from(swapAttachments).where(eq(swapAttachments.transferId, pre.id)).limit(1))[0];
+      if (preBound) gathered = await gatherCancelEvidence(pre, preBound);
+    }
+  }
+
+  // ---- phase B: short commit under the per-transfer lock ----
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
-    const rows = await tx
-      .select()
-      .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
-      .limit(1);
+    const rows = await tx.select().from(transfers).where(ownerScope).limit(1);
     const transfer = rows[0];
     if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     const current = transfer.status as TransferStatus;
-    const applyPath = async (path: TransferStatus[]): Promise<TransferStatus> => {
+    // P5: every status change is audited in this same transaction.
+    const applyPath = async (path: TransferStatus[], reasonCode: string, evidence: Record<string, unknown> = {}): Promise<TransferStatus> => {
       let state = current;
       for (const next of path) {
         state = transition(state, next);
       }
       await tx.update(transfers).set({ status: state, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+      await recordPath(
+        tx,
+        { transferId: transfer.id, actor: "owner", actorUserId: userId, reasonCode, evidence: { clientOutcome: outcome, ...evidence } },
+        current,
+        path,
+      );
       return state;
     };
     if (outcome === "initiated") {
@@ -697,7 +947,7 @@ export async function reportHandoffOutcome(
         if (current === "LIGHTNING_HANDOFF") return { transferId, status: current, deduplicated: true };
         throw new AuthError(409, "NOT_REPORTABLE", "Handoff initiation can only be reported while awaiting approval.");
       }
-      const next = await applyPath(["LIGHTNING_HANDOFF"]);
+      const next = await applyPath(["LIGHTNING_HANDOFF"], "CLIENT_REPORTED_INITIATED");
       return { transferId, status: next, deduplicated: false };
     }
     if (outcome === "unknown") {
@@ -711,7 +961,7 @@ export async function reportHandoffOutcome(
             ? ["OUTCOME_UNKNOWN", "RECONCILING"]
             : [];
       if (start.length === 0) throw new AuthError(409, "NOT_REPORTABLE", "Unknown outcomes can only be reported for unresolved handoffs.");
-      const next = await applyPath(start);
+      const next = await applyPath(start, "CLIENT_REPORTED_UNKNOWN");
       return { transferId, status: next, deduplicated: false };
     }
     // outcome === "cancelled": only when NOTHING has moved, verified live.
@@ -727,9 +977,21 @@ export async function reportHandoffOutcome(
     if (!attachment) {
       // Nothing was ever bound: no provider swap can have moved funds for
       // this transfer, so cancellation is trivially safe.
-      const next = await applyPath(["USER_CANCELLED"]);
+      const next = await applyPath(["USER_CANCELLED"], "CANCELLED_UNBOUND");
       return { transferId, status: next, deduplicated: false };
     }
+    // P5: the evidence must describe THIS state and THIS swap, and be fresh.
+    // A concurrent attach/authorize/report between the phases means the
+    // evidence answers a different question: refuse; the client re-reads.
+    if (
+      !gathered ||
+      gathered.forStatus !== current ||
+      gathered.swapId !== attachment.satoraSwapId ||
+      Date.now() - gathered.gatheredAt > CANCEL_EVIDENCE_MAX_AGE_MS
+    ) {
+      throw new AuthError(409, "VERSION_CONFLICT", "The payment changed while it was being checked; re-read it before cancelling.");
+    }
+    const read = gathered.read;
     // B4.4 cancellation safety: a hold invoice in provider state `pending`
     // proves nothing about whether the user already submitted payment — the
     // funding event may simply not be observed yet. Once the handoff is
@@ -738,28 +1000,26 @@ export async function reportHandoffOutcome(
     // instead of entering terminal USER_CANCELLED, where delayed funding
     // would be unrecoverable.
     if (current === "AWAITING_NIM_APPROVAL") {
-      const expired = await readExpiredUnfundedFacts(tx, transfer, attachment);
-      if (expired) {
+      if (read.kind === "facts" && isExpiredUnfunded(transfer, attachment, read.facts, read.routeMatches) && !(await hasPriorMovement(tx, transfer.id))) {
         await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
-          providerStatus: expired.status,
+          providerStatus: read.facts.status,
           kind: "observation",
           evmFundTxid: null,
           evmClaimTxid: null,
         });
-        const next = await applyPath(["USER_CANCELLED"]);
+        const next = await applyPath(["USER_CANCELLED"], "CANCELLED_PROVIDER_EXPIRED", { providerStatus: read.facts.status });
         return { transferId, status: next, deduplicated: false };
       }
-      const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"]);
+      const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"], "CANCEL_UNPROVEN_RECONCILE", {
+        providerStatus: read.kind === "facts" ? read.facts.status || "unknown" : "unknown",
+        providerError: read.kind === "error" ? read.code : null,
+      });
       return { transferId, status: next, deduplicated: false };
     }
-    let facts;
-    try {
-      const { getProviderSwap } = await import("@/lib/satora");
-      facts = await getProviderSwap(attachment.satoraSwapId);
-    } catch (err) {
-      const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
-      throw new AuthError(503, code, "Route provider is temporarily unavailable; cancellation cannot be verified.");
+    if (read.kind === "error") {
+      throw new AuthError(503, read.code, "Route provider is temporarily unavailable; cancellation cannot be verified.");
     }
+    const facts = read.facts;
     // Independent provider facts win over any local theory: observed or
     // possible movement (funding seen/funded/redeeming/redeemed, late or
     // ambiguous reads) never resolves to terminal cancellation. Quiescent
@@ -781,12 +1041,12 @@ export async function reportHandoffOutcome(
         .where(and(eq(handoffAttempts.transferId, transfer.id), eq(handoffAttempts.status, "HANDOFF_AUTHORIZED")))
         .limit(1);
       if (authorized.length === 0) {
-        const next = await applyPath(["USER_CANCELLED"]);
+        const next = await applyPath(["USER_CANCELLED"], "CANCELLED_NEVER_AUTHORIZED", { providerStatus: facts.status });
         return { transferId, status: next, deduplicated: false };
       }
       throw new AuthError(409, "NOT_CANCELLABLE", "Invoice state is ambiguous; cancellation is not safe — reconcile instead.");
     }
-    const next = await applyPath(["USER_CANCELLED"]);
+    const next = await applyPath(["USER_CANCELLED"], "CANCELLED_PROVIDER_PENDING", { providerStatus: facts.status });
     return { transferId, status: next, deduplicated: false };
   });
 }

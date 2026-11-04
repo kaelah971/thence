@@ -9,10 +9,11 @@ import { addPerson } from "@/ui/lib/recipient-actions";
 import { Timeline } from "@/ui/components/Timeline";
 import { destinationFor, maskAddress } from "@/ui/lib/assets";
 import { humanAmount } from "@/ui/lib/transfers-api";
-import { progressCopy } from "@/ui/lib/settlement-client";
+import { needsOwnerClaim, progressCopy } from "@/ui/lib/settlement-client";
 import { timelineFor } from "@/ui/lib/status";
 import type { RouteId } from "@/domain/routes";
 import { useSettlement } from "./useSettlement";
+import { ClaimDeadlineNotice } from "@/ui/components/ClaimDeadline";
 import styles from "./send.module.css";
 
 /**
@@ -62,8 +63,11 @@ export function SettlementProgress({
   const message =
     state.phase === "idle" ? "Checking your payment — do not resend." : state.message || progressCopy(phase).body;
 
-  const showClaim =
-    (state.phase === "on-its-way" || state.phase === "finishing") && state.claimReady && ownerUserId && !previewMode;
+  // P2: a funded payment that needs the owner's claim is an ACTION, with a
+  // deadline — never "on its way". The deadline notice decides (time-aware)
+  // whether the finish control may render at all.
+  const actionNeeded = needsOwnerClaim(state) && Boolean(ownerUserId) && !previewMode;
+  const headline = actionNeeded ? "Action needed — Finish delivery" : title;
   const showCheckAgain = state.phase === "checking" || state.phase === "attention";
 
   return (
@@ -74,8 +78,9 @@ export function SettlementProgress({
         ) : (
           <Icon name={state.phase === "delivered" ? "check" : state.phase === "attention" ? "alert" : "clock"} size={14} strokeWidth={2.6} />
         )}{" "}
-        {title}
+        {headline}
       </p>
+      {!actionNeeded && (
       <Notice
         tone={state.phase === "attention" ? "warn" : state.phase === "delivered" ? "info" : "info"}
         icon={state.phase === "delivered" ? "check" : state.phase === "attention" ? "alert" : "clock"}
@@ -84,6 +89,7 @@ export function SettlementProgress({
       >
         {message}
       </Notice>
+      )}
 
       {requestPublicId && (
         <p className={styles.ctaNote}>
@@ -98,8 +104,15 @@ export function SettlementProgress({
         </div>
       )}
 
-      {showClaim && (
-        <>
+      {actionNeeded && state.claimPending && (
+        <Notice tone="info" icon="clock" title="Delivery submitted — confirming it arrived" live>
+          Your Finish delivery went through to the provider. Thence is now checking Polygon for the USDC reaching their wallet. Don&apos;t
+          start another payment, and don&apos;t try again.
+        </Notice>
+      )}
+
+      {actionNeeded && !state.claimPending && (
+        <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
           <Button
             variant="soft"
             size="md"
@@ -120,7 +133,13 @@ export function SettlementProgress({
           <p className={styles.ctaNote}>
             <Icon name="lock" size={14} /> One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.
           </p>
-        </>
+        </ClaimDeadlineNotice>
+      )}
+
+      {state.claimMessage && !claiming && (
+        <p className={styles.ctaNote} role="status" data-claim-result>
+          {state.claimMessage}
+        </p>
       )}
 
       {showCheckAgain && ownerUserId && (
@@ -191,7 +210,7 @@ export function SettlementProgress({
           <Skeleton width="100%" height={60} />
         </div>
       )}
-      {state.phase !== "idle" && state.phase !== "delivered" && state.phase !== "refunded" && (
+      {state.phase !== "idle" && state.phase !== "delivered" && state.phase !== "refunded" && state.phase !== "expired" && (
         <p className={styles.ctaNote}>
           <AssetMark asset={destination.asset} size={14} /> {destination.network} · Checking payment — do not resend.
         </p>

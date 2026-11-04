@@ -9,8 +9,11 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts", "src/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts"],
     globals: false,
+    // S0: prove the test database identity once (read-only anchor check)
+    // before any worker starts; workers install the test URL only on proof.
+    globalSetup: ["./tests/global-setup.ts"],
     setupFiles: ["./vitest.setup.ts"],
     // Live Neon integration tests issue many sequential round-trips; the
     // default 5s budget flakes under normal cloud latency.

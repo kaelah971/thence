@@ -16,6 +16,7 @@
  * Unknown outcomes are never collapsed into failed or cancelled.
  */
 import type { TransferStatus } from "@/domain/transfers";
+import type { ClaimWindow } from "@/domain/claim-deadline";
 import { apiRequest, type ApiOptions, type ApiResult } from "./api";
 
 export type SettlementVerdict =
@@ -38,6 +39,11 @@ export interface ReconciliationLatest {
   invoiceExpired: boolean;
   unknownProviderState: boolean;
   lastError: string | null;
+  /** P2: Polygon claim deadline (ISO) — Satora evm_refund_locktime; null when unknown. */
+  claimDeadlineAt?: string | null;
+  /** P2: server window at read time. Clients recompute from claimDeadlineAt with their clock. */
+  claimWindow?: ClaimWindow;
+  identityMismatch?: boolean;
 }
 
 export interface ReconciliationView {
@@ -65,6 +71,8 @@ export interface ReconciliationView {
     paymentHash: string;
     invoiceBolt11: string;
     invoiceExpiresAt: string | null;
+    /** P2: Polygon claim deadline (ISO); NOT the invoice expiry and NOT Nimiq Pay's NIM timeout. */
+    claimDeadline?: string | null;
     providerStatus: string;
     verifiedAt: string;
   } | null;
@@ -179,9 +187,79 @@ export function postHandoffCancel(id: string, opts: Opts = {}): Promise<ApiResul
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/handoff-result`, { ...opts, method: "POST", body: { outcome: "cancelled" } });
 }
 
+/**
+ * P4: owner request to close an expired, never-funded payment. The server
+ * re-proves provider expiry/identity, local history, Nimiq-side records and
+ * on-chain HTLC absence; any doubt keeps the payment open (plain-language
+ * refusal in `message`). No body: the client cannot supply evidence.
+ */
+export function postCloseExpired(id: string, opts: Opts = {}): Promise<ApiResult<{ resolution: { transferId: string; status: TransferStatus; deduplicated: boolean } }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/close-expired`, { ...opts, method: "POST", body: {} });
+}
+
+/** P3: server authorization of ONE explicit Finish-delivery attempt (see src/lib/claim-intent.ts). */
+export interface ClaimIntentView {
+  transferId: string;
+  status: TransferStatus;
+  satoraSwapId: string;
+  paymentHash: string;
+  destination: string;
+  targetAmountAtomic: string;
+  claimDeadline: string;
+  leaseExpiresAt: string;
+  fundingConfirmations: number | null;
+  retry: boolean;
+}
+
+/** No body: the server re-derives and re-verifies everything itself. */
+export function postClaimIntent(id: string, opts: Opts = {}): Promise<ApiResult<{ claim: ClaimIntentView }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/claim-intent`, { ...opts, method: "POST", body: {} });
+}
+
 /** No body is sent: the server derives the swap and claim tx itself. */
 export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiResult<{ settlement: SettlementResult }>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/verify-settlement`, { ...opts, method: "POST", body: {} });
+}
+
+/**
+ * P4 owner copy for EXPIRED_UNFUNDED. Deliberately silent about a NIM
+ * refund: Thence cannot see Nimiq Pay's own swap, so it states only what was
+ * independently verified (nothing reached the provider or Polygon) and where
+ * the owner can check their NIM.
+ */
+export const EXPIRED_UNFUNDED_BODY =
+  "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on Polygon for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+
+/**
+ * P5: a verified REFUNDED is the POLYGON side only — the provider's USDC lock
+ * returned to the provider. It is never a NIM refund: Thence cannot observe
+ * Nimiq Pay's NIM HTLC, so the two refunds are always described separately.
+ */
+export const REFUNDED_BODY =
+  "Nothing reached their wallet. The USDC locked on Polygon for this payment went back to the provider, and Thence verified that on-chain. That is not a refund of your NIM. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+
+const OWNER_CLAIM_PROVIDER = new Set(["serverfunded", "clientredeeming", "clientredeemed"]);
+
+/**
+ * P2: the payment is funded on Polygon and waiting for the OWNER's claim —
+ * an action, never "on its way". True regardless of the deadline window so
+ * the screen keeps explaining the deadline (closing / unsafe / passed)
+ * instead of falling back to reassuring copy. Never true after an identity
+ * mismatch, or once the provider reports anything other than funded.
+ * Whether the finish control may render is decided separately
+ * (server claimReady AND the client-clock window).
+ */
+export function needsOwnerClaim(s: {
+  phase: string;
+  transferStatus: string | null;
+  providerStatus: string | null;
+  claimReady: boolean;
+  identityMismatch?: boolean;
+}): boolean {
+  if (s.identityMismatch === true) return false;
+  if (s.phase !== "on-its-way" && s.phase !== "finishing") return false;
+  if (s.claimReady) return true;
+  return (s.transferStatus === "SERVER_FUNDED" || s.transferStatus === "CLAIMING") && OWNER_CLAIM_PROVIDER.has(s.providerStatus ?? "");
 }
 
 export type ProgressPhase =
@@ -192,7 +270,8 @@ export type ProgressPhase =
   | "delivered"
   | "attention"
   | "cancelled"
-  | "refunded";
+  | "refunded"
+  | "expired";
 
 /**
  * Map the authoritative backend status onto customer progress.
@@ -224,6 +303,8 @@ export function progressForStatus(status: string, opts: { receiptReady?: boolean
       return "cancelled";
     case "REFUNDED":
       return "refunded";
+    case "EXPIRED_UNFUNDED":
+      return "expired";
     default:
       return "attention";
   }
@@ -259,8 +340,12 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
     body: "This payment was cancelled. The server confirmed no settlement.",
   },
   refunded: {
-    title: "Payment refunded",
-    body: "The provider refunded this payment. No delivery was confirmed.",
+    title: "Not delivered — Polygon lock refunded",
+    body: REFUNDED_BODY,
+  },
+  expired: {
+    title: "Payment expired — not delivered",
+    body: EXPIRED_UNFUNDED_BODY,
   },
 };
 

@@ -438,6 +438,13 @@ export const swapAttachments = pgTable(
     /** Exact destination atomic units; must equal the transfer amount. */
     targetAtomic: text("target_atomic").notNull(),
     invoiceExpiresAt: timestamp("invoice_expires_at", { withTimezone: true }),
+    /**
+     * P2: Polygon claim deadline = Satora `evm_refund_locktime`, stored only
+     * after strict identity verification. Fixed at swap creation. NOT the
+     * Lightning invoice expiry and NOT Nimiq Pay's NIM HTLC timeout.
+     * Nullable: rows bound before P2 are backfilled by reconciliation.
+     */
+    evmRefundLocktime: timestamp("evm_refund_locktime", { withTimezone: true }),
     /** Provider status snapshot at verification time (e.g. pending). */
     providerStatus: varchar("provider_status", { length: 64 }),
     verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull().defaultNow(),
@@ -483,6 +490,69 @@ export const reconciliationObservations = pgTable(
     ),
   ],
 );
+
+/* ------------------------------------------------------------------ */
+/* transfer_transitions (P4 audit trail)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Append-only audit of transfer status transitions written by the
+ * reconciler and the evidence-gated terminal resolution. Each row records
+ * who moved the transfer, from what, to what, why, and the non-secret
+ * evidence relied on (provider status, tx-id presence, chain scan window and
+ * result). Never stores invoices, preimages, credentials or addresses beyond
+ * public contract identifiers.
+ *
+ * A transfer can enter a terminal status at most once (partial unique
+ * index), which makes terminal resolution idempotent under concurrency even
+ * if two writers raced past the row lock.
+ */
+export const transferTransitions = pgTable(
+  "transfer_transitions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "cascade" }),
+    fromStatus: varchar("from_status", { length: 32 }).notNull(),
+    toStatus: varchar("to_status", { length: 32 }).notNull(),
+    /** owner (session action), reconciler (provider-evidence advance), operator. */
+    actor: varchar("actor", { length: 16 }).notNull(),
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Machine-readable reason, e.g. EXPIRED_UNFUNDED_VERIFIED, PROVIDER_SERVER_FUNDED. */
+    reasonCode: varchar("reason_code", { length: 64 }).notNull(),
+    /** Non-secret evidence snapshot relied on for this transition. */
+    evidence: jsonb("evidence").notNull().default(sql`'{}'::jsonb`),
+    terminal: boolean("terminal").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("transfer_transitions_transfer_idx").on(t.transferId, t.createdAt),
+    uniqueIndex("transfer_transitions_terminal_once").on(t.transferId).where(sql`${t.terminal} = true`),
+    check("transfer_transitions_actor_format", sql`${t.actor} IN ('owner', 'reconciler', 'operator')`),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+/* job_leases (P6: single-runner lease for scheduled jobs)             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One row per scheduled job. A run acquires the lease with a single atomic
+ * upsert (no long-held database lock): only when the previous lease expired
+ * AND the previous start is older than the minimum spacing. This absorbs
+ * overlapping invocations and duplicate deliveries of the same scheduled run.
+ * `last_summary` holds non-secret counters for observability.
+ */
+export const jobLeases = pgTable("job_leases", {
+  name: varchar("name", { length: 64 }).primaryKey(),
+  holder: varchar("holder", { length: 64 }).notNull(),
+  acquiredAt: timestamp("acquired_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
+  lastFinishedAt: timestamp("last_finished_at", { withTimezone: true }),
+  lastSummary: jsonb("last_summary"),
+});
 
 /* ------------------------------------------------------------------ */
 /* route_observations (availability diagnostics, not a pricing promise) */

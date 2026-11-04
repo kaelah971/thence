@@ -222,7 +222,7 @@ describe.skipIf(!LIVE)("F3.1 activity and receipts (read-only)", () => {
     const items = list.data.transfers.map((t) => toActivityItem(t)).filter(Boolean);
     expect(items).toHaveLength(2);
     const item = items.find((i) => i!.id === moving)!;
-    expect(item).toMatchObject({ amount: "25.5", status: "SERVER_FUNDED", statusLabel: "Sending", name: "Daniel", routeId: "usdc-polygon" });
+    expect(item).toMatchObject({ amount: "25.5", status: "SERVER_FUNDED", statusLabel: "Action needed — finish delivery", name: "Daniel", routeId: "usdc-polygon" });
 
     const detail = await getTransfer(moving, { fetch: u.fetch });
     expect(detail.ok && detail.data.transfer.status).toBe("SERVER_FUNDED");

@@ -1,0 +1,1 @@
+ALTER TABLE "swap_attachments" ADD COLUMN "evm_refund_locktime" timestamp with time zone;

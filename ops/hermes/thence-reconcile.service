@@ -1,0 +1,30 @@
+# PREPARED, NOT INSTALLED — see ops/hermes/README.md
+[Unit]
+Description=Thence server reconciliation trigger (read-only provider/chain reconcile)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=thence-cron
+Group=thence-cron
+ExecStart=/usr/local/bin/thence-reconcile.sh
+# Secret delivered by systemd into $CREDENTIALS_DIRECTORY (root-owned 0600 source).
+LoadCredential=cron-secret:/etc/thence/cron-secret
+RuntimeDirectory=thence-reconcile
+TimeoutStartSec=100
+# Hardening: the script only needs outbound HTTPS.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
