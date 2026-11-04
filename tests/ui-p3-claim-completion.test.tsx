@@ -207,6 +207,25 @@ describe("P3: the Nov 2 failure path now completes — explicit Finish delivery,
     expect(Date.now()).toBeLessThan(DEADLINE_MS - 5 * 60_000);
   });
 
+  it("P7: on-chain evidence that contradicts the payment (INVALID) is shown as needs-attention, never as an endless 'confirming'", async () => {
+    vi.setSystemTime(new Date(FUNDED_SEEN));
+    api = installFakeApi({ [ID]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FUNDED_SEEN } });
+    renderSend();
+    await advance(3_000);
+    claimSpy.claimStoredSwap.mockResolvedValue({ success: true, txHash: `0x${"5c".repeat(32)}`, message: "ok" });
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    api.set(ID, { providerStatus: "clientredeemed" });
+    api.settlementVerdict = "INVALID";
+    await advance(60_000);
+    expect(api.state[ID]!.status).toBe("CLAIMING");
+    expect(text()).toContain("The on-chain record doesn't match this payment");
+    expect(text()).not.toContain("Delivery submitted — confirming it arrived");
+    expect(text()).not.toMatch(/They received the exact amount/);
+    expect(finishButtons()).toHaveLength(0);
+  });
+
   it("Activity: funding that lands while the detail is open surfaces Finish delivery there, and finishing works from Activity", async () => {
     vi.setSystemTime(new Date(APPROVED_AT));
     api = installFakeApi({ [ID]: { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: APPROVED_AT } });
@@ -298,14 +317,14 @@ describe("P3: interruptions keep claim eligibility and never double-claim", () =
   it("another tab or device already holds the claim lease: refused with a clear reason, no claim here", async () => {
     vi.setSystemTime(new Date(FUNDED_SEEN));
     api = installFakeApi({ [ID]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FUNDED_SEEN } });
-    api.claimLeaseUntil[ID] = Date.now() + 3 * 60_000;
+    api.claimLeaseUntil[ID] = Date.now() + 10 * 60_000;
     renderSend();
     await advance(3_000);
     fireEvent.click(finishButtons()[0]!);
     await advance(0);
     await advance(0);
     expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
-    expect(text()).toContain("A delivery attempt was just authorized for this payment");
+    expect(text()).toContain("A delivery attempt was authorized for this payment in the last 10 minutes");
   });
 
   it("unknown claim outcome: no blind retry; after verification and the server lease, one explicit retry is allowed", async () => {
@@ -324,7 +343,7 @@ describe("P3: interruptions keep claim eligibility and never double-claim", () =
     api.settlementVerdict = "PENDING";
     await advance(UNKNOWN_CLAIM_VERIFY_DELAY_MS + 15_000);
     expect(api.count("POST", "/verify-settlement")).toBeGreaterThan(0);
-    // The button may return, but the server lease still refuses inside 3 min.
+    // The button may return, but the server's 10-minute pending horizon still refuses.
     const early = finishButtons()[0];
     if (early) {
       fireEvent.click(early);
@@ -332,7 +351,7 @@ describe("P3: interruptions keep claim eligibility and never double-claim", () =
       await advance(0);
       expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
     }
-    await advance(3 * 60_000);
+    await advance(10 * 60_000);
     claimSpy.claimStoredSwap.mockResolvedValueOnce({ success: true, txHash: `0x${"5c".repeat(32)}`, message: "ok" });
     fireEvent.click(finishButtons()[0]!);
     await advance(0);

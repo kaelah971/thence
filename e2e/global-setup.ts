@@ -81,6 +81,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   const pool = new Pool({ connectionString: testUrl, max: 1 });
   const before = await pool.query<{ enabled: boolean }>("SELECT enabled FROM pilot_controls WHERE id = 'pilot'");
   const priorEnabled = before.rows[0]?.enabled ?? null;
+  console.log(`[e2e] TEST pilot switch before run: ${priorEnabled === null ? "no row" : priorEnabled ? "ENABLED" : "DISABLED"}; enabling for this run only.`);
   if (priorEnabled !== true) {
     await pool.query("INSERT INTO pilot_controls (id, enabled, updated_at, note) VALUES ('pilot', true, NOW(), 'e2e: test database only') ON CONFLICT (id) DO UPDATE SET enabled = true, updated_at = NOW(), note = 'e2e: test database only'");
   }
@@ -170,7 +171,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     // TEST database cleanup: the ephemeral E2E owner and everything it created (cascade).
     await pool.query("DELETE FROM users WHERE nimiq_address = $1", [wallet.address]);
     await pool.query("DELETE FROM job_leases WHERE name LIKE 'claim:%' AND expires_at < NOW() - interval '1 hour'");
-    if (priorEnabled !== true) await pool.query("UPDATE pilot_controls SET enabled = $1, updated_at = NOW(), note = 'e2e: restored' WHERE id = 'pilot'", [priorEnabled ?? false]);
+    // Restore the suites' defined baseline (DISABLED, fail-closed — see
+    // tests/f81-pilot-attempt-limits.test.ts), never a remembered value.
+    await pool.query("UPDATE pilot_controls SET enabled = false, updated_at = NOW(), note = 'test baseline: DISABLED (after e2e)' WHERE id = 'pilot'");
     await pool.end();
   };
 }

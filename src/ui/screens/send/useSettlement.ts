@@ -285,6 +285,19 @@ export function useSettlement(): {
       setState({ ...base, phase: "finishing", claimReady: false, message: "The receipt is still being put together. Check back shortly." });
       return;
     }
+    // P7: on-chain evidence that contradicts this payment is never "confirming".
+    if (snapshot.settlementVerdict === "INVALID" && (status === "CLAIMING" || status === "SERVER_FUNDED")) {
+      const claimPending = claimPendingFor(loadClaimRecord(input.transferId, input.ownerUserId), view.latest.claimReady);
+      setState({
+        ...base,
+        phase: "attention",
+        claimReady: false,
+        claimPending,
+        verifyVerdict: "INVALID",
+        message: "The on-chain record doesn't match this payment (token, wallet or amount). It is NOT delivered and needs attention — don't pay again.",
+      });
+      return;
+    }
     const copy = copyFor(phase);
     const message = snapshot.refreshError && snapshot.refreshError.kind !== "conflict"
       ? refreshFailureMessage(snapshot.refreshError)

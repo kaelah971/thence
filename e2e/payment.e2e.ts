@@ -105,7 +105,7 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     expect(await app.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   });
 
-  test("Delivered only with the CORRECT USDC Transfer: wrong token or short amount never delivers", async ({ app }, testInfo) => {
+  test("Delivered only with the CORRECT USDC Transfer: a wrong-token receipt never delivers and is shown as needs attention", async ({ app }, testInfo) => {
     only(testInfo, "chromium-desktop");
     await signIn(app);
     await prepareThirtyCents(app);
@@ -114,13 +114,13 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await expectFinishWithDeadline(app, swap.deadline);
     await finishButton(app).first().click();
     await expect(app.getByText("Delivery submitted — confirming it arrived").first()).toBeVisible({ timeout: 30_000 });
-    await sim("settle", { swapId: swap.id, token: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f" }); // USDT, not USDC
-    await app.waitForTimeout(40_000);
+    // The claim tx is mined (once, immutably) crediting USDT instead of USDC.
+    // (Short amounts and wrong recipients are covered against the real server
+    // in tests/settlement.test.ts.)
+    await sim("settle", { swapId: swap.id, token: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f" });
+    await expect(app.getByText("The on-chain record doesn't match this payment").first()).toBeVisible({ timeout: 60_000 });
     await expect(app.getByText(DELIVERED_PROOF())).toHaveCount(0);
-    await sim("settle", { swapId: swap.id, amount: "299999" }); // one atomic unit short
-    await app.waitForTimeout(40_000);
-    await expect(app.getByText(DELIVERED_PROOF())).toHaveCount(0);
-    await expect(app.getByText(/on-chain record doesn't match|needs attention/i).first()).toBeVisible();
+    await expect(app.getByText("Delivery submitted — confirming it arrived")).toHaveCount(0);
   });
 
   test("refund is never shown as delivery: unclaimed swap refunded on Polygon → 'Not delivered — Polygon lock refunded'", async ({ app }, testInfo) => {
@@ -147,14 +147,14 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await expectFinishWithDeadline(app, swap.deadline);
     await app.reload();
     await app.goto("/app/activity");
-    await app.getByRole("button", { name: /New recipient|0\.30/ }).first().click();
+    await app.getByRole("button", { name: /Someone new|New recipient/ }).first().click();
     await expectFinishWithDeadline(app, swap.deadline);
     await finishButton(app).first().click();
     await expect(app.getByText("Delivery submitted — confirming it arrived").first()).toBeVisible({ timeout: 30_000 });
     expect((await swapState(swap.id)).claims).toHaveLength(1);
     await app.reload();
     await app.goto("/app/activity");
-    await app.getByRole("button", { name: /New recipient|0\.30/ }).first().click();
+    await app.getByRole("button", { name: /Someone new|New recipient/ }).first().click();
     await app.waitForTimeout(8_000);
     await expect(finishButton(app)).toHaveCount(0);
     expect((await swapState(swap.id)).claims).toHaveLength(1);
@@ -187,7 +187,7 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await expectFinishWithDeadline(app, swap.deadline);
     const second = await context.newPage();
     await second.goto("/app/activity");
-    await second.getByRole("button", { name: /New recipient|0\.30/ }).first().click();
+    await second.getByRole("button", { name: /Someone new|New recipient/ }).first().click();
     await expectFinishWithDeadline(second, swap.deadline);
     const a = finishButton(app).first();
     const b = finishButton(second).first();
@@ -224,7 +224,10 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await expectFinishWithDeadline(app, swap.deadline);
     await sim("claim-mode", { mode: "unknown-landed" });
     await finishButton(app).first().click();
-    await expect(app.getByText(/do not resend/i).first()).toBeVisible({ timeout: 30_000 });
+    // Authoritative checkpoint: the simulated provider has received the claim
+    // (generic "do not resend" copy is always on screen and proves nothing).
+    await expect.poll(async () => (await swapState(swap.id)).claims.length, { timeout: 60_000 }).toBe(1);
+    await expect(app.getByText(/couldn't be confirmed/i).first()).toBeVisible({ timeout: 30_000 });
     await app.waitForTimeout(45_000); // verification round runs; provider + chain show the claim
     await expect(finishButton(app)).toHaveCount(0);
     expect((await swapState(swap.id)).claims).toHaveLength(1);
@@ -233,7 +236,7 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     expect((await swapState(swap.id)).claims).toHaveLength(1);
   });
 
-  test("unknown claim outcome that did NOT land: a lease expiry alone never retries; retry only with chain proof the lock is unspent", async ({ app }, testInfo) => {
+  test("unknown claim outcome that did NOT land: no retry inside the 10-minute pending horizon, even after the old 3-minute lease", async ({ app }, testInfo) => {
     only(testInfo, "chromium-desktop");
     test.setTimeout(600_000);
     await signIn(app);
@@ -243,25 +246,28 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await expectFinishWithDeadline(app, swap.deadline);
     await sim("claim-mode", { mode: "unknown-lost" });
     await finishButton(app).first().click();
-    await expect(app.getByText(/do not resend/i).first()).toBeVisible({ timeout: 30_000 });
+    // Authoritative checkpoint: the simulated provider has received the claim
+    // (generic "do not resend" copy is always on screen and proves nothing).
+    await expect.poll(async () => (await swapState(swap.id)).claims.length, { timeout: 60_000 }).toBe(1);
+    await expect(app.getByText(/couldn't be confirmed/i).first()).toBeVisible({ timeout: 30_000 });
     expect((await swapState(swap.id)).claims.filter((c) => c.executed)).toHaveLength(0);
-    // Inside the server claim lease nothing may be retried, whatever the UI shows.
-    await app.waitForTimeout(60_000);
-    const early = finishButton(app).first();
-    if (await early.isVisible().catch(() => false)) {
-      await early.click();
-      await app.waitForTimeout(8_000);
-    }
-    expect((await swapState(swap.id)).claims).toHaveLength(1);
-    // After the lease: the chain shows only the funding event for this lock → one explicit retry is allowed.
+    // The provider still says serverfunded and the HTLC is unspent — but a
+    // relayed claim could still be pending, so for 10 minutes nothing retries.
     await sim("claim-mode", { mode: "ok" });
-    await app.waitForTimeout(150_000);
-    await expect(finishButton(app).first()).toBeVisible({ timeout: 60_000 });
-    await finishButton(app).first().click();
-    await expect(app.getByText("Delivery submitted — confirming it arrived").first()).toBeVisible({ timeout: 30_000 });
+    for (const waitMs of [60_000, 150_000]) {
+      await app.waitForTimeout(waitMs);
+      const again = finishButton(app).first();
+      if (await again.isVisible().catch(() => false)) {
+        await again.click();
+        await app.waitForTimeout(8_000);
+      }
+    }
+    // 3.5 minutes after the unknown outcome: still exactly the one attempt.
     const s = await swapState(swap.id);
-    expect(s.claims).toHaveLength(2);
-    expect(s.claims.filter((c) => c.executed)).toHaveLength(1);
+    expect(s.claims).toHaveLength(1);
+    expect(s.claims.filter((c) => c.executed)).toHaveLength(0);
+    // (The post-horizon retry — lease expired + provider clean + chain unspent —
+    // is exercised against the real server in tests/p3-claim-intent.test.ts.)
   });
 
   test("deadline: inside the 5-minute unsafe window and after expiry there is no Finish delivery", async ({ app }, testInfo) => {

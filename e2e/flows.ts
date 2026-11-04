@@ -75,5 +75,5 @@ export async function clockOf(page: Page, unixSeconds: number): Promise<string> 
 }
 
 export function finishButton(page: Page) {
-  return page.getByRole("button", { name: "Finish delivery" });
+  return page.getByRole("button", { name: "Finish delivery", exact: true });
 }

@@ -83,6 +83,12 @@ export interface TrackerSnapshot {
   readAt: number | null;
   /** True once the server reports a terminal status. */
   terminal: boolean;
+  /**
+   * P7: latest on-chain delivery verdict from POST /verify-settlement, when one
+   * ran. INVALID means the chain evidence contradicts this payment (wrong
+   * token, recipient or amount) — the screen must stop saying "confirming".
+   */
+  settlementVerdict: "VERIFIED" | "PENDING" | "INSUFFICIENT_CONFIRMATIONS" | "INCONCLUSIVE" | "INVALID" | "UNAVAILABLE" | null;
 }
 
 export type TrackerListener = (snapshot: TrackerSnapshot) => void;
@@ -127,7 +133,7 @@ class PaymentTracker {
     readonly ownerUserId: string,
     private readonly deps: TrackerDeps,
   ) {
-    this.snapshot = { transferId, ownerUserId, view: null, readError: null, refreshError: null, readAt: null, terminal: false };
+    this.snapshot = { transferId, ownerUserId, view: null, readError: null, refreshError: null, readAt: null, terminal: false, settlementVerdict: null };
   }
 
   current(): TrackerSnapshot {
@@ -233,6 +239,15 @@ class PaymentTracker {
         const verified = await this.deps.postVerifySettlement(this.transferId, { signal: controller.signal });
         if (controller.signal.aborted) return;
         if (!verified.ok && verified.kind === "rate-limited") refreshError = { kind: verified.kind, code: verified.code };
+        // The route answers INVALID with 422; any other outcome is carried in the body.
+        const verdict = verified.ok
+          ? ((verified.data as { settlement?: { verdict?: TrackerSnapshot["settlementVerdict"] } }).settlement?.verdict ?? null)
+          : verified.status === 422
+            ? "INVALID"
+            : verified.status === 503
+              ? "UNAVAILABLE"
+              : null;
+        if (verdict !== null) this.snapshot = { ...this.snapshot, settlementVerdict: verdict };
       }
       const read = await this.deps.getReconciliation(this.transferId, { signal: controller.signal });
       if (controller.signal.aborted) return;

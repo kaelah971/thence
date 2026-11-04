@@ -82,6 +82,8 @@ interface SimReceipt {
 const state = {
   swaps: new Map<string, SimSwap>(),
   receipts: new Map<string, SimReceipt>(),
+  /** Relayed claim txs accepted but NOT yet mined (no receipt; tx has no block). */
+  pending: new Map<string, { swapId: string }>(),
   latest: BASE_BLOCK + 10,
   claimMode: "ok" as ClaimMode,
   /** Extra sats the provider asks at swap creation (repricing scenario). */
@@ -165,16 +167,17 @@ function claimGasless(id: string, body: Record<string, unknown>): { status: numb
   if (!preimageMatches) return { status: 400, body: { error: "invalid preimage" } };
   let txHash = "";
   if (executes) {
-    // SIMULATED coordinator redeem: the HTLC emits a (synthetic) redeem event
-    // in a new block. The USDC Transfer to the recipient is NOT emitted here —
-    // tests feed it separately (/__e2e/settle), so delivery needs evidence.
-    const r = addReceipt([{ address: HTLC, topics: [SIM_REDEEM_TOPIC, swap.hashLock, pad(COORDINATOR)], data: "0x" }]);
-    txHash = r.hash;
-    swap.record["status"] = "clientredeemed";
+    // SIMULATED relayer: the redeem tx is accepted but PENDING (in the
+    // mempool) — no receipt, no HTLC event yet. Like a real chain, it is mined
+    // exactly once by /__e2e/settle, with the redeem event and the USDC
+    // Transfer in the same immutable receipt.
+    txHash = hex32();
+    state.pending.set(txHash, { swapId: id });
+    swap.record["status"] = "clientredeeming";
     swap.record["evm_claim_txid"] = txHash;
   }
   if (state.claimMode !== "ok") return { status: 502, body: { error: "upstream connection reset (simulated)" } };
-  return { status: 200, body: { id, status: "clientredeemed", tx_hash: txHash, message: "Simulated gasless claim accepted." } };
+  return { status: 200, body: { id, status: "clientredeeming", tx_hash: txHash, message: "Simulated gasless claim accepted (pending)." } };
 }
 
 function satora(method: string, path: string, query: URLSearchParams, body: Record<string, unknown>): { status: number; body: unknown } | null {
@@ -297,7 +300,12 @@ function polygon(rpc: { id: unknown; method: string; params?: unknown[] }): unkn
       return ok(r ? rpcReceipt(r) : null);
     }
     case "eth_getTransactionByHash": {
-      const r = state.receipts.get(String(p[0]).toLowerCase());
+      const hash = String(p[0]).toLowerCase();
+      const r = state.receipts.get(hash);
+      if (!r && state.pending.has(hash)) {
+        // In the mempool: known transaction, not in any block.
+        return ok({ hash, blockHash: null, blockNumber: null, from: COORDINATOR.toLowerCase(), to: HTLC.toLowerCase(), input: "0x", value: "0x0", gas: "0x5208", gasPrice: "0x1", nonce: "0x0", transactionIndex: null, type: "0x0", v: "0x0", r: "0x0", s: "0x0", chainId: "0x89" });
+      }
       return ok(
         r
           ? { hash: r.hash, blockHash: blockHash(r.blockNumber), blockNumber: toHex(r.blockNumber), from: SERVER_EVM.toLowerCase(), to: HTLC.toLowerCase(), input: "0x", value: "0x0", gas: "0x5208", gasPrice: "0x1", nonce: "0x0", transactionIndex: "0x0", type: "0x0", v: "0x0", r: "0x0", s: "0x0", chainId: "0x89" }
@@ -333,6 +341,7 @@ function control(action: string, body: Record<string, unknown>): unknown {
     case "reset":
       state.swaps.clear();
       state.receipts.clear();
+      state.pending.clear();
       state.latest = BASE_BLOCK + 10;
       state.claimMode = "ok";
       state.repriceSats = 0;
@@ -370,16 +379,27 @@ function control(action: string, body: Record<string, unknown>): unknown {
       state.claimMode = body["mode"] as ClaimMode;
       return { ok: true, mode: state.claimMode };
     case "settle": {
-      // SIMULATED settlement evidence: an ERC20 Transfer of the canonical USDC
-      // to `to` for `amount`, in the receipt of the swap's claim transaction.
+      // SIMULATED mining of the pending claim tx, exactly once: one immutable
+      // receipt with the HTLC redeem event AND the ERC20 Transfer of `token`
+      // to `to` for `amount` (defaults: canonical USDC, recipient, exact amount).
       const swap = swapOrThrow(body["swapId"]);
-      const claimTx = String(swap.record["evm_claim_txid"] ?? "");
-      const receipt = state.receipts.get(claimTx);
-      if (!receipt) throw new Error("swap has no executed claim to settle");
+      const claimTx = String(swap.record["evm_claim_txid"] ?? "").toLowerCase();
+      if (!state.pending.has(claimTx)) throw new Error("swap has no pending claim to mine (a mined receipt is immutable)");
+      state.pending.delete(claimTx);
       const to = String(body["to"] ?? swap.record["target_evm_address"]);
       const amount = String(body["amount"] ?? swap.record["target_amount"]);
       const token = String(body["token"] ?? USDC_POLYGON);
-      receipt.logs.push({ address: token, topics: [TRANSFER_TOPIC, pad(COORDINATOR), pad(to)], data: "0x" + word(amount), blockNumber: receipt.blockNumber, transactionHash: receipt.hash, logIndex: receipt.logs.length });
+      state.latest += 1;
+      const n = state.latest;
+      state.receipts.set(claimTx, {
+        hash: claimTx,
+        blockNumber: n,
+        logs: [
+          { address: HTLC, topics: [SIM_REDEEM_TOPIC, swap.hashLock, pad(COORDINATOR)], data: "0x", blockNumber: n, transactionHash: claimTx, logIndex: 0 },
+          { address: token, topics: [TRANSFER_TOPIC, pad(COORDINATOR), pad(to)], data: "0x" + word(amount), blockNumber: n, transactionHash: claimTx, logIndex: 1 },
+        ],
+      });
+      swap.record["status"] = "clientredeemed";
       state.latest += Number(body["confirmations"] ?? 300);
       return { claimTx };
     }

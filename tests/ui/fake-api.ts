@@ -270,8 +270,8 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
       const deadline = claimDeadline(c, s);
       if (deadline === null) return json(409, { error: "DEADLINE_UNKNOWN", message: "The delivery deadline isn't confirmed yet, so finishing stays unavailable." });
       if (Date.parse(deadline) - now <= CLAIM_UNSAFE_WINDOW_MS) return json(409, { error: "DEADLINE_TOO_CLOSE", message: "There isn't enough time left to finish delivery safely." });
-      if ((api.claimLeaseUntil[id] ?? 0) > now) return json(409, { error: "CLAIM_IN_PROGRESS", message: "A delivery attempt was just authorized for this payment. Wait while Thence confirms it — don't try again." });
-      api.claimLeaseUntil[id] = now + 3 * 60_000;
+      if ((api.claimLeaseUntil[id] ?? 0) > now) return json(409, { error: "CLAIM_IN_PROGRESS", message: "A delivery attempt was authorized for this payment in the last 10 minutes and may still be confirming. Wait while Thence checks it — don't try again." });
+      api.claimLeaseUntil[id] = now + 10 * 60_000;
       const retry = s.status === "CLAIMING";
       state[id] = { ...s, status: "CLAIMING" };
       return json(200, {

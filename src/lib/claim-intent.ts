@@ -31,8 +31,17 @@ import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } fr
 import { verifyHtlcFunding, verifyHtlcUnspent, type HtlcFundingResult, type HtlcSpendVerdict } from "@/lib/settlement";
 import { recordTransition } from "@/lib/transitions";
 
-/** One authorized claim attempt holds the lease this long; a retry needs it expired. */
-export const CLAIM_LEASE_MS = 3 * 60_000;
+/**
+ * One authorized claim attempt holds the lease this long; a retry needs it
+ * expired. P7: this is also the PENDING HORIZON. An unspent HTLC does not
+ * prove that a relayed claim is not still pending in the mempool, so no
+ * re-authorization happens until a claim submitted at the last authorization
+ * would have been mined or dropped. (Defence in depth: the HTLC can be
+ * redeemed only once, so a duplicate claim can never deliver twice — it can
+ * only revert.) A retry additionally needs the provider showing no claim, the
+ * chain showing the lock unspent, and the deadline outside the unsafe window.
+ */
+export const CLAIM_LEASE_MS = 10 * 60_000;
 /** Evidence older than this at commit time is refused (the client retries). */
 export const CLAIM_EVIDENCE_MAX_AGE_MS = 60_000;
 
@@ -174,7 +183,7 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
       RETURNING holder
     `)) as unknown as { rows: Array<{ holder: string }> };
     if (acquired.rows[0]?.holder !== holder) {
-      refuse(409, "CLAIM_IN_PROGRESS", "A delivery attempt was just authorized for this payment. Wait while Thence confirms it — don't try again.");
+      refuse(409, "CLAIM_IN_PROGRESS", "A delivery attempt was authorized for this payment in the last 10 minutes and may still be confirming. Wait while Thence checks it — don't try again.");
     }
     let status = current;
     const evidence = {

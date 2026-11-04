@@ -41,7 +41,8 @@ verification on its own (P6 + `verifySettlementCore`).
      (data word 2) = the bound deadline — checked against the real Nov 2 fund
      receipt;
    - five-minute unsafe window (server clock);
-   - per-transfer **claim lease** (`job_leases`, 3 min): a second tab, device
+   - per-transfer **claim lease** (`job_leases`, 10 min — also the pending
+     horizon for retries, see below): a second tab, device
      or double tap is refused `CLAIM_IN_PROGRESS`;
    - `SERVER_FUNDED → CLAIMING`, audited `CLAIM_AUTHORIZED` (same transaction).
    The browser then cross-checks the server's answer (swap id, hash, deadline,
@@ -50,9 +51,15 @@ verification on its own (P6 + `verifySettlementCore`).
    stays in the SDK's IndexedDB and is revealed only by the SDK).
 6. **Outcome checked, never trusted.** Success → "Delivery submitted —
    confirming it arrived", no second button (also after reload). Unknown
-   outcome → no blind retry; one verification round runs after 20 s; a retry
-   is offered only if verification shows no claim, the server still reports
-   it claimable and the server lease has expired.
+   outcome → no blind retry; one verification round runs after 20 s. A retry
+   is authorized by the server only when ALL hold (P7): the 10-minute
+   pending horizon since the last authorization has passed (an unspent HTLC
+   does not prove a relayed claim is not still in the mempool); Satora shows
+   the swap `serverfunded` with no claim tx; the pinned HTLC's own log shows
+   only the funding event for this lock (`verifyHtlcUnspent`); and the
+   deadline is still outside the five-minute unsafe window. Defence in depth:
+   the HTLC can be redeemed once, so a duplicate claim can only revert, never
+   deliver twice.
 7. **Delivery verified independently.** The tracker calls `verify-settlement`
    while the provider reports claim activity; the server cron does the same
    with the browser closed. `DELIVERED` is written only with the ERC20
