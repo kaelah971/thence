@@ -16,3 +16,9 @@ repro-tmp/
 tsconfig.tsbuildinfo
 coverage/
 .claude/
+
+# P7: browser E2E artifacts (run-only test keys/certs, simulated build) never ship.
+e2e/.run/
+.next-e2e/
+test-results/
+playwright-report/
