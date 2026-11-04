@@ -28,7 +28,7 @@ import { transition, type TransferStatus } from "@/domain/transfers";
 import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
 import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
-import { verifyHtlcFunding, type HtlcFundingResult } from "@/lib/settlement";
+import { verifyHtlcFunding, verifyHtlcUnspent, type HtlcFundingResult, type HtlcSpendVerdict } from "@/lib/settlement";
 import { recordTransition } from "@/lib/transitions";
 
 /** One authorized claim attempt holds the lease this long; a retry needs it expired. */
@@ -57,7 +57,7 @@ function refuse(status: number, code: string, message: string): never {
   throw new AuthError(status, code, message);
 }
 
-type Evidence = { facts: VerifiedSwapFacts; routeMatches: boolean; funding: HtlcFundingResult; gatheredAt: number };
+type Evidence = { facts: VerifiedSwapFacts; routeMatches: boolean; funding: HtlcFundingResult; spend: HtlcSpendVerdict | null; gatheredAt: number };
 
 async function gather(transfer: typeof transfers.$inferSelect, attachment: typeof swapAttachments.$inferSelect): Promise<Evidence> {
   let facts: VerifiedSwapFacts;
@@ -79,7 +79,12 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
     locktimeSec === null
       ? { verdict: "INCONCLUSIVE", reason: "The claim deadline is not known.", confirmations: null }
       : await verifyHtlcFunding({ chainId: facts.evmChainId, htlcAddress: facts.evmHtlcAddress, hashLock: attachment.paymentHash, fundTxHash: facts.evmFundTxid, expectedLocktimeSec: locktimeSec });
-  return { facts, routeMatches, funding, gatheredAt: Date.now() };
+  // P7: a re-authorization (earlier attempt's outcome unknown) needs the
+  // chain's own word that nothing redeemed or refunded this lock.
+  const spend = transfer.status === "CLAIMING"
+    ? (await verifyHtlcUnspent({ chainId: facts.evmChainId, htlcAddress: facts.evmHtlcAddress, hashLock: attachment.paymentHash, fundTxHash: facts.evmFundTxid })).verdict
+    : null;
+  return { facts, routeMatches, funding, spend, gatheredAt: Date.now() };
 }
 
 /** Pure: every identity fact the claim depends on, against the bound swap and transfer terms. */
@@ -128,6 +133,10 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
   if (ev.funding.verdict === "INVALID") refuse(409, "FUNDING_INVALID", `${ev.funding.reason} Do not continue.`);
   if (ev.funding.verdict === "PENDING") refuse(409, "FUNDING_NOT_CONFIRMED", "The Polygon funding needs a few more confirmations. Try again in a minute.");
   if (ev.funding.verdict !== "VERIFIED") refuse(503, "CHAIN_UNAVAILABLE", "Polygon can't be checked right now. Try again shortly.");
+  if (pre.status === "CLAIMING") {
+    if (ev.spend === "SPENT") refuse(409, "CLAIM_ALREADY_SUBMITTED", "The earlier delivery attempt reached Polygon. Wait while Thence confirms it — don't try again.");
+    if (ev.spend !== "UNSPENT") refuse(503, "CLAIM_OUTCOME_UNRESOLVED", "Thence can't yet prove the earlier delivery attempt didn't go through, so it won't try again. Check again shortly.");
+  }
 
   // ---- phase B: short commit under the lock ----
   return db.transaction(async (tx) => {

@@ -613,6 +613,55 @@ export async function verifyHtlcFunding(input: {
   }
 }
 
+export type HtlcSpendVerdict = "UNSPENT" | "SPENT" | "INCONCLUSIVE" | "UNAVAILABLE";
+
+/**
+ * P7 — authoritative "the earlier claim did not execute" evidence for a retry.
+ *
+ * After an unknown claim outcome the provider's view (still `serverfunded`, no
+ * claim tx) is only an assertion. This reads the pinned HTLC's own log for
+ * this hash lock from the funding block to the chain head: UNSPENT only when
+ * the funding event is the ONLY event (no redeem, no refund) across a fully
+ * scanned, bounded range. Anything else — another event, an unreadable chunk,
+ * a range beyond the scan bound, a missing funding receipt — is not UNSPENT,
+ * and a retry is refused.
+ */
+export async function verifyHtlcUnspent(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  fundTxHash: string | null;
+}): Promise<{ verdict: HtlcSpendVerdict; reason: string }> {
+  if (input.chainId !== 137 || !isTrustedHtlc(input.chainId, input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
+    return { verdict: "INCONCLUSIVE", reason: "No pinned Polygon HTLC to check." };
+  }
+  if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "INCONCLUSIVE", reason: "No funding transaction to scan from." };
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) return { verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain." };
+  const chain = reads();
+  if (!chain.getLogsByTopic1) return { verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs." };
+  const htlc = input.htlcAddress!.toLowerCase();
+  const lock = input.hashLock.toLowerCase();
+  try {
+    const receipt = await chain.getReceipt(input.chainId, input.fundTxHash);
+    if (!receipt || receipt.status !== "success") return { verdict: "INCONCLUSIVE", reason: "Funding receipt is unavailable." };
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    if (latest - receipt.blockNumber + 1n > MAX_HTLC_SCAN_BLOCKS) return { verdict: "INCONCLUSIVE", reason: "Scan range exceeds the bound." };
+    for (let s = receipt.blockNumber; s <= latest; s += HTLC_LOG_CHUNK_BLOCKS) {
+      const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > latest ? latest : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      const logs = await chain.getLogsByTopic1(input.chainId, htlc, lock, s, e);
+      for (const log of logs) {
+        if (log.address.toLowerCase() !== htlc || log.topics[1]?.toLowerCase() !== lock) continue;
+        if (log.topics[0]?.toLowerCase() === SWAP_FUNDED_EVENT_TOPIC) continue;
+        return { verdict: "SPENT", reason: "The HTLC already emitted a redeem or refund event for this lock." };
+      }
+    }
+    return { verdict: "UNSPENT", reason: "Only the funding event exists for this lock on the pinned HTLC." };
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable." };
+  }
+}
+
 /** P5: the refund scan starts this long before the earliest possible refund (clock skew margin). */
 export const REFUND_SCAN_LEAD_MS = 5 * 60_000;
 

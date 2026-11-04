@@ -36,7 +36,7 @@ import { RequestDetailsStep, RequestSharedStep } from "./RequestSteps";
 import { useCalculator } from "./useCalculator";
 import { humanAmount } from "@/ui/lib/transfers-api";
 import { useLiveQuote } from "./useLiveQuote";
-import { useHandoff } from "./useHandoff";
+import { loadHandoffRecord, useHandoff } from "./useHandoff";
 import { SettlementProgress } from "./SettlementProgress";
 import { usePreparation, type PreparationInput } from "./usePreparation";
 import { WalletChooser, type ChosenWallet } from "./WalletChooser";
@@ -1142,6 +1142,14 @@ function HandoffStep({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preparation.phase === "ready" ? preparation.transferId : null]);
   const steps = timelineFor("AWAITING_NIM_APPROVAL");
+  // P7: once Nimiq Pay was asked for THIS transfer (handoff record is saved
+  // before the native call; resume maps any later server status to
+  // "checking"), the sheet must never again say "not yet paid" or offer a
+  // second confirmation — the payment is followed below instead.
+  const handedOff =
+    preparation.phase === "ready" &&
+    ((handoff.state.transferId === preparation.transferId && (handoff.state.phase === "checking" || handoff.state.phase === "cancelled")) ||
+      (ownerUserId !== null && loadHandoffRecord(preparation.transferId, ownerUserId) !== null && handoff.state.phase !== "confirming"));
   const recoveryNeedsActivity = preparation.phase === "failed" && preparation.issue.action === "resume";
   const working =
     preparation.phase === "working"
@@ -1157,14 +1165,18 @@ function HandoffStep({
             <NimMark size={40} />
           </span>
           <h2 className={styles.handoffTitle}>
-            {preparation.phase === "ready"
+            {handedOff
+              ? "Submitted to Nimiq Pay"
+              : preparation.phase === "ready"
               ? "Ready for Nimiq Pay approval"
               : preparation.phase === "failed"
                 ? preparation.issue.title
                 : "Preparing your payment"}
           </h2>
           <p className={styles.handoffBody}>
-            {preparation.phase === "ready"
+            {handedOff
+              ? "Nimiq Pay has your approval. " + payeeName + " will receive exactly " + amount + " " + assetLabel + ". Thence is following it below — don't pay again."
+              : preparation.phase === "ready"
               ? payeeName + " will receive exactly " + amount + " " + assetLabel + ". No approval is recorded yet — Nimiq Pay shows the exact NIM amount before you approve."
               : preparation.phase === "failed"
                 ? recoveryNeedsActivity
@@ -1187,14 +1199,17 @@ function HandoffStep({
 
         {preparation.phase === "ready" && (
           <div className={styles.quoteBox}>
+            {!handedOff && (
             <Notice tone="info" icon="shield" title="Prepared — not yet paid" live>
               A prepared payment is not a delivered payment. Approve it in Nimiq Pay next. Payment approval is part of the next step and has not happened here.
             </Notice>
+            )}
             {preparation.sourceSats ? (
               <p className={styles.quoteLine} data-tone="ok">
                 <Icon name="check" size={14} strokeWidth={2.6} /> Lightning needed: <span className="tabular">{preparation.sourceSats} sats</span>
               </p>
             ) : null}
+            {!handedOff && (
             <Button
               variant="ink"
               block
@@ -1213,6 +1228,8 @@ function HandoffStep({
             >
               {handoff.state.phase === "confirming" ? "Waiting for Nimiq Pay…" : "Confirm in Nimiq Pay"}
             </Button>
+            )}
+            {!handedOff && (
             <p className={styles.ctaNote}>
               {(!isPaymentFlagEnabled() || previewMode) ? (
                 <>
@@ -1224,6 +1241,7 @@ function HandoffStep({
                 </>
               )}
             </p>
+            )}
             {handoff.state.transferId === preparation.transferId && handoff.state.phase === "confirming" && (
               <p className={styles.quoteLine} role="status" aria-live="polite">
                 <span className={styles.quoteSpinner} aria-hidden="true" /> {handoff.state.message}

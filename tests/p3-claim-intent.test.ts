@@ -46,7 +46,10 @@ let latestBlock = FUND_BLOCK + 1_000n;
 /** fund tx hash → on-chain timelock the fund event carries */
 const fundReceipts = new Map<string, number>();
 const claimReceipts = new Set<string>();
+/** fund tx hashes whose lock was later redeemed on chain (SIMULATED HTLC redeem event). */
+const spentFunds = new Set<string>();
 let chainDown = false;
+let logsDown = false;
 
 function syntheticChain(): ChainReads {
   return {
@@ -82,6 +85,19 @@ function syntheticChain(): ChainReads {
     },
     async getBlockHash(_c, n) {
       return n === FUND_BLOCK ? `0x${"f0".repeat(32)}` : n === CLAIM_BLOCK ? `0x${"c1".repeat(32)}` : null;
+    },
+    async getBlockTimestamp(_c, n) {
+      return 1_800_000_000 + Number(n - FUND_BLOCK) * 2;
+    },
+    async getLogsByTopic1(_c, address, topic1, from, to) {
+      if (logsDown) throw new Error("rpc 502");
+      const logs = [];
+      for (const [hash] of fundReceipts) {
+        if (address.toLowerCase() !== HTLC.toLowerCase() || topic1.toLowerCase() !== LOCK.toLowerCase()) continue;
+        if (FUND_BLOCK >= from && FUND_BLOCK <= to) logs.push({ address: HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK], data: "0x", logIndex: 1, transactionHash: hash });
+        if (spentFunds.has(hash) && CLAIM_BLOCK >= from && CLAIM_BLOCK <= to) logs.push({ address: HTLC, topics: [`0x${"7e".repeat(32)}`, LOCK], data: "0x", logIndex: 2, transactionHash: hex32(`redeem-${hash}`) });
+      }
+      return logs;
     },
   };
 }
@@ -194,6 +210,7 @@ beforeEach(() => {
   process.env["THENCE_EVM_RPCS_JSON"] = JSON.stringify({ "137": "https://fixture.invalid" });
   latestBlock = FUND_BLOCK + 1_000n;
   chainDown = false;
+  logsDown = false;
   setSettlementChainForTests(syntheticChain());
   installProvider();
 });
@@ -266,7 +283,26 @@ describe.skipIf(!LIVE)("P3 claim authorization (isolated test database)", () => 
     await expectConsistent(p.id);
   });
 
-  it("retry after an unknown outcome: only once the lease expired AND the provider still shows no claim", async () => {
+  it("retry after an unknown outcome needs chain proof: a lease expiry alone, or a provider that still says serverfunded, is not enough", async () => {
+    const p = await fundedPayment("retry-chain");
+    expect((await claim(p)).status).toBe(200);
+    await expireLease(p.id);
+    // Provider still reports serverfunded, but the chain cannot be scanned: refuse.
+    logsDown = true;
+    let res = await claim(p);
+    expect(res.status).toBe(503);
+    expect((await errorOf(res)).error).toBe("CLAIM_OUTCOME_UNRESOLVED");
+    logsDown = false;
+    // Provider still reports serverfunded, but the HTLC already emitted a redeem: refuse.
+    spentFunds.add(p.fundTx);
+    res = await claim(p);
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).error).toBe("CLAIM_ALREADY_SUBMITTED");
+    expect((await reasonsOf(p.id)).filter((r) => r === "CLAIM_AUTHORIZED")).toHaveLength(1);
+    await expectConsistent(p.id);
+  });
+
+  it("retry after an unknown outcome: only once the lease expired AND the chain shows the lock unspent", async () => {
     const p = await fundedPayment("retry");
     expect((await claim(p)).status).toBe(200);
     await expireLease(p.id);

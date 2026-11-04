@@ -1,0 +1,1 @@
+{"expected_amount_in":{"raw":"382","decimals":8,"symbol":"WBTC"},"estimated_amount_out":{"raw":"300000","decimals":6,"symbol":"USDC"},"estimated_settlement_seconds":0,"router":"uniswap_v3","cache_ttl_seconds":30}
