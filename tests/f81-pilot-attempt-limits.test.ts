@@ -26,6 +26,7 @@ import { GET as reconciliationGet } from "../app/api/transfers/[id]/reconciliati
 import { isLiveTestingEnabled } from "./test-db";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { GET as transfersGet, POST as createTransferPost } from "../app/api/transfers/route";
+import { GET as pilotStatusGet } from "../app/api/pilot/status/route";
 
 const createdUserIds: string[] = [];
 afterAll(async () => {
@@ -424,6 +425,75 @@ describe.skipIf(!LIVE)("F8.2 database kill switch (isolated TEST database)", () 
     } finally {
       await setPilotDb(false);
       restoreEnv(saved);
+    }
+  });
+
+  /**
+   * Phone smoke test 2026-11-04: an owner with an unresolved earlier payment
+   * (exposure held) tried a new payment while the pilot was stopped. The
+   * stopped pilot must answer PILOT_DISABLED ("payments temporarily
+   * unavailable"), not an exposure code; once re-enabled, the earlier
+   * payment must still block the new one (duplicate protection preserved).
+   */
+  it("stopped pilot reports PILOT_DISABLED even while exposure is held; re-enabled, exposure still blocks", async () => {
+    const saved = snapshotEnv();
+    try {
+      const me = await login("stopped-exposed");
+      await armFor(me.address);
+      const first = await createDirect(me.cookie, "stopped-exposed", "held", "300000");
+      expect(first.status).toBe(201);
+      const prepared = await preparePost(
+        postJson(
+          `http://localhost/api/transfers/${first.body.transfer.id}/prepare`,
+          { expectedQuoteRevision: 1 },
+          { cookie: me.cookie, ...withClient("stopped-exposed-prepare") },
+        ),
+        { params: Promise.resolve({ id: first.body.transfer.id }) },
+      );
+      expect(prepared.status).toBe(201);
+
+      await setPilotDb(false);
+      const stopped = await createDirect(me.cookie, "stopped-exposed", "new-while-stopped", "300000");
+      expect(stopped.status).toBe(403);
+      expect(stopped.body.error).toBe("PILOT_DISABLED");
+      expect(await ownerTransferCount(me.userId)).toBe(1);
+
+      await setPilotDb(true);
+      const blocked = await createDirect(me.cookie, "stopped-exposed", "new-while-exposed", "300000");
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error).toBe("PILOT_EXPOSURE_LIMIT");
+      expect(await ownerTransferCount(me.userId)).toBe(1);
+    } finally {
+      restoreEnv(saved);
+      await disarmDb();
+    }
+  });
+
+  it("GET /api/pilot/status: session required, read-only, mirrors both keys", async () => {
+    const saved = snapshotEnv();
+    const status = async (cookie?: string) => {
+      const res = await pilotStatusGet(new Request("http://localhost/api/pilot/status", { headers: cookie ? { cookie } : {} }));
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+    try {
+      expect((await status()).status).toBe(401);
+      const me = await login("status");
+      await armFor(me.address);
+      const on = await status(me.cookie);
+      expect(on).toEqual({ status: 200, body: { payments: "available" } });
+      await setPilotDb(false);
+      expect((await status(me.cookie)).body).toEqual({ payments: "paused" });
+      await setPilotDb(true);
+      process.env["THENCE_PILOT_ENABLED"] = "0";
+      expect((await status(me.cookie)).body).toEqual({ payments: "paused" });
+      process.env["THENCE_PILOT_ENABLED"] = "1";
+      process.env["THENCE_PILOT_OWNER_NIMIQ_ADDRESSES"] = "NQ52 1111 1111 1111 1111 1111 1111 1111 1111";
+      expect((await status(me.cookie)).body).toEqual({ payments: "paused" });
+      // Status checks never create anything.
+      expect(await ownerTransferCount(me.userId)).toBe(0);
+    } finally {
+      restoreEnv(saved);
+      await disarmDb();
     }
   });
 });

@@ -40,7 +40,7 @@ import { loadHandoffRecord, useHandoff } from "./useHandoff";
 import { SettlementProgress } from "./SettlementProgress";
 import { usePreparation, type PreparationInput } from "./usePreparation";
 import { WalletChooser, type ChosenWallet } from "./WalletChooser";
-import { clearPending, displayAmountForHandoff, fetchTransfer, isPendingTransferResumable } from "@/ui/lib/prepare-flow";
+import { clearPending, displayAmountForHandoff, fetchPaymentAvailability, fetchTransfer, isPendingTransferResumable } from "@/ui/lib/prepare-flow";
 import { evmChainIdFor, tokenAddressFor } from "@/ui/lib/routes-api";
 import { resolveSendNavigation } from "@/ui/lib/send-navigation";
 import type { ApiQuote } from "@/ui/lib/quotes-api";
@@ -49,7 +49,7 @@ import styles from "./send.module.css";
 type Step = "who" | "amount" | "review" | "handoff" | "request-details" | "request-shared";
 type Mode = "send" | "request";
 
-interface Payee {
+export interface Payee {
   id: string | null;
   name: string;
   tone: AvatarTone;
@@ -63,7 +63,7 @@ interface Payee {
 }
 
 /** A payment request being paid: its terms are fixed by the server snapshot. */
-interface FixedTerms {
+export interface FixedTerms {
   publicId: string;
   amount: string;
   amountAtomic: string;
@@ -152,6 +152,17 @@ export function SendFlow(): React.JSX.Element {
   const handoff = useHandoff();
   const [handoffInput, setHandoffInput] = useState<PreparationInput | null>(null);
   const ownerUserId = session.status === "valid" ? session.me.user.id : null;
+  // Advisory pilot availability: lets review say "temporarily unavailable"
+  // before an actionable approval control. Server gates stay authoritative;
+  // a failed check does not block here (create/prepare still refuse).
+  const pilotStatus = useApiResource(ownerUserId && !preview ? `pilot-status:${ownerUserId}` : null, (signal) => fetchPaymentAvailability({ signal }));
+  const paymentsPaused = pilotStatus.status === "ready" && pilotStatus.data.payments === "paused";
+  const refreshAvailability = pilotStatus.status === "ready" ? pilotStatus.refresh : null;
+  // Re-check on entering review so a switch flipped mid-session is reflected.
+  useEffect(() => {
+    if (step === "review") refreshAvailability?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
   // Re-read after clearing a stale pointer so the banner disappears immediately.
   const [pendingEpoch, setPendingEpoch] = useState(0);
   // pendingEpoch forces a re-read after a stale pointer is cleared; the
@@ -773,6 +784,7 @@ export function SendFlow(): React.JSX.Element {
               fixed={fixed}
               quoteInput={quoteInput}
               unavailableReason={unavailableReason}
+              paymentsPaused={paymentsPaused}
               onBack={() => (fixed ? router.push(`/r/${fixed.publicId}`) : setStep("amount"))}
               onApprove={() => {
                 const input = buildHandoffInput();
@@ -866,7 +878,7 @@ export function SendFlow(): React.JSX.Element {
   );
 }
 
-interface ReviewProps {
+export interface ReviewProps {
   payee: Payee;
   amount: string;
   decimals: number;
@@ -874,15 +886,19 @@ interface ReviewProps {
   fixed: FixedTerms | null;
   quoteInput: QuoteInput | null;
   unavailableReason: "preview" | "checking" | "unavailable" | null;
+  /** Server reports new payments paused (pilot disabled): no actionable approval. */
+  paymentsPaused: boolean;
   onBack: () => void;
   onApprove: () => void;
 }
 
-function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quoteInput, unavailableReason, onBack, onApprove }: ReviewProps): React.JSX.Element {
+/** Exported for rendered regression tests only (tests/ui-pilot-paused.test.tsx). */
+export function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quoteInput, unavailableReason, paymentsPaused, onBack, onApprove }: ReviewProps): React.JSX.Element {
   const destination = destinationFor(payee.routeId);
   const formatted = formatFixed(amount, decimals);
   const quote = useLiveQuote(quoteInput, payee.address);
   const fresh = quote.status === "ready";
+  const canApprove = fresh && !paymentsPaused;
   const rows = fresh ? quoteRows(quote.quote, decimals, tokenDecimals) : null;
   const lightningRow = rows?.find((r) => r.label === "Lightning needed");
 
@@ -911,6 +927,13 @@ function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quoteInput,
           )}
         </div>
 
+        {paymentsPaused && (
+          <div className={styles.quoteBox}>
+            <Notice tone="warn" icon="alert" title="Payments temporarily unavailable">
+              Thence isn&apos;t accepting new payments right now. Nothing has been created or charged.
+            </Notice>
+          </div>
+        )}
         <QuoteStatus quote={quote} unavailableReason={unavailableReason} onBack={onBack} fixed={fixed !== null} />
 
         <dl className={styles.details}>
@@ -985,13 +1008,13 @@ function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quoteInput,
 
       <div className={styles.swipeArea}>
         <SwipeToConfirm
-          key={fresh ? "fresh" : "blocked"}
-          label={fresh ? "Swipe to continue to approval" : quote.status === "loading" ? "Waiting for a live price" : "Needs a live price"}
+          key={canApprove ? "fresh" : "blocked"}
+          label={paymentsPaused ? "Payments temporarily unavailable" : fresh ? "Swipe to continue to approval" : quote.status === "loading" ? "Waiting for a live price" : "Needs a live price"}
           completedLabel="Continuing to approval"
-          disabled={!fresh}
+          disabled={!canApprove}
           onComplete={() => window.setTimeout(onApprove, 420)}
         />
-        <button type="button" className={styles.tapAlt} onClick={onApprove} disabled={!fresh}>
+        <button type="button" className={styles.tapAlt} onClick={onApprove} disabled={!canApprove}>
           Can&apos;t swipe? Continue with a tap
         </button>
       </div>

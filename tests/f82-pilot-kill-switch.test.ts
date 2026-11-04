@@ -26,6 +26,7 @@ import {
   assertPilotIntent,
   getPilotConfig,
   isPilotDbEnabled,
+  pilotPaymentAvailability,
 } from "@/lib/pilot";
 
 const OWNER = "NQ07 0000 0000 0000 0000 0000 0000 0000 0000";
@@ -153,5 +154,30 @@ describe("F8.2 database kill switch (pure, no DB)", () => {
       code: "PILOT_DISABLED",
     });
     expect(AuthError).toBeDefined();
+  });
+});
+
+describe("advisory payment availability (GET /api/pilot/status helper, pure)", () => {
+  it("is 'available' only when KEY 1 (env + allowlist) and KEY 2 (database) both allow", async () => {
+    const config = getPilotConfig(armedEnv());
+    await expect(pilotPaymentAvailability(OWNER, config, stubDb([{ enabled: true }]) as never)).resolves.toBe("available");
+  });
+
+  it("is 'paused' when the database switch is off, missing or unreadable (fail-closed)", async () => {
+    const config = getPilotConfig(armedEnv());
+    for (const db of [stubDb([{ enabled: false }]), stubDb([]), stubDb(new Error("conn refused"))]) {
+      await expect(pilotPaymentAvailability(OWNER, config, db as never)).resolves.toBe("paused");
+    }
+  });
+
+  it("is 'paused' when the env key is off, the owner is not allowlisted, or production lacks an allowlist", async () => {
+    const disarmed = getPilotConfig({ ...armedEnv(), THENCE_PILOT_ENABLED: "0" });
+    await expect(pilotPaymentAvailability(OWNER, disarmed, throwingDb() as never)).resolves.toBe("paused");
+    const armed = getPilotConfig(armedEnv());
+    await expect(pilotPaymentAvailability("NQ52 1111 1111 1111 1111 1111 1111 1111 1111", armed, throwingDb() as never)).resolves.toBe("paused");
+    await expect(pilotPaymentAvailability(null, armed, throwingDb() as never)).resolves.toBe("paused");
+    const prodNoAllowlist = getPilotConfig({ NODE_ENV: "production", VERCEL_ENV: "production", THENCE_PILOT_ENABLED: "0" });
+    expect(prodNoAllowlist.production).toBe(true);
+    await expect(pilotPaymentAvailability(OWNER, prodNoAllowlist, throwingDb() as never)).resolves.toBe("paused");
   });
 });

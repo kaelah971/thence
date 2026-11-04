@@ -375,6 +375,8 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
       return { title: "Checking payment — do not resend", body: "A different payment already used this reference. Continue it instead of starting over.", retryable: true, action: "resume" };
     case "PILOT_ATTEMPTS_EXCEEDED":
       return { title: "You already have this payment in progress", body: "Continue it from Activity instead of starting over — nothing new was created.", retryable: true, action: "resume" };
+    case "PILOT_DISABLED":
+      return { title: "Payments temporarily unavailable", body: "Thence isn't accepting new payments right now. Nothing was created or charged.", retryable: false, action: "abort" };
     case "PILOT_EXPOSURE_LIMIT":
     case "PAYMENT_EXPOSURE_UNCERTAIN":
       return { title: "Another payment is still being checked", body: "This separate payment was not prepared. Starting it now could pay twice, so check the earlier payment in Activity before continuing.", retryable: false, action: "abort" };
@@ -493,6 +495,17 @@ export async function authorizeTransferHandoff(
         : { attemptToken, acceptRepricedSourceSats: opts.acceptRepricedSourceSats },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
   });
+}
+
+/**
+ * Advisory payment availability (GET /api/pilot/status). The server enforces
+ * the same gates on create/prepare; this only lets the UI say "paused" before
+ * an actionable approval screen.
+ */
+export async function fetchPaymentAvailability(
+  opts: { fetch?: FetchFn; signal?: AbortSignal } = {},
+): Promise<ApiResult<{ payments: "available" | "paused" }>> {
+  return apiRequest("/api/pilot/status", { ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.signal ? { signal: opts.signal } : {}) });
 }
 
 export async function fetchTransfer(

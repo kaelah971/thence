@@ -377,14 +377,17 @@ export async function createTransfer(
     const ownerAddress = await getOwnerAddress(userId);
     const config = getPilotConfig();
     assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress }, config);
+    // F8.2 KEY 2: database kill switch. Checked BEFORE the live quote so a
+    // stopped pilot never reaches the provider, and before budget/exposure so
+    // a stopped pilot always reports PILOT_DISABLED ("payments temporarily
+    // unavailable") instead of an unrelated exposure code. Same order as the
+    // in-transaction checks below (kill switch before exposure).
+    await assertPilotDbEnabled(config);
     await assertPilotBudget(userId, intent.targetAmountAtomic, config);
     // Fail before creating a durable QUOTED placeholder when the owner has no
     // remaining exposure slot. The transaction below repeats this check under
     // the owner lock so a concurrent create cannot race past the preflight.
     await assertFundingExposure(userId, intent.targetAmountAtomic, config);
-    // F8.2 KEY 2: database kill switch. Checked BEFORE the live quote so a
-    // stopped pilot never reaches the provider.
-    await assertPilotDbEnabled(config);
   }
   // Live exact-output quote on server-controlled parameters (no second engine).
   const quote = await createQuote({
