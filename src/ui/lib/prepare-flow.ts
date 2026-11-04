@@ -281,6 +281,25 @@ export function isPendingTransferResumable(status: string): boolean {
 }
 
 /**
+ * What the Send "earlier payment" banner may offer for a saved pointer,
+ * from the AUTHORITATIVE server status (never the pointer alone):
+ * - "continue": unpaid pre-approval states the preparation flow can resume
+ *   on the SAME transfer (QUOTED, SWAP_CREATED, AWAITING_NIM_APPROVAL).
+ * - "activity": anything in flight, being checked, funded or needing
+ *   attention (e.g. the Nov 2 RECONCILING payment). Not resumable from Send;
+ *   Activity shows its real state and any gated action (Finish delivery).
+ *   Unknown statuses also land here. The pointer is KEPT.
+ * - "finished": known terminal state; the pointer is stale.
+ */
+export type PendingBannerAction = "continue" | "activity" | "finished";
+
+export function pendingBannerAction(status: string): PendingBannerAction {
+  if (!(TRANSFER_STATUSES as readonly string[]).includes(status)) return "activity";
+  if (isTerminal(status as TransferStatus)) return "finished";
+  return status === "QUOTED" || status === "SWAP_CREATED" || status === "AWAITING_NIM_APPROVAL" ? "continue" : "activity";
+}
+
+/**
  * Display amount for the handoff hero. Request-fixed amounts win; otherwise
  * the exact human amount is derived from the transfer's atomic terms (which
  * survive a reload when the calculator is empty); the live-review value is

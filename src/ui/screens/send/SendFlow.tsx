@@ -40,7 +40,8 @@ import { loadHandoffRecord, useHandoff } from "./useHandoff";
 import { SettlementProgress } from "./SettlementProgress";
 import { usePreparation, type PreparationInput } from "./usePreparation";
 import { WalletChooser, type ChosenWallet } from "./WalletChooser";
-import { clearPending, displayAmountForHandoff, fetchPaymentAvailability, fetchTransfer, isPendingTransferResumable } from "@/ui/lib/prepare-flow";
+import { clearPending, displayAmountForHandoff, fetchPaymentAvailability, fetchTransfer, pendingBannerAction } from "@/ui/lib/prepare-flow";
+import { PendingPaymentBanner, type PendingBannerState } from "./PendingPaymentBanner";
 import { evmChainIdFor, tokenAddressFor } from "@/ui/lib/routes-api";
 import { resolveSendNavigation } from "@/ui/lib/send-navigation";
 import type { ApiQuote } from "@/ui/lib/quotes-api";
@@ -169,6 +170,28 @@ export function SendFlow(): React.JSX.Element {
   // callback intentionally ignores it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const pending = useMemo(() => preparation.pendingFor(ownerUserId), [preparation, ownerUserId, pendingEpoch]);
+  // Read-only status of the saved pointer's transfer, so the banner offers
+  // "Continue" only when the server state is actually resumable.
+  const pendingTransfer = useApiResource(
+    pending && ownerUserId ? `pending-status:${ownerUserId}:${pending.transferId}` : null,
+    async () => {
+      const id = pending?.transferId ?? "";
+      const result = await fetchTransfer(id);
+      // Known-terminal pointers are stale (same rule as the explicit continue
+      // path): clear so the banner goes away. Unresolved ones are always kept.
+      if (result.ok && ownerUserId && pendingBannerAction(result.data.transfer.status) === "finished") {
+        clearPending(ownerUserId, id);
+        setPendingEpoch((n) => n + 1);
+      }
+      return result;
+    },
+  );
+  const pendingBanner: PendingBannerState =
+    pendingTransfer.status === "ready"
+      ? { status: "ready", transferStatus: pendingTransfer.data.transfer.status, statusLabel: pendingTransfer.data.transfer.statusLabel ?? null }
+      : pendingTransfer.status === "error"
+        ? { status: "error" }
+        : { status: "loading" };
   // A new-payment navigation invalidates any old same-mount resume completion.
   // This matters on mobile where the Send tab can change only the query string,
   // leaving the page component mounted.
@@ -453,10 +476,13 @@ export function SendFlow(): React.JSX.Element {
     const current = await fetchTransfer(transferId);
     if (generation !== navigationGeneration.current || !current.ok) return;
     const t = current.data.transfer;
-    if (!isPendingTransferResumable(t.status)) {
-      // Terminal pointers are stale: clear so the banner goes away. Unknown
-      // states keep the pointer (never discard unresolved recovery material).
-      if ((TRANSFER_STATUSES as readonly string[]).includes(t.status) && isTerminal(t.status as TransferStatus)) {
+    const bannerAction = pendingBannerAction(t.status);
+    if (bannerAction !== "continue") {
+      // Terminal pointers are stale: clear so the banner goes away. In-flight,
+      // checking or unknown states keep the pointer (never discard unresolved
+      // recovery material) and are NOT resumed from Send: the banner points
+      // to Activity, which owns their gated actions.
+      if (bannerAction === "finished") {
         clearPending(ownerUserId, transferId);
         setPendingEpoch((n) => n + 1);
       }
@@ -555,23 +581,20 @@ export function SendFlow(): React.JSX.Element {
               </Notice>
             </div>
           )}
-          {pending && step === "who" && session.status === "valid" && (
+          {paymentsPaused && step === "who" && (
             <div className={styles.requestNotice}>
-              <Notice tone="dark" icon="clock" title="Continue an interrupted payment">
-                You started a payment that hasn&apos;t finished preparing. Its outcome is not confirmed; check Activity before continuing.
+              <Notice tone="warn" icon="alert" title="New payments are paused">
+                Thence isn&apos;t accepting new payments right now. Your existing payments are still in Activity.
               </Notice>
               <div style={{ marginTop: 8 }}>
-                <Button
-                  variant="soft"
-                  size="md"
-                  icon="arrow-right"
-                  block
-                  onClick={() => void continuePendingPayment(pending.transferId)}
-                >
-                  Continue payment
-                </Button>
+                <ButtonLink href="/app/activity" variant="soft" size="md" icon="arrow-right" block>
+                  View in Activity
+                </ButtonLink>
               </div>
             </div>
+          )}
+          {pending && step === "who" && session.status === "valid" && (
+            <PendingPaymentBanner state={pendingBanner} onContinue={() => void continuePendingPayment(pending.transferId)} />
           )}
 
           <div ref={newFormRef}>
