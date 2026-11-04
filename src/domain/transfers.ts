@@ -151,8 +151,9 @@ export const USER_FACING_LABEL: Record<TransferStatus, string> = {
   OUTCOME_UNKNOWN: "Checking payment — do not resend",
   RECONCILING: "Checking payment — do not resend",
   CLIENT_FUNDED: "Converting",
-  SERVER_FUNDED: "Sending",
-  CLAIMING: "Sending",
+  // P3: funded on Polygon = the OWNER must act (Finish delivery), never "on its way".
+  SERVER_FUNDED: "Action needed — finish delivery",
+  CLAIMING: "Finishing delivery",
   NEEDS_ATTENTION: "Needs attention",
   REFUNDED: "Not delivered — Polygon lock refunded",
   DELIVERED: "Delivered",

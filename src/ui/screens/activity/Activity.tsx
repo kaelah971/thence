@@ -182,6 +182,13 @@ export function Activity(): React.JSX.Element {
 }
 
 const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED", "EXPIRED_UNFUNDED"]);
+/**
+ * P3: the shared tracker runs for every in-flight payment opened in Activity,
+ * so funding that lands while the sheet is open surfaces Finish delivery at
+ * once (Nov 2: the action only mounted if the row was already funded).
+ */
+const TRACKED_DETAIL = new Set(["AWAITING_NIM_APPROVAL", "LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING"]);
+const FUNDED_DETAIL = new Set(["SERVER_FUNDED", "CLAIMING"]);
 
 /** Re-reads the transfer so the sheet shows the latest server status. */
 function LiveTransferDetail({
@@ -237,8 +244,15 @@ function LiveTransferDetail({
           {checkedNote && <p className={styles.latest}>{checkedNote}</p>}
         </div>
       )}
-      {userId && (item.status === "SERVER_FUNDED" || item.status === "CLAIMING") && (
-        <ActivityClaimRecovery transferId={item.id} ownerUserId={userId} />
+      {userId && TRACKED_DETAIL.has(item.status) && (
+        <ActivityClaimRecovery
+          transferId={item.id}
+          ownerUserId={userId}
+          knownStatus={item.status}
+          onStatusChange={() => {
+            if ("refresh" in resource) resource.refresh();
+          }}
+        />
       )}
       <ProviderEvidencePanel
         transferId={item.id}
@@ -264,10 +278,27 @@ function LiveTransferDetail({
   );
 }
 
-function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string; ownerUserId: string }): React.JSX.Element {
+function ActivityClaimRecovery({
+  transferId,
+  ownerUserId,
+  knownStatus,
+  onStatusChange,
+}: {
+  transferId: string;
+  ownerUserId: string;
+  knownStatus: string;
+  onStatusChange: () => void;
+}): React.JSX.Element | null {
   const settlement = useSettlement();
   const [claiming, setClaiming] = useState(false);
   const state = settlement.state;
+  const liveStatus = state.transferStatus;
+
+  // Keep the detail sheet's own status in step with the live tracker.
+  useEffect(() => {
+    if (liveStatus && liveStatus !== knownStatus) onStatusChange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveStatus]);
 
   useEffect(() => {
     void settlement.track({ transferId, ownerUserId, sessionValid: true, previewMode: false });
@@ -279,15 +310,23 @@ function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string
   const claimReady = needsOwnerClaim(state);
   const title = state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
   const message = state.message || "Checking the same payment — do not resend.";
+  // Before funding the tracker runs silently (the detail below shows status).
+  const funded = FUNDED_DETAIL.has(liveStatus ?? knownStatus);
+  if (!funded && !claimReady) return null;
 
   return (
     <div style={{ marginBottom: 12 }} data-recovery-transfer-id={transferId}>
+      {claimReady && state.claimPending && (
+        <Notice tone="info" icon="clock" title="Delivery submitted — confirming it arrived" live>
+          Thence is checking Polygon for the USDC reaching their wallet. Don&apos;t start another payment, and don&apos;t try again.
+        </Notice>
+      )}
       {!claimReady && (
         <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
           {message}
         </Notice>
       )}
-      {claimReady && (
+      {claimReady && !state.claimPending && (
         <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
           <p className={styles.latest}>This uses the saved recovery information in this browser. Do not start a new payment.</p>
           <Button
@@ -312,6 +351,11 @@ function ActivityClaimRecovery({ transferId, ownerUserId }: { transferId: string
           </Button>
           <p className={styles.latest}>One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.</p>
         </ClaimDeadlineNotice>
+      )}
+      {state.claimMessage && !claiming && (
+        <p className={styles.latest} role="status" data-claim-result>
+          {state.claimMessage}
+        </p>
       )}
     </div>
   );

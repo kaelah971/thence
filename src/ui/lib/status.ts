@@ -61,6 +61,10 @@ export function canShowCancelUnpaid(status: TransferStatus, expiredUnfundedEvide
 }
 
 export function pillLabel(status: TransferStatus): string {
+  // P3: a funded payment waits for the owner's Finish delivery (Nov 2: "On
+  // its way" here told the owner nothing was needed while the deadline ran).
+  if (status === "SERVER_FUNDED") return "Finish delivery needed";
+  if (status === "CLAIMING") return "Finishing delivery";
   const stage = STAGE_OF[status];
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];
 }

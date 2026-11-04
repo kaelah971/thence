@@ -148,6 +148,17 @@ P5 hardening (`verifyHtlcRefund` in `src/lib/settlement.ts`):
   NIM HTLC, so customer copy says "Not delivered — Polygon lock refunded" and
   points to Nimiq Pay for the NIM side (`REFUNDED_BODY`).
 
+## 8b. Claim authorization (P3)
+
+`POST /api/transfers/:id/claim-intent` authorizes ONE explicit Finish-delivery
+attempt immediately before the browser SDK claim: fresh provider identity,
+on-chain HTLC fund event (hash lock + bound deadline, `verifyHtlcFunding`), the
+five-minute unsafe window, and a per-transfer claim lease; it moves
+`SERVER_FUNDED → CLAIMING` (audited `CLAIM_AUTHORIZED`). It never claims or
+touches the preimage. The server reconciler verifies settlement for claimed
+transfers (`verifySettlementCore`, actor `reconciler`). See
+docs/CLAIM_COMPLETION.md.
+
 ## 8a. Transition audit and consistency (P5)
 
 Every writer of `transfers.status` now records a `transfer_transitions` row in

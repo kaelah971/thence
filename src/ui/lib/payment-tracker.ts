@@ -31,10 +31,15 @@
  * - Terminal statuses stop scheduling; an explicit kick still re-reads once.
  * - Never claims. Claim execution stays an explicit owner action behind the
  *   existing gates in useSettlement.attemptClaim.
+ * - P3: once the provider reports claim activity (clientredeeming /
+ *   clientredeemed / serverredeemed) it also asks the server to verify
+ *   destination delivery on-chain (POST /verify-settlement, read-only,
+ *   spaced >= 15 s) until DELIVERED, so "Delivered" never waits for another
+ *   click and never appears without the server's proof.
  */
 import { isTerminal, TRANSFER_STATUSES, type TransferStatus } from "@/domain/transfers";
 import type { ApiFailureKind, ApiResult } from "./api";
-import { getReconciliation, postReconcile, type ReconciliationView } from "./settlement-client";
+import { getReconciliation, postReconcile, postVerifySettlement, type ReconciliationView } from "./settlement-client";
 
 export const TRACKER_BACKOFF_MS = [3_000, 5_000, 8_000, 13_000, 20_000, 30_000] as const;
 export const TRACKER_PRE_FUNDING_CAP_MS = 15_000;
@@ -43,6 +48,11 @@ export const TRACKER_RATE_LIMIT_BACKOFF_MS = 60_000;
 export const TRACKER_MIN_STEP_SPACING_MS = 2_000;
 /** Minimum spacing between provider refreshes (POST /reconcile). */
 export const TRACKER_MIN_RECONCILE_SPACING_MS = 5_000;
+/** P3: minimum spacing between delivery verifications (POST /verify-settlement). */
+export const TRACKER_MIN_VERIFY_SPACING_MS = 15_000;
+/** Provider statuses that mean a claim was submitted or settled. */
+const CLAIM_PROGRESS: ReadonlySet<string> = new Set(["clientredeeming", "clientredeemed", "serverredeemed"]);
+const VERIFIABLE: ReadonlySet<string> = new Set(["SERVER_FUNDED", "CLAIMING"]);
 
 const RECONCILABLE: ReadonlySet<string> = new Set([
   "AWAITING_NIM_APPROVAL",
@@ -80,9 +90,11 @@ export type TrackerListener = (snapshot: TrackerSnapshot) => void;
 export interface TrackerDeps {
   getReconciliation: (id: string, opts: { signal: AbortSignal }) => Promise<ApiResult<ReconciliationView>>;
   postReconcile: (id: string, opts: { signal: AbortSignal }) => Promise<ApiResult<unknown>>;
+  /** P3: read-only delivery verification; optional so older test deps keep working. */
+  postVerifySettlement?: (id: string, opts: { signal: AbortSignal }) => Promise<ApiResult<unknown>>;
 }
 
-const defaultDeps: TrackerDeps = { getReconciliation, postReconcile };
+const defaultDeps: TrackerDeps = { getReconciliation, postReconcile, postVerifySettlement };
 
 function isStatus(value: string): value is TransferStatus {
   return (TRANSFER_STATUSES as readonly string[]).includes(value);
@@ -102,6 +114,7 @@ class PaymentTracker {
   private rerunRequested = false;
   private lastStepAt = -Infinity;
   private lastReconcileAt = -Infinity;
+  private lastVerifyAt = -Infinity;
   private rateLimited = false;
   private stopped = false;
   private readonly onWake = () => this.kick();
@@ -205,6 +218,21 @@ class PaymentTracker {
         const refreshed = await this.deps.postReconcile(this.transferId, { signal: controller.signal });
         if (controller.signal.aborted) return;
         if (!refreshed.ok && refreshed.kind !== "aborted") refreshError = { kind: refreshed.kind, code: refreshed.code };
+      }
+      // P3: claim activity seen on the last read → verify delivery on-chain
+      // (server-side), so the read below already reflects DELIVERED.
+      const known = this.snapshot.view;
+      if (
+        this.deps.postVerifySettlement &&
+        known &&
+        VERIFIABLE.has(known.transfer.status) &&
+        CLAIM_PROGRESS.has(known.latest.providerStatus) &&
+        Date.now() - this.lastVerifyAt >= TRACKER_MIN_VERIFY_SPACING_MS
+      ) {
+        this.lastVerifyAt = Date.now();
+        const verified = await this.deps.postVerifySettlement(this.transferId, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (!verified.ok && verified.kind === "rate-limited") refreshError = { kind: verified.kind, code: verified.code };
       }
       const read = await this.deps.getReconciliation(this.transferId, { signal: controller.signal });
       if (controller.signal.aborted) return;

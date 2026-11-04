@@ -104,7 +104,14 @@ export function SettlementProgress({
         </div>
       )}
 
-      {actionNeeded && (
+      {actionNeeded && state.claimPending && (
+        <Notice tone="info" icon="clock" title="Delivery submitted — confirming it arrived" live>
+          Your Finish delivery went through to the provider. Thence is now checking Polygon for the USDC reaching their wallet. Don&apos;t
+          start another payment, and don&apos;t try again.
+        </Notice>
+      )}
+
+      {actionNeeded && !state.claimPending && (
         <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
           <Button
             variant="soft"
@@ -127,6 +134,12 @@ export function SettlementProgress({
             <Icon name="lock" size={14} /> One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.
           </p>
         </ClaimDeadlineNotice>
+      )}
+
+      {state.claimMessage && !claiming && (
+        <p className={styles.ctaNote} role="status" data-claim-result>
+          {state.claimMessage}
+        </p>
       )}
 
       {showCheckAgain && ownerUserId && (

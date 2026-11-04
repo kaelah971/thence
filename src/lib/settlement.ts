@@ -543,6 +543,76 @@ export async function verifyEvmRefundEvidence(input: {
   }
 }
 
+/** HTLCErc20 v6 fund event topic (verified against the real 2026-11-02 fund receipt). */
+export const SWAP_FUNDED_EVENT_TOPIC =
+  "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f" as const;
+/**
+ * P3: confirmations the fund tx needs before the owner may reveal the
+ * preimage. Polygon reorgs this deep are not expected; the margin protects
+ * against releasing the preimage for a lock that later disappears. Small on
+ * purpose: every minute spent here is taken from the claim window.
+ */
+export const CLAIM_FUNDING_MIN_CONFIRMATIONS = 32;
+
+export type HtlcFundingVerdict = "VERIFIED" | "PENDING" | "INVALID" | "INCONCLUSIVE" | "UNAVAILABLE";
+
+export interface HtlcFundingResult {
+  verdict: HtlcFundingVerdict;
+  reason: string;
+  confirmations: number | null;
+}
+
+/**
+ * P3 — the pinned HTLC really holds THIS swap's lock with THIS deadline.
+ *
+ * Read-only. Requires the provider-named fund transaction to be mined,
+ * successful, reorg-consistent and sufficiently confirmed, and to contain
+ * the pinned HTLC's fund event with topic[1] = hash lock and the timelock
+ * (data word 2) equal to the deadline Thence stored at bind time. Anything
+ * else is not VERIFIED, and a claim is not authorized.
+ */
+export async function verifyHtlcFunding(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  fundTxHash: string | null;
+  expectedLocktimeSec: number;
+}): Promise<HtlcFundingResult> {
+  if (input.chainId !== 137) return { verdict: "INCONCLUSIVE", reason: "Funding verification is enabled only for Polygon in this pilot.", confirmations: null };
+  if (!isTrustedHtlc(input.chainId, input.htlcAddress)) return { verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
+  if (!HASH_LOCK_RE.test(input.hashLock)) return { verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
+  if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "PENDING", reason: "The provider has not reported a funding transaction yet.", confirmations: null };
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) return { verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess.", confirmations: null };
+  const chain = reads();
+  const htlc = input.htlcAddress!.toLowerCase();
+  try {
+    const receipt = await chain.getReceipt(input.chainId, input.fundTxHash);
+    if (!receipt) return { verdict: "PENDING", reason: "Funding transaction is not yet mined.", confirmations: 0 };
+    if (receipt.status === "reverted") return { verdict: "INVALID", reason: "Funding transaction reverted on-chain.", confirmations: null };
+    const fund = receipt.logs.find(
+      (l) => l.address.toLowerCase() === htlc && l.topics[0]?.toLowerCase() === SWAP_FUNDED_EVENT_TOPIC && l.topics[1]?.toLowerCase() === input.hashLock.toLowerCase(),
+    );
+    if (!fund) return { verdict: "INVALID", reason: "Funding receipt has no fund event for this hash lock on the pinned HTLC.", confirmations: null };
+    const words = fund.data.startsWith("0x") ? fund.data.slice(2) : fund.data;
+    const lockWord = words.slice(128, 192);
+    if (!/^[0-9a-fA-F]{64}$/.test(lockWord) || BigInt("0x" + lockWord) !== BigInt(input.expectedLocktimeSec)) {
+      return { verdict: "INVALID", reason: "On-chain HTLC deadline differs from the bound claim deadline.", confirmations: null };
+    }
+    const atHeight = await chain.getBlockHash(input.chainId, receipt.blockNumber);
+    if (!atHeight) return { verdict: "INCONCLUSIVE", reason: "Chain header evidence is unavailable; refusing to decide.", confirmations: null };
+    if (atHeight.toLowerCase() !== receipt.blockHash.toLowerCase()) return { verdict: "INCONCLUSIVE", reason: "Block hash changed at the funding height; possible reorg.", confirmations: null };
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
+    if (confirmations < CLAIM_FUNDING_MIN_CONFIRMATIONS) {
+      return { verdict: "PENDING", reason: `Funding has ${confirmations} confirmations; ${CLAIM_FUNDING_MIN_CONFIRMATIONS} are required before finishing.`, confirmations };
+    }
+    return { verdict: "VERIFIED", reason: "The pinned HTLC holds this swap's lock with the bound deadline.", confirmations };
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+}
+
 /** P5: the refund scan starts this long before the earliest possible refund (clock skew margin). */
 export const REFUND_SCAN_LEAD_MS = 5 * 60_000;
 
@@ -739,11 +809,28 @@ function parseLogIndexes(raw: string | null): number[] {
  * tx hash is never accepted (callers must not pass one through).
  */
 export async function verifySettlement(userId: string, transferId: string): Promise<SettlementResult> {
+  return verifySettlementCore(transferId, { kind: "owner", ownerUserId: userId });
+}
+
+export interface SettlementActor {
+  /** "owner" = session request; "system" = server reconciler (P3: browser closed). */
+  kind: "owner" | "system";
+  ownerUserId: string | null;
+}
+
+/**
+ * P3: the one settlement verifier, shared by the owner route and the server
+ * reconciler, so a claimed payment reaches DELIVERED (with proof) even when
+ * no browser is open. Read-only on chain; the only write is the proof +
+ * DELIVERED commit under the transfer lock.
+ */
+export async function verifySettlementCore(transferId: string, actor: SettlementActor): Promise<SettlementResult> {
+  const scope = actor.ownerUserId ? and(eq(transfers.id, transferId), eq(transfers.ownerUserId, actor.ownerUserId)) : eq(transfers.id, transferId);
   const db = getDb();
   const base = await db
     .select()
     .from(transfers)
-    .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+    .where(scope)
     .limit(1);
   const transfer = base[0];
   if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
@@ -1073,7 +1160,7 @@ export async function verifySettlement(userId: string, transferId: string): Prom
     const rows = await tx
       .select()
       .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+      .where(scope)
       .limit(1);
     const fresh = rows[0];
     if (!fresh) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
@@ -1151,8 +1238,8 @@ export async function verifySettlement(userId: string, transferId: string): Prom
       transferId: fresh.id,
       from: freshStatus,
       to: next,
-      actor: "owner",
-      actorUserId: userId,
+      actor: actor.kind === "system" ? "reconciler" : "owner",
+      actorUserId: actor.ownerUserId,
       reasonCode: "SETTLEMENT_VERIFIED",
       evidence: {
         providerStatus: facts.status,

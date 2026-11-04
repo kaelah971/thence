@@ -14,11 +14,13 @@ import { vi } from "vitest";
 import fixture from "../fixtures/incidents-2026-11-02.json";
 import { USER_FACING_LABEL, type TransferStatus } from "@/domain/transfers";
 import { claimReadyNow } from "@/lib/reconcile";
-import { claimWindowAt } from "@/domain/claim-deadline";
+import { CLAIM_UNSAFE_WINDOW_MS, claimWindowAt } from "@/domain/claim-deadline";
 
 export const OWNER_ID = fixture._meta.redactions.ownerUserId;
 export const INCIDENT = fixture.incident_077770a1;
 export const STALE = fixture.stale_eddaa6de;
+/** P3: synthetic claim tx for the delivered path (Nov 2 never had a claim; clearly not real). */
+export const SYNTHETIC_CLAIM_TX = `0x${"5c".repeat(32)}`;
 
 type Case = typeof INCIDENT | typeof STALE;
 
@@ -56,6 +58,17 @@ export interface FakeApi {
   maxInFlight: number;
   /** P1: requests whose AbortSignal fired before they completed. */
   aborted: number;
+  /**
+   * P3: POST /claim-intent. "server" mirrors src/lib/claim-intent.ts rules
+   * (funded status, provider serverfunded, outside the 5-min unsafe window,
+   * one live lease per transfer, SERVER_FUNDED → CLAIMING); a refusal returns
+   * the given plain-language body unchanged.
+   */
+  claimIntentOutcome: { kind: "server" } | { kind: "refused"; status: number; error: string; message: string };
+  /** P3: what POST /verify-settlement finds on chain next ("VERIFIED" moves the transfer to DELIVERED). */
+  settlementVerdict: "VERIFIED" | "PENDING" | "INSUFFICIENT_CONFIRMATIONS" | "INVALID" | "UNAVAILABLE";
+  /** P3: server claim lease expiry (ms epoch) per transfer. */
+  claimLeaseUntil: Record<string, number>;
   restore(): void;
 }
 
@@ -223,7 +236,78 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
       return json(200, { reconciliation: { ...latest(c, s, now), advanced: false, advancedPath: [] } });
     }
     if (sub === "provider-evidence" && method === "GET") return json(200, { evidence: providerEvidence(c, s, now) });
-    if (sub === "receipt") return json(409, { error: "NOT_DELIVERED" });
+    if (sub === "receipt") {
+      if (s.status !== "DELIVERED") return json(409, { error: "NOT_DELIVERED" });
+      return json(200, {
+        receipt: {
+          transferId: id,
+          recipientName: c.transfer.recipient_name,
+          asset: c.transfer.target_asset,
+          network: c.transfer.target_network,
+          destination: c.transfer.destination,
+          requestedAmountAtomic: c.transfer.target_amount_atomic,
+          verifiedAmountAtomic: c.transfer.target_amount_atomic,
+          provider: "satora",
+          satoraSwapId: c.attachment.satora_swap_id,
+          settlementTxHash: SYNTHETIC_CLAIM_TX,
+          chainId: 137,
+          blockNumber: "96634100",
+          blockHash: `0x${"c1".repeat(32)}`,
+          logIndexes: [7],
+          finalityLevel: "confirmations-256",
+          verifiedAt: new Date(now).toISOString(),
+          explorerTxUrl: `https://polygonscan.com/tx/${SYNTHETIC_CLAIM_TX}`,
+          quotedSourceSatsEstimate: c.attachment.source_sats,
+          actualFundingProven: false,
+        },
+      });
+    }
+    if (sub === "claim-intent" && method === "POST") {
+      const outcome = api.claimIntentOutcome;
+      if (outcome.kind === "refused") return json(outcome.status, { error: outcome.error, message: outcome.message });
+      if (s.status !== "SERVER_FUNDED" && s.status !== "CLAIMING") return json(409, { error: "NOT_CLAIMABLE", message: "This payment isn't funded and waiting to be finished." });
+      if (s.providerStatus !== "serverfunded") return json(409, { error: "CLAIM_ALREADY_SUBMITTED", message: "A delivery attempt is already on record. Wait while Thence confirms it — don't try again." });
+      const deadline = claimDeadline(c, s);
+      if (deadline === null) return json(409, { error: "DEADLINE_UNKNOWN", message: "The delivery deadline isn't confirmed yet, so finishing stays unavailable." });
+      if (Date.parse(deadline) - now <= CLAIM_UNSAFE_WINDOW_MS) return json(409, { error: "DEADLINE_TOO_CLOSE", message: "There isn't enough time left to finish delivery safely." });
+      if ((api.claimLeaseUntil[id] ?? 0) > now) return json(409, { error: "CLAIM_IN_PROGRESS", message: "A delivery attempt was just authorized for this payment. Wait while Thence confirms it — don't try again." });
+      api.claimLeaseUntil[id] = now + 3 * 60_000;
+      const retry = s.status === "CLAIMING";
+      state[id] = { ...s, status: "CLAIMING" };
+      return json(200, {
+        claim: {
+          transferId: id,
+          status: "CLAIMING",
+          satoraSwapId: c.attachment.satora_swap_id,
+          paymentHash: c.attachment.payment_hash,
+          destination: c.transfer.destination,
+          targetAmountAtomic: c.transfer.target_amount_atomic,
+          claimDeadline: deadline,
+          leaseExpiresAt: new Date(api.claimLeaseUntil[id]!).toISOString(),
+          fundingConfirmations: 1200,
+          retry,
+        },
+      });
+    }
+    if (sub === "verify-settlement" && method === "POST") {
+      const verdict = api.settlementVerdict;
+      if (verdict === "VERIFIED" && (s.status === "CLAIMING" || s.status === "SERVER_FUNDED" || s.status === "DELIVERED")) {
+        state[id] = { ...s, status: "DELIVERED", providerStatus: s.providerStatus };
+      }
+      const after = state[id]!;
+      return json(verdict === "UNAVAILABLE" ? 503 : verdict === "INVALID" ? 422 : 200, {
+        settlement: {
+          verdict,
+          reason: verdict,
+          transferId: id,
+          status: after.status,
+          providerStatus: after.providerStatus,
+          claimTxHash: after.providerStatus === "serverfunded" ? null : SYNTHETIC_CLAIM_TX,
+          proof: null,
+          confirmations: verdict === "VERIFIED" ? 300 : 10,
+        },
+      });
+    }
     if (sub === "close-expired" && method === "POST") {
       const outcome = api.closeOutcome;
       if (outcome.kind === "refused") return json(outcome.status, { error: outcome.error, message: outcome.message });
@@ -243,6 +327,9 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
     closeOutcome: { kind: "verified" },
     latencyMs: 0,
     rateLimitReconcile: false,
+    claimIntentOutcome: { kind: "server" },
+    settlementVerdict: "PENDING",
+    claimLeaseUntil: {},
     maxInFlight: 0,
     aborted: 0,
     count: (method, suffix) => calls.filter((c) => c.method === method && c.path.endsWith(suffix)).length,

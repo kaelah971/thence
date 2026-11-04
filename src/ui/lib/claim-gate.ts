@@ -69,15 +69,17 @@ export function evaluateClaimEligibility(input: ClaimEligibilityInput): ClaimDec
   const reasons: string[] = [];
   if (input.explicitAuthorization === false) reasons.push("Choose Finish delivery to authorize this one delivery attempt.");
   if (input.sessionValid === false) reasons.push("Your session has ended. Sign in again before finishing delivery.");
+  // P3: integrity first — a mismatch must say "do not continue", not look
+  // like a timing problem (the deadline check also fails when readback does).
+  if (!input.vaultMatched) reasons.push("Recovery information doesn't match. Do not continue.");
+  if (!input.readbackOk) reasons.push("Saved swap information couldn't be read back.");
+  if (!input.networkMatch) reasons.push("This payment is for a different network.");
+  if (!input.destinationMatch) reasons.push("This payment is for a different wallet.");
   if (input.timelockSafe === false) reasons.push("The delivery deadline is too close or unavailable. Check Activity for the latest status \u2014 don\u2019t try again yet.");
   if (input.claimAlreadySubmitted) reasons.push("A delivery attempt has already been submitted. Check Activity for the latest status before trying again.");
   if (!input.flagEnabled) reasons.push("Finishing delivery is paused in this preview. Check Activity for the latest status \u2014 don\u2019t try again yet.");
   if (!FUNDED_TRANSFER.has(input.transferStatus)) reasons.push("This payment isn't ready to be finished yet.");
   if (!FUNDED_PROVIDER.has(input.providerStatus)) reasons.push("The swap isn't funded yet, so there's nothing to finish.");
-  if (!input.vaultMatched) reasons.push("Recovery information doesn't match. Do not continue.");
-  if (!input.readbackOk) reasons.push("Saved swap information couldn't be read back.");
-  if (!input.networkMatch) reasons.push("This payment is for a different network.");
-  if (!input.destinationMatch) reasons.push("This payment is for a different wallet.");
   if (input.earlierClaimUnknown) reasons.push("A delivery attempt is still being checked. Don't try again yet.");
   if (input.previewMode) reasons.push("Finishing payments is disabled in preview.");
   return { allowed: reasons.length === 0, reasons };

@@ -197,6 +197,25 @@ export function postCloseExpired(id: string, opts: Opts = {}): Promise<ApiResult
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/close-expired`, { ...opts, method: "POST", body: {} });
 }
 
+/** P3: server authorization of ONE explicit Finish-delivery attempt (see src/lib/claim-intent.ts). */
+export interface ClaimIntentView {
+  transferId: string;
+  status: TransferStatus;
+  satoraSwapId: string;
+  paymentHash: string;
+  destination: string;
+  targetAmountAtomic: string;
+  claimDeadline: string;
+  leaseExpiresAt: string;
+  fundingConfirmations: number | null;
+  retry: boolean;
+}
+
+/** No body: the server re-derives and re-verifies everything itself. */
+export function postClaimIntent(id: string, opts: Opts = {}): Promise<ApiResult<{ claim: ClaimIntentView }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/claim-intent`, { ...opts, method: "POST", body: {} });
+}
+
 /** No body is sent: the server derives the swap and claim tx itself. */
 export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiResult<{ settlement: SettlementResult }>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/verify-settlement`, { ...opts, method: "POST", body: {} });

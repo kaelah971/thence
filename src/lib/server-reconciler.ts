@@ -31,6 +31,7 @@ import { getDb } from "@/lib/db";
 import { jobLeases } from "@/db/schema";
 import { AuthError } from "@/lib/auth";
 import { reconcileCore } from "@/lib/reconcile";
+import { verifySettlementCore } from "@/lib/settlement";
 import { claimWindowAt } from "@/domain/claim-deadline";
 import type { TransferStatus } from "@/domain/transfers";
 
@@ -183,6 +184,9 @@ export async function releaseLease(name: string, holder: string, summary: Record
 
 /* ---------------- run ---------------- */
 
+/** Provider statuses that mean a claim was submitted or settled (verify delivery). */
+const CLAIM_PROGRESS: ReadonlySet<string> = new Set(["clientredeeming", "clientredeemed", "serverredeemed"]);
+
 export interface RunOptions {
   maxTransfers?: number;
   timeBudgetMs?: number;
@@ -246,6 +250,23 @@ export async function runServerReconciliation(options: RunOptions = {}): Promise
         summary.reconciled += 1;
         if (result.advanced) summary.advanced.push({ transferId: candidate.transferId, from: candidate.status, to: result.status });
         if (result.lastError) summary.errors[result.lastError] = (summary.errors[result.lastError] ?? 0) + 1;
+        // P3: once the provider reports claim activity, independently verify
+        // destination delivery here too, so DELIVERED (with proof) never
+        // depends on the owner's browser staying open after Finish delivery.
+        if ((result.status === "CLAIMING" || result.status === "SERVER_FUNDED") && CLAIM_PROGRESS.has(result.providerStatus) && !result.lastError) {
+          try {
+            const settled = await verifySettlementCore(candidate.transferId, { kind: "system", ownerUserId: null });
+            if (settled.status === "DELIVERED" && settled.verdict === "VERIFIED") {
+              summary.advanced.push({ transferId: candidate.transferId, from: result.status, to: "DELIVERED" });
+            } else if (settled.verdict === "INVALID" || settled.verdict === "UNAVAILABLE") {
+              const code = `SETTLEMENT_${settled.verdict}`;
+              summary.errors[code] = (summary.errors[code] ?? 0) + 1;
+            }
+          } catch (err) {
+            const code = err instanceof AuthError ? `SETTLEMENT_${err.code}` : "SETTLEMENT_FAILED";
+            summary.errors[code] = (summary.errors[code] ?? 0) + 1;
+          }
+        }
       } catch (err) {
         const code = err instanceof AuthError ? err.code : "RECONCILE_FAILED";
         summary.errors[code] = (summary.errors[code] ?? 0) + 1;

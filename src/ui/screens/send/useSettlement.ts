@@ -5,6 +5,7 @@ import { clearPending, fetchTransfer } from "@/ui/lib/prepare-flow";
 import { TRANSFER_STATUSES, isTerminal, type TransferStatus } from "@/domain/transfers";
 import {
   getReconciliation,
+  postClaimIntent,
   postVerifySettlement,
   progressCopy,
   progressForStatus,
@@ -41,7 +42,33 @@ export interface SettlementState {
   claimDeadlineMs?: number | null;
   /** P2: the server's latest provider read diverged from the bound identity. */
   identityMismatch?: boolean;
+  /** P3: outcome of the latest explicit Finish-delivery attempt (shown next to the action). */
+  claimMessage?: string | null;
+  /**
+   * P3: this browser already submitted (or lost the outcome of) a claim that
+   * verification has not cleared. The finish control must not be offered
+   * again; the screen shows "confirming" instead.
+   */
+  claimPending?: boolean;
 }
+
+/** P3: is a local claim attempt still awaiting verification (no second attempt yet)? */
+export function claimPendingFor(record: ClaimRecord | null, claimReadyNow: boolean): boolean {
+  if (!record) return false;
+  const attempted = record.txHash !== null || record.submittedAt != null || record.unknownAt !== null;
+  if (!attempted) return false;
+  if (record.unknownAt !== null && record.txHash === null) {
+    return !mayRetryClaim({ earlierClaimUnknown: true, verifyCompletedSinceClaim: record.verifyCompletedSinceClaim, claimReadyNow, knownClaimTxHash: false });
+  }
+  return true;
+}
+
+/**
+ * P3: one claim attempt per transfer in this page, across every hook
+ * instance (Send and Activity can both be mounted). Cross-tab and
+ * cross-device duplicates are refused by the server claim lease.
+ */
+const claimsInFlight = new Set<string>();
 
 /** P2: parse a server deadline; anything unparseable is unknown (fail closed). */
 export function deadlineMsFrom(value: string | null | undefined): number | null {
@@ -52,6 +79,8 @@ export function deadlineMsFrom(value: string | null | undefined): number | null 
 
 /** Verify-after-claim rounds (tracking cadence lives in payment-tracker.ts). */
 const MAX_VERIFY_ROUNDS = 4;
+/** P3: wait this long after an unknown claim outcome before the verification round. */
+export const UNKNOWN_CLAIM_VERIFY_DELAY_MS = 20_000;
 
 interface ClaimRecord {
   transferId: string;
@@ -162,7 +191,7 @@ export function useSettlement(): {
   });
   const [claimInfo, setClaimInfo] = useState<{ claimDeadlineMs: number | null; identityMismatch: boolean }>({ claimDeadlineMs: null, identityMismatch: false });
   const runId = useRef(0);
-  const claimInFlight = useRef(false);
+  const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const unsubscribe = useRef<(() => void) | null>(null);
   const tracked = useRef<{ transferId: string; ownerUserId: string } | null>(null);
@@ -217,7 +246,11 @@ export function useSettlement(): {
     const status = view.transfer.status;
     const statusLabel = view.transfer.statusLabel ?? null;
     const providerStatus = view.latest.providerStatus;
-    const phase = progressForStatus(status);
+    // P3: DELIVERED (server proof committed) takes the receipt branch below.
+    // progressForStatus maps it to "finishing" until a receipt is loaded, so
+    // without this a payment delivered while only tracking (Activity, reload,
+    // server cron) never showed its receipt.
+    const phase: ProgressPhase = status === "DELIVERED" ? "delivered" : progressForStatus(status);
     const base = { transferId: input.transferId, transferStatus: status as string, statusLabel, providerStatus, receipt: null, verifyVerdict: null };
     if (phase === "cancelled") {
       setState({ ...base, phase: "cancelled", claimReady: false, message: copyFor("cancelled").body });
@@ -258,7 +291,8 @@ export function useSettlement(): {
       : view.latest.ambiguous
         ? "Checking your payment — do not resend."
         : copy.body;
-    setState({ ...base, phase, claimReady: view.latest.claimReady, message });
+    const claimPending = claimPendingFor(loadClaimRecord(input.transferId, input.ownerUserId), view.latest.claimReady);
+    setState({ ...base, phase, claimReady: view.latest.claimReady, message, claimPending });
   }, []);
 
   const track = useCallback(
@@ -293,10 +327,10 @@ export function useSettlement(): {
     [track],
   );
 
-  const attemptClaim = useCallback(
+  const attemptClaimOnce = useCallback(
     async (input: SettlementInput): Promise<{ ok: boolean; reason: string }> => {
-      if (claimInFlight.current) return { ok: false, reason: "A delivery attempt is already in progress. Check payment status — do not try again." };
-      claimInFlight.current = true;
+      if (claimsInFlight.has(input.transferId)) return { ok: false, reason: "A delivery attempt is already in progress. Check payment status — do not try again." };
+      claimsInFlight.add(input.transferId);
       try {
       const view = await getReconciliation(input.transferId);
       if (!view.ok) return { ok: false, reason: "Checking your payment — do not resend." };
@@ -351,12 +385,50 @@ export function useSettlement(): {
         setState((s) => ({ ...s, message: reason }));
         return { ok: false, reason };
       }
+      // P3: the server re-verifies everything immediately before the claim
+      // (fresh provider read, the on-chain HTLC lock and deadline, the unsafe
+      // window, no claim/refund yet) and takes the per-transfer claim lease.
+      const intent = await postClaimIntent(input.transferId);
+      if (!intent.ok) {
+        const reason = intent.message
+          ? intent.message
+          : intent.kind === "rate-limited"
+            ? "Too many tries at once. Wait a moment — do not resend."
+            : "We couldn't confirm it's safe to finish right now. Check again shortly — don't resend.";
+        kickPaymentTracker(input.transferId);
+        return { ok: false, reason };
+      }
+      const authorized = intent.data.claim;
+      // The server's answer must describe exactly the swap this browser holds
+      // the recovery material for — otherwise nothing is revealed.
+      const sameSwap =
+        vault.status === "ok" &&
+        readback.ok &&
+        typeof readback.paymentHash === "string" &&
+        typeof readback.evmRefundLocktime === "number" &&
+        authorized.transferId === input.transferId &&
+        authorized.satoraSwapId === swap.satoraSwapId &&
+        authorized.paymentHash.toLowerCase() === readback.paymentHash.toLowerCase() &&
+        Date.parse(authorized.claimDeadline) === readback.evmRefundLocktime * 1000 &&
+        authorized.destination.toLowerCase() === vault.binding.destination.toLowerCase() &&
+        authorized.targetAmountAtomic === vault.binding.targetAtomic;
+      if (!sameSwap) return { ok: false, reason: "Recovery information doesn't match this payment. Do not continue." };
+      if (!isClaimWindowOpen(readback.evmRefundLocktime)) {
+        return { ok: false, reason: "The delivery deadline is too close or unavailable. Check Activity for the latest status — don’t try again yet." };
+      }
+      kickPaymentTracker(input.transferId);
       let outcome: { success: boolean; txHash: string | null; message: string };
       try {
         outcome = await claimStoredSwap(swap.satoraSwapId);
       } catch (error) {
         saveClaimRecord({ transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, txHash: null, unknownAt: new Date().toISOString(), verifyCompletedSinceClaim: false });
         setState((s) => ({ ...s, phase: "checking", message: error instanceof Error ? `${error.message} Checking payment — do not resend.` : "Checking payment — do not resend." }));
+        // P3: an unknown outcome is resolved by verification, never by a blind
+        // retry. One verify round (after the claim had time to land) records
+        // whether a claim reached the chain; only then may mayRetryClaim allow
+        // a second attempt — and the server claim lease still refuses one
+        // while the first could be in flight.
+        later(UNKNOWN_CLAIM_VERIFY_DELAY_MS, () => void runVerifyLoopRef.current?.(input, 0), runId.current);
         return { ok: false, reason: "The delivery attempt couldn't be confirmed. Checking payment — do not resend." };
       }
       if (!outcome.success) {
@@ -368,10 +440,22 @@ export function useSettlement(): {
       await runVerifyLoopRef.current?.(input, 0);
       return { ok: true, reason: outcome.txHash ? "Delivery submitted. Confirming it arrived." : "Delivery submitted. Confirming it arrived." };
       } finally {
-        claimInFlight.current = false;
+        claimsInFlight.delete(input.transferId);
       }
     },
-    [],
+    [later],
+  );
+
+  const attemptClaim = useCallback(
+    async (input: SettlementInput): Promise<{ ok: boolean; reason: string }> => {
+      setClaimMessage(null);
+      const result = await attemptClaimOnce(input);
+      setClaimMessage(result.reason);
+      const record = loadClaimRecord(input.transferId, input.ownerUserId);
+      setState((st) => ({ ...st, claimPending: claimPendingFor(record, st.claimReady) }));
+      return result;
+    },
+    [attemptClaimOnce],
   );
 
   const runVerifyLoop = useCallback(
@@ -435,5 +519,5 @@ export function useSettlement(): {
     runVerifyLoopRef.current = runVerifyLoop;
   }, [runVerifyLoop]);
 
-  return { state: { ...state, ...claimInfo }, track, stop, attemptClaim, checkAgain };
+  return { state: { ...state, ...claimInfo, claimMessage }, track, stop, attemptClaim, checkAgain };
 }

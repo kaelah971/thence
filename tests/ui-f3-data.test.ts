@@ -102,7 +102,9 @@ describe("activity mapping", () => {
   it("uses everyday status labels and only says Delivered for DELIVERED", () => {
     expect(pillLabel("QUOTED")).toBe("Preparing payment");
     expect(pillLabel("AWAITING_NIM_APPROVAL")).toBe("Waiting for approval");
-    expect(pillLabel("CLAIMING")).toBe("On its way");
+    expect(pillLabel("CLAIMING")).toBe("Finishing delivery");
+    expect(pillLabel("SERVER_FUNDED")).toBe("Finish delivery needed");
+    expect(pillLabel("CLIENT_FUNDED")).toBe("On its way");
     expect(pillLabel("RECONCILING")).toBe("Checking your payment");
     expect(pillLabel("NEEDS_ATTENTION")).toBe("Needs your attention");
     for (const status of TRANSFER_STATUSES) {

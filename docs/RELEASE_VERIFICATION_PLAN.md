@@ -26,17 +26,17 @@ npm run build
 
 | Shard | Files | Notes |
 |---|---|---|
-| S1 pure + UI | everything that is database-free: `ui-*`, `incident-2026-11-02`, `p5-chain-timeout`, `p5-refund-consistency`, `test-db-guard`, `satora-swap-verify`, `transfer-handoff`, `f43-settlement`, `f810-*`, `f811-*`, `copy-guard`, `auth-errors`, `activity-archive`, `provider-evidence-ui`, `money`, `nimiq`, `address-format`, `env`, `routes`, `root-redirect`, `send-navigation`, `public-request-cta`, `rate-limit`, `db-pool`, `schema` | ~4 min (transfer-handoff dominates) |
+| S1 pure + UI | everything that is database-free: `ui-*`, `incident-2026-11-02`, `p5-chain-timeout`, `p5-refund-consistency`, `p3-claim-verification` (`ui-*` includes `ui-p3-claim-completion`), `test-db-guard`, `satora-swap-verify`, `transfer-handoff`, `f43-settlement`, `f810-*`, `f811-*`, `copy-guard`, `auth-errors`, `activity-archive`, `provider-evidence-ui`, `money`, `nimiq`, `address-format`, `env`, `routes`, `root-redirect`, `send-navigation`, `public-request-cta`, `rate-limit`, `db-pool`, `schema` | ~4 min (transfer-handoff dominates) |
 | S2 money path (live) | `reconciliation`, `settlement`, `f42-handoff`, `f812-attach-recovery`, `f812-retire-replace` | live quotes + test DB |
-| S3 pilot + recovery (live) | `f81-pilot-attempt-limits`, `f8-pilot-gates`, `f82-pilot-kill-switch`, `p2-claim-deadline`, `p4-expiry-resolution`, `p5-locking-audit`, `p6-server-reconciler`, `f41-prepare-flow`, `f41-recovery-vault` | |
+| S3 pilot + recovery (live) | `f81-pilot-attempt-limits`, `f8-pilot-gates`, `f82-pilot-kill-switch`, `p2-claim-deadline`, `p4-expiry-resolution`, `p5-locking-audit`, `p3-claim-intent`, `p6-server-reconciler`, `f41-prepare-flow`, `f41-recovery-vault` | |
 | S4 data + accounts (live) | `transfers`, `transfer-intents`, `quotes`, `quotes-multiroute`, `f3-data`, `f32-requests-quotes`, `recipients`, `requests`, `verification`, `profile`, `auth`, `f6-balance`, `f7-send-flow` | |
 
 Command per shard: `npx vitest run --maxWorkers=2 <files…>`. A shard that is
 stopped by the memory guard is re-run alone with `--maxWorkers=1`; it is not
 counted as passed until it completes.
 
-Coverage check: the union of S1–S4 must equal `ls tests/*.test.ts*` (62 files
-at P5). Any new test file must be assigned to a shard.
+Coverage check: the union of S1–S4 must equal `ls tests/*.test.ts*` (65 files
+at P3). Any new test file must be assigned to a shard.
 
 ## Acceptance
 
