@@ -299,7 +299,8 @@ describe.skipIf(!LIVE)("P4 close-expired (isolated test database)", () => {
     const rec = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...client("audit-recon") }), params(id));
     expect(rec.status).toBe(200);
     expect(await statusOf(id)).toBe("SERVER_FUNDED");
-    const rows = await getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, id));
+    // P5: setup steps (attach, authorize, unknown report) are owner-audited; this asserts the reconciler's hop.
+    const rows = (await getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, id))).filter((r) => r.actor === "reconciler");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ fromStatus: "RECONCILING", toStatus: "SERVER_FUNDED", actor: "reconciler", reasonCode: "PROVIDER_SERVERFUNDED", terminal: false });
     void SWAP_REFUNDED_EVENT_TOPIC;

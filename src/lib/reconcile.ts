@@ -39,7 +39,7 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
-import { verifyEvmRefundEvidence } from "@/lib/settlement";
+import { verifyHtlcRefund, type HtlcRefundResult } from "@/lib/settlement";
 import { recordPath } from "@/lib/transitions";
 import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
 
@@ -259,7 +259,7 @@ type GatheredEvidence =
   | { kind: "provider_error"; code: string }
   | { kind: "route_error"; facts: VerifiedSwapFacts }
   | { kind: "route_mismatch"; facts: VerifiedSwapFacts }
-  | { kind: "facts"; facts: VerifiedSwapFacts; refund: { verdict: string } | null };
+  | { kind: "facts"; facts: VerifiedSwapFacts; refund: HtlcRefundResult | null };
 
 async function gatherEvidence(
   transfer: typeof transfers.$inferSelect,
@@ -282,17 +282,20 @@ async function gatherEvidence(
     return { kind: "route_error", facts };
   }
   // Independent refund evidence is read here (chain I/O), never under the lock.
-  let refund: { verdict: string } | null = null;
+  // P5: the provider's refund pointer is a hint only. The refund must be a
+  // SwapRefunded event of the PINNED HTLC for the BOUND hash lock; a missing
+  // or wrong pointer falls back to scanning the HTLC's own logs.
+  let refund: HtlcRefundResult | null = null;
   const providerStatus = facts.status || "unknown";
   if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && transfer.status !== "REFUNDED") {
-    refund = facts.evmClaimTxid
-      ? await verifyEvmRefundEvidence({
-          chainId: facts.evmChainId,
-          refundTxHash: facts.evmClaimTxid,
-          htlcAddress: facts.evmHtlcAddress,
-          hashLock: facts.paymentHash,
-        })
-      : { verdict: "INCONCLUSIVE" };
+    const locktimeSec = facts.evmRefundLocktime ?? (attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null);
+    refund = await verifyHtlcRefund({
+      chainId: facts.evmChainId,
+      htlcAddress: facts.evmHtlcAddress,
+      hashLock: attachment.paymentHash,
+      providerRefundTxHash: facts.evmClaimTxid,
+      earliestRefundAt: locktimeSec !== null ? new Date(locktimeSec * 1000) : attachment.createdAt,
+    });
   }
   return { kind: "facts", facts, refund };
 }
@@ -468,6 +471,17 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
               evmFundTxid: facts.evmFundTxid ?? null,
               evmClaimTxid: facts.evmClaimTxid ?? null,
               refundVerified: REFUNDED_PROVIDER_STATUSES.has(providerStatus) ? true : null,
+              ...(REFUNDED_PROVIDER_STATUSES.has(providerStatus) && evidence.refund
+                ? {
+                    // Polygon-side only: the provider's USDC lock went back to the
+                    // provider. Nimiq Pay's NIM side is not observable by Thence.
+                    refundScope: "polygon_htlc",
+                    refundTxHash: evidence.refund.refundTxHash,
+                    refundEvidenceSource: evidence.refund.source,
+                    refundConfirmations: evidence.refund.confirmations,
+                    nimiqSideRefund: "not_observable",
+                  }
+                : {}),
             },
           },
           current,
@@ -781,45 +795,69 @@ const MOVEMENT_STATUSES = [
  * "expired without funding — nothing was locked." This helper is deliberately
  * narrower than that protocol statement because it is used to retire a local
  * owner-visible transfer. Any identity mismatch, transaction assertion or
- * prior movement observation fails closed.
+ * prior movement observation fails closed. Pure (no I/O): the provider read
+ * happens before the lock, the movement history is read under it (P5).
  */
-async function readExpiredUnfundedFacts(
-  tx: DbClient,
+function isExpiredUnfunded(
   transfer: typeof transfers.$inferSelect,
   attachment: typeof swapAttachments.$inferSelect,
-): Promise<VerifiedSwapFacts | null> {
+  facts: VerifiedSwapFacts,
+  routeMatches: boolean,
+): boolean {
+  return (
+    routeMatches &&
+    facts.satoraSwapId === attachment.satoraSwapId &&
+    facts.status === "expired" &&
+    facts.direction === "lightning_to_evm" &&
+    facts.evmFundTxid === null &&
+    facts.evmClaimTxid === null &&
+    facts.targetAtomic === transfer.targetAmountAtomic &&
+    facts.targetAddress.trim().toLowerCase() === transfer.destination.trim().toLowerCase() &&
+    !(facts.invoiceExpiresAt !== null && facts.invoiceExpiresAt.getTime() > Date.now())
+  );
+}
+
+async function hasPriorMovement(db: DbClient, transferId: string): Promise<boolean> {
+  const priorMovement = await db
+    .select({ id: reconciliationObservations.id })
+    .from(reconciliationObservations)
+    .where(and(eq(reconciliationObservations.transferId, transferId), inArray(reconciliationObservations.providerStatus, [...MOVEMENT_STATUSES])))
+    .limit(1);
+  return priorMovement.length > 0;
+}
+
+/** P5: cancellation evidence is gathered with no lock held and no writes. */
+type CancelEvidence = {
+  /** Transfer status the evidence was gathered for (commit requires it unchanged). */
+  forStatus: TransferStatus;
+  swapId: string;
+  gatheredAt: number;
+  read: { kind: "facts"; facts: VerifiedSwapFacts; routeMatches: boolean } | { kind: "error"; code: string };
+};
+
+/** Evidence older than this at commit time is refused (the client re-reads and retries). */
+export const CANCEL_EVIDENCE_MAX_AGE_MS = 2 * 60_000;
+
+async function gatherCancelEvidence(
+  transfer: typeof transfers.$inferSelect,
+  attachment: typeof swapAttachments.$inferSelect,
+): Promise<CancelEvidence> {
+  const base = { forStatus: transfer.status as TransferStatus, swapId: attachment.satoraSwapId };
   let facts: VerifiedSwapFacts;
   try {
     facts = await getProviderSwap(attachment.satoraSwapId);
-  } catch {
-    return null;
+  } catch (err) {
+    const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
+    return { ...base, gatheredAt: Date.now(), read: { kind: "error", code } };
   }
-  if (
-    facts.satoraSwapId !== attachment.satoraSwapId ||
-    facts.status !== "expired" ||
-    facts.direction !== "lightning_to_evm" ||
-    facts.evmFundTxid !== null ||
-    facts.evmClaimTxid !== null ||
-    facts.targetAtomic !== transfer.targetAmountAtomic ||
-    facts.targetAddress.trim().toLowerCase() !== transfer.destination.trim().toLowerCase() ||
-    (facts.invoiceExpiresAt !== null && facts.invoiceExpiresAt.getTime() > Date.now())
-  ) {
-    return null;
-  }
+  let routeMatches = false;
   try {
     const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
-    if (String(resolved.chainId) !== String(facts.evmChainId) || resolved.tokenAddress.toLowerCase() !== facts.targetTokenAddress.toLowerCase()) {
-      return null;
-    }
+    routeMatches = String(resolved.chainId) === String(facts.evmChainId) && resolved.tokenAddress.toLowerCase() === facts.targetTokenAddress.toLowerCase();
   } catch {
-    return null;
+    routeMatches = false;
   }
-  const priorMovement = await tx
-    .select({ id: reconciliationObservations.id })
-    .from(reconciliationObservations)
-    .where(and(eq(reconciliationObservations.transferId, transfer.id), inArray(reconciliationObservations.providerStatus, [...MOVEMENT_STATUSES])))
-    .limit(1);
-  return priorMovement.length === 0 ? facts : null;
+  return { ...base, gatheredAt: Date.now(), read: { kind: "facts", facts, routeMatches } };
 }
 
 const handoffDiagnosticsSchema = z
@@ -867,22 +905,41 @@ export async function reportHandoffOutcome(
   }
   const outcome = parsed.data.outcome;
   const db = getDb();
+  const ownerScope = and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId));
+
+  // ---- P5 phase A: provider evidence for cancellation, no lock, no writes ----
+  // Only cancelling a bound, pre-handoff transfer needs the network;
+  // initiated/unknown reports are pure state-machine steps.
+  let gathered: CancelEvidence | null = null;
+  if (outcome === "cancelled") {
+    const pre = (await db.select().from(transfers).where(ownerScope).limit(1))[0];
+    if (!pre) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+    if (pre.status === "AWAITING_NIM_APPROVAL" || pre.status === "SWAP_CREATED") {
+      const preBound = (await db.select().from(swapAttachments).where(eq(swapAttachments.transferId, pre.id)).limit(1))[0];
+      if (preBound) gathered = await gatherCancelEvidence(pre, preBound);
+    }
+  }
+
+  // ---- phase B: short commit under the per-transfer lock ----
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
-    const rows = await tx
-      .select()
-      .from(transfers)
-      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
-      .limit(1);
+    const rows = await tx.select().from(transfers).where(ownerScope).limit(1);
     const transfer = rows[0];
     if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     const current = transfer.status as TransferStatus;
-    const applyPath = async (path: TransferStatus[]): Promise<TransferStatus> => {
+    // P5: every status change is audited in this same transaction.
+    const applyPath = async (path: TransferStatus[], reasonCode: string, evidence: Record<string, unknown> = {}): Promise<TransferStatus> => {
       let state = current;
       for (const next of path) {
         state = transition(state, next);
       }
       await tx.update(transfers).set({ status: state, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
+      await recordPath(
+        tx,
+        { transferId: transfer.id, actor: "owner", actorUserId: userId, reasonCode, evidence: { clientOutcome: outcome, ...evidence } },
+        current,
+        path,
+      );
       return state;
     };
     if (outcome === "initiated") {
@@ -890,7 +947,7 @@ export async function reportHandoffOutcome(
         if (current === "LIGHTNING_HANDOFF") return { transferId, status: current, deduplicated: true };
         throw new AuthError(409, "NOT_REPORTABLE", "Handoff initiation can only be reported while awaiting approval.");
       }
-      const next = await applyPath(["LIGHTNING_HANDOFF"]);
+      const next = await applyPath(["LIGHTNING_HANDOFF"], "CLIENT_REPORTED_INITIATED");
       return { transferId, status: next, deduplicated: false };
     }
     if (outcome === "unknown") {
@@ -904,7 +961,7 @@ export async function reportHandoffOutcome(
             ? ["OUTCOME_UNKNOWN", "RECONCILING"]
             : [];
       if (start.length === 0) throw new AuthError(409, "NOT_REPORTABLE", "Unknown outcomes can only be reported for unresolved handoffs.");
-      const next = await applyPath(start);
+      const next = await applyPath(start, "CLIENT_REPORTED_UNKNOWN");
       return { transferId, status: next, deduplicated: false };
     }
     // outcome === "cancelled": only when NOTHING has moved, verified live.
@@ -920,9 +977,21 @@ export async function reportHandoffOutcome(
     if (!attachment) {
       // Nothing was ever bound: no provider swap can have moved funds for
       // this transfer, so cancellation is trivially safe.
-      const next = await applyPath(["USER_CANCELLED"]);
+      const next = await applyPath(["USER_CANCELLED"], "CANCELLED_UNBOUND");
       return { transferId, status: next, deduplicated: false };
     }
+    // P5: the evidence must describe THIS state and THIS swap, and be fresh.
+    // A concurrent attach/authorize/report between the phases means the
+    // evidence answers a different question: refuse; the client re-reads.
+    if (
+      !gathered ||
+      gathered.forStatus !== current ||
+      gathered.swapId !== attachment.satoraSwapId ||
+      Date.now() - gathered.gatheredAt > CANCEL_EVIDENCE_MAX_AGE_MS
+    ) {
+      throw new AuthError(409, "VERSION_CONFLICT", "The payment changed while it was being checked; re-read it before cancelling.");
+    }
+    const read = gathered.read;
     // B4.4 cancellation safety: a hold invoice in provider state `pending`
     // proves nothing about whether the user already submitted payment — the
     // funding event may simply not be observed yet. Once the handoff is
@@ -931,28 +1000,26 @@ export async function reportHandoffOutcome(
     // instead of entering terminal USER_CANCELLED, where delayed funding
     // would be unrecoverable.
     if (current === "AWAITING_NIM_APPROVAL") {
-      const expired = await readExpiredUnfundedFacts(tx, transfer, attachment);
-      if (expired) {
+      if (read.kind === "facts" && isExpiredUnfunded(transfer, attachment, read.facts, read.routeMatches) && !(await hasPriorMovement(tx, transfer.id))) {
         await recordObservation(tx, transfer.id, attachment.satoraSwapId, {
-          providerStatus: expired.status,
+          providerStatus: read.facts.status,
           kind: "observation",
           evmFundTxid: null,
           evmClaimTxid: null,
         });
-        const next = await applyPath(["USER_CANCELLED"]);
+        const next = await applyPath(["USER_CANCELLED"], "CANCELLED_PROVIDER_EXPIRED", { providerStatus: read.facts.status });
         return { transferId, status: next, deduplicated: false };
       }
-      const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"]);
+      const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"], "CANCEL_UNPROVEN_RECONCILE", {
+        providerStatus: read.kind === "facts" ? read.facts.status || "unknown" : "unknown",
+        providerError: read.kind === "error" ? read.code : null,
+      });
       return { transferId, status: next, deduplicated: false };
     }
-    let facts;
-    try {
-      const { getProviderSwap } = await import("@/lib/satora");
-      facts = await getProviderSwap(attachment.satoraSwapId);
-    } catch (err) {
-      const code = err instanceof Error && (err as { code?: string }).code ? String((err as { code?: unknown }).code) : "PROVIDER_UNAVAILABLE";
-      throw new AuthError(503, code, "Route provider is temporarily unavailable; cancellation cannot be verified.");
+    if (read.kind === "error") {
+      throw new AuthError(503, read.code, "Route provider is temporarily unavailable; cancellation cannot be verified.");
     }
+    const facts = read.facts;
     // Independent provider facts win over any local theory: observed or
     // possible movement (funding seen/funded/redeeming/redeemed, late or
     // ambiguous reads) never resolves to terminal cancellation. Quiescent
@@ -974,12 +1041,12 @@ export async function reportHandoffOutcome(
         .where(and(eq(handoffAttempts.transferId, transfer.id), eq(handoffAttempts.status, "HANDOFF_AUTHORIZED")))
         .limit(1);
       if (authorized.length === 0) {
-        const next = await applyPath(["USER_CANCELLED"]);
+        const next = await applyPath(["USER_CANCELLED"], "CANCELLED_NEVER_AUTHORIZED", { providerStatus: facts.status });
         return { transferId, status: next, deduplicated: false };
       }
       throw new AuthError(409, "NOT_CANCELLABLE", "Invoice state is ambiguous; cancellation is not safe — reconcile instead.");
     }
-    const next = await applyPath(["USER_CANCELLED"]);
+    const next = await applyPath(["USER_CANCELLED"], "CANCELLED_PROVIDER_PENDING", { providerStatus: facts.status });
     return { transferId, status: next, deduplicated: false };
   });
 }

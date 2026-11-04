@@ -31,6 +31,7 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { getEnv } from "@/lib/env";
+import { recordTransition } from "@/lib/transitions";
 
 /** ERC20 Transfer(address,address,uint256) event topic (protocol constant). */
 export const TRANSFER_EVENT_TOPIC =
@@ -63,6 +64,21 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
   42161: { mode: "finalized", confirmations: 1 },
 };
 
+/**
+ * HTLC contracts the pilot trusts per chain (Satora HTLCErc20 v6). Provider-
+ * named addresses outside this set are refused for both P4 no-activity proofs
+ * and P5 refund attribution: a provider pointer to another contract is never
+ * evidence about this swap.
+ */
+export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
+  137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
+};
+
+export function isTrustedHtlc(chainId: number, address: string | null | undefined): boolean {
+  if (!address) return false;
+  return (TRUSTED_HTLC_CONTRACTS[chainId] ?? []).includes(address.toLowerCase());
+}
+
 /** Bounded external-call budget (mirrors the Satora read timeout). */
 export const CHAIN_READ_TIMEOUT_MS = 15_000;
 
@@ -78,6 +94,8 @@ export interface ChainLog {
   topics: string[];
   data: string;
   logIndex: number | null;
+  /** P5: emitting transaction (present on eth_getLogs results; absent on receipt logs). */
+  transactionHash?: string | null;
 }
 
 export interface ChainReceipt {
@@ -191,13 +209,14 @@ function liveReads(): ChainReads {
           params: [{ address: address as Hex, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock), topics: [null, topic1 as Hex] }],
         }),
         "getLogs",
-      )) as unknown as Array<{ address: string; topics: string[]; data: string; logIndex: string | null }>;
+      )) as unknown as Array<{ address: string; topics: string[]; data: string; logIndex: string | null; transactionHash?: string | null }>;
       if (!Array.isArray(raw)) throw new Error("Malformed getLogs response.");
       return raw.map((l) => ({
         address: l.address,
         topics: [...l.topics],
         data: l.data,
         logIndex: l.logIndex === null ? null : Number(BigInt(l.logIndex)),
+        transactionHash: typeof l.transactionHash === "string" ? l.transactionHash : null,
       }));
     },
   };
@@ -522,6 +541,111 @@ export async function verifyEvmRefundEvidence(input: {
   } catch {
     return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
   }
+}
+
+/** P5: the refund scan starts this long before the earliest possible refund (clock skew margin). */
+export const REFUND_SCAN_LEAD_MS = 5 * 60_000;
+
+export interface HtlcRefundResult extends RefundVerificationResult {
+  /** The refund transaction that was independently verified (or examined), when one was found. */
+  refundTxHash: string | null;
+  /** Where the refund transaction came from: Satora's pointer, or Thence's own HTLC log scan. */
+  source: "provider_pointer" | "htlc_log_scan" | null;
+}
+
+/**
+ * P5 — independent Polygon HTLC refund verification.
+ *
+ * A Polygon refund is real only when the pinned (trusted) HTLC contract
+ * emitted SwapRefunded for this swap's hash lock in a finalized, reorg-checked
+ * receipt. Satora's tx pointer (empirically reported in `evm_claim_txid`) is
+ * only a hint: when it is missing or does not contain that event, the HTLC's
+ * own logs are scanned for the refund, and the transaction found there is
+ * verified the same way. Says NOTHING about the Nimiq side: Thence cannot see
+ * Nimiq Pay's NIM HTLC, so a verified Polygon refund is never a NIM refund.
+ */
+export async function verifyHtlcRefund(input: {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  providerRefundTxHash: string | null;
+  /** Earliest time a refund could exist on-chain (the EVM refund locktime, else the bind time). */
+  earliestRefundAt: Date;
+}): Promise<HtlcRefundResult> {
+  const none = { refundTxHash: null, source: null } as const;
+  if (input.chainId !== 137) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon in this pilot.", confirmations: null };
+  }
+  if (!isTrustedHtlc(input.chainId, input.htlcAddress)) {
+    return { ...none, verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
+  }
+  if (!HASH_LOCK_RE.test(input.hashLock)) {
+    return { ...none, verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
+  }
+  const htlc = input.htlcAddress!.toLowerCase();
+  const pointer = input.providerRefundTxHash && TX_HASH_RE.test(input.providerRefundTxHash) ? input.providerRefundTxHash : null;
+  if (pointer) {
+    const viaPointer = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: pointer, htlcAddress: htlc, hashLock: input.hashLock });
+    // Anything but INVALID (verified, still confirming, chain unavailable) is
+    // the answer. INVALID means the pointer is not this swap's refund: fall
+    // back to the HTLC's own event log rather than trusting or rejecting it.
+    if (viaPointer.verdict !== "INVALID") return { ...viaPointer, refundTxHash: pointer, source: "provider_pointer" };
+  }
+
+  const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
+  if (!rpcs[String(input.chainId)]) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess.", confirmations: null };
+  }
+  const chain = reads();
+  if (!chain.getBlockTimestamp || !chain.getLogsByTopic1) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs.", confirmations: null };
+  }
+  const getTs: TimestampReader = chain.getBlockTimestamp.bind(chain);
+  const getLogs = chain.getLogsByTopic1.bind(chain);
+  const found = new Set<string>();
+  let truncated = false;
+  try {
+    const latest = await chain.getLatestBlockNumber(input.chainId);
+    const startTs = Math.floor((input.earliestRefundAt.getTime() - REFUND_SCAN_LEAD_MS) / 1000);
+    const fromBlock = await blockAtOrBefore(getTs, input.chainId, startTs, latest);
+    if (fromBlock === null) {
+      return { ...none, verdict: "INCONCLUSIVE", reason: "Refund scan window starts before chain history.", confirmations: null };
+    }
+    let toBlock = latest;
+    if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
+      toBlock = fromBlock + MAX_HTLC_SCAN_BLOCKS - 1n;
+      truncated = true;
+    }
+    for (let s = fromBlock; s <= toBlock; s += HTLC_LOG_CHUNK_BLOCKS) {
+      const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > toBlock ? toBlock : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      const logs = await getLogs(input.chainId, htlc, input.hashLock, s, e);
+      for (const log of logs) {
+        // Defensive re-filter: never trust the RPC's own filtering for a match.
+        if (log.address.toLowerCase() !== htlc) continue;
+        if (log.topics[0]?.toLowerCase() !== SWAP_REFUNDED_EVENT_TOPIC) continue;
+        if (log.topics[1]?.toLowerCase() !== input.hashLock.toLowerCase()) continue;
+        if (log.transactionHash && TX_HASH_RE.test(log.transactionHash)) found.add(log.transactionHash.toLowerCase());
+      }
+    }
+  } catch {
+    return { ...none, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+  if (found.size > 1) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "More than one refund event names this hash lock; refusing to choose.", confirmations: null };
+  }
+  const [txHash] = [...found];
+  if (!txHash) {
+    return {
+      ...none,
+      verdict: "INCONCLUSIVE",
+      reason: truncated
+        ? "No refund event found in the bounded scan window."
+        : "No refund event for this hash lock on the HTLC yet.",
+      confirmations: null,
+    };
+  }
+  const viaScan = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: txHash, htlcAddress: htlc, hashLock: input.hashLock });
+  return { ...viaScan, refundTxHash: txHash, source: "htlc_log_scan" };
 }
 
 export type SettlementVerdict =
@@ -1021,6 +1145,25 @@ export async function verifySettlement(userId: string, transferId: string): Prom
       evidence: { destinationTxHash: claimTx, amountVerified: true },
     });
     await tx.update(transfers).set({ status: next, updatedAt: new Date() }).where(eq(transfers.id, fresh.id));
+    // P5 audit: same transaction as the proof row and the status write, so a
+    // DELIVERED transfer always carries both (or neither, on rollback).
+    await recordTransition(tx, {
+      transferId: fresh.id,
+      from: freshStatus,
+      to: next,
+      actor: "owner",
+      actorUserId: userId,
+      reasonCode: "SETTLEMENT_VERIFIED",
+      evidence: {
+        providerStatus: facts.status,
+        chainId,
+        claimTxHash: claimTx,
+        blockNumber: receipt.blockNumber.toString(),
+        logIndexes: match.logIndexes,
+        verifiedAmountAtomic: match.totalAtomic.toString(),
+        finalityLevel,
+      },
+    });
     const saved = await tx.select().from(transferProofs).where(eq(transferProofs.transferId, fresh.id)).limit(1);
     return {
       verdict: "VERIFIED",

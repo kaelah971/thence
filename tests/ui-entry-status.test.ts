@@ -43,7 +43,7 @@ describe("transfer status presentation", () => {
   it("never labels an unresolved outcome as failed or approved", () => {
     expect(pillLabel("OUTCOME_UNKNOWN")).toBe("Checking your payment");
     expect(pillLabel("RECONCILING")).toBe("Checking your payment");
-    expect(pillLabel("REFUNDED")).toBe("Payment refunded — no delivery");
+    expect(pillLabel("REFUNDED")).toBe("Not delivered — Polygon lock refunded");
     expect(matchesFilter("REFUNDED", "progress")).toBe(false);
     expect(timelineFor("OUTCOME_UNKNOWN")[1]).toMatchObject({ label: "Nimiq Pay approval", state: "paused" });
     expect(timelineFor("RECONCILING")[1]?.state).toBe("paused");

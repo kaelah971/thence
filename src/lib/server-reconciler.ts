@@ -170,8 +170,13 @@ export async function acquireLease(name: string, holder: string, now = Date.now(
 }
 
 export async function releaseLease(name: string, holder: string, summary: Record<string, unknown>): Promise<void> {
+  // P5: one clock for every lease timestamp. acquireLease compares against
+  // the application clock; stamping release with the database's now() made a
+  // released lease look "held" whenever the DB clock ran ahead (observed
+  // ~240 ms against the test database), misreporting skip reasons.
+  const now = new Date();
   await getDb().execute(sql`
-    UPDATE job_leases SET expires_at = now(), last_finished_at = now(), last_summary = ${JSON.stringify(summary)}::jsonb
+    UPDATE job_leases SET expires_at = ${now}, last_finished_at = ${now}, last_summary = ${JSON.stringify(summary)}::jsonb
     WHERE name = ${name} AND holder = ${holder}
   `);
 }

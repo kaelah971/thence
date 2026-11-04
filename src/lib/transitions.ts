@@ -6,6 +6,7 @@
  * and only if the transition committed. Evidence snapshots are non-secret:
  * provider status strings, public tx hashes, chain scan windows and verdicts.
  */
+import { sql } from "drizzle-orm";
 import { transferTransitions } from "@/db/schema";
 import { isTerminal, type TransferStatus } from "@/domain/transfers";
 import type { getDb } from "@/lib/db";
@@ -36,6 +37,10 @@ export async function recordTransition(db: Writer, record: TransitionRecord): Pr
     reasonCode: record.reasonCode.slice(0, 64),
     evidence: record.evidence,
     terminal: isTerminal(record.to),
+    // P5: wall-clock time per statement (the column default NOW() is the
+    // transaction start, so every hop of one recordPath tied and the audit
+    // chain had no order). clock_timestamp() advances between inserts.
+    createdAt: sql`clock_timestamp()`,
   });
 }
 

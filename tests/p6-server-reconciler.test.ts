@@ -234,7 +234,8 @@ describe.skipIf(!LIVE)("P6 server reconciliation (isolated test database)", () =
     const run1 = await runServerReconciliation({ scope: [p.id], leaseName: lease("closed") });
     expect(run1).toMatchObject({ outcome: "completed", reconciled: 1, advanced: [{ transferId: p.id, from: "AWAITING_NIM_APPROVAL", to: "SERVER_FUNDED" }] });
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
-    const audit1 = await transitionsOf(p.id);
+    // P5: attach/authorize are audited too (owner rows); this asserts the cron's own hops.
+    const audit1 = (await transitionsOf(p.id)).filter((r) => r.actor === "reconciler");
     expect(audit1.map((r) => r.toStatus)).toEqual(["LIGHTNING_HANDOFF", "CLIENT_FUNDED", "SERVER_FUNDED"]);
     for (const row of audit1) {
       expect(row).toMatchObject({ actor: "reconciler", actorUserId: null });
@@ -351,7 +352,7 @@ describe.skipIf(!LIVE)("P6 server reconciliation (isolated test database)", () =
     expect(ownerRes.status).toBe(200);
     expect(cron.outcome).toBe("completed");
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
-    const rows = await transitionsOf(p.id);
+    const rows = (await transitionsOf(p.id)).filter((r) => r.actor === "reconciler");
     expect(rows.map((r) => r.toStatus).sort()).toEqual(["CLIENT_FUNDED", "LIGHTNING_HANDOFF", "SERVER_FUNDED"]);
   });
 

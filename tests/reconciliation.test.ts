@@ -11,7 +11,7 @@ import { getDb } from "@/lib/db";
 import { reconciliationObservations, transfers, users } from "@/db/schema";
 import { AuthError } from "@/lib/auth";
 import { isClaimReady, planReconciliation } from "@/lib/reconcile";
-import { setSettlementChainForTests, SWAP_REFUNDED_EVENT_TOPIC, type ChainReads } from "@/lib/settlement";
+import { setSettlementChainForTests, SWAP_REFUNDED_EVENT_TOPIC, TRUSTED_HTLC_CONTRACTS, type ChainReads } from "@/lib/settlement";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransfer } from "../app/api/transfers/route";
@@ -36,7 +36,8 @@ let cc = 0;
 const withClient = (tag: string): Record<string, string> => ({ "x-forwarded-for": `b43-${RUN}-${tag}-${cc++}` });
 const login = (tag: string) => loginAs(withClient(`login-${tag}`), (id) => createdUserIds.push(id));
 const EVM_A = "0x0000000000000000000000000000000000000001";
-const REFUND_HTLC = "0x0000000000000000000000000000000000000002";
+// P5: refunds are attributable only to the pinned HTLC contract.
+const REFUND_HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
 const REFUND_TX = `0x${"ef".repeat(32)}`;
 const REFUND_BLOCK = 70_000_000n;
 const REFUND_BLOCK_HASH = `0x${"aa".repeat(32)}`;

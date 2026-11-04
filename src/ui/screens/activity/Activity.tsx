@@ -359,7 +359,7 @@ function ProviderEvidencePanel({
             <div><dt>{disposition === "REFUNDED" ? "Refund transaction" : "Claim transaction"}</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
           </dl>
           {disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
-          {disposition === "REFUNDED" && <p className={styles.latest}>The provider reports that its funded lock was refunded. Do not claim or start another payment; keep this payment open for reconciliation.</p>}
+          {disposition === "REFUNDED" && <p className={styles.latest}>The provider reports that its Polygon lock was refunded to the provider. That is not a refund of your NIM. Do not claim or start another payment; keep this payment open for reconciliation.</p>}
           {disposition === "EXPIRED_UNFUNDED" && <p className={styles.latest}>Satora reports this swap expired without funding. The server will re-check that evidence before closing it.</p>}
         </Notice>
       )}

@@ -61,7 +61,7 @@ import {
 import { canTransition, type TransferStatus } from "@/domain/transfers";
 import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
-import { verifyNoHtlcActivity, type HtlcActivityResult } from "@/lib/settlement";
+import { TRUSTED_HTLC_CONTRACTS, verifyNoHtlcActivity, type HtlcActivityResult } from "@/lib/settlement";
 import { isUniqueViolation, recordTransition } from "@/lib/transitions";
 
 type Db = ReturnType<typeof getDb>;
@@ -76,10 +76,8 @@ export const SCAN_TAIL_MS = 60 * 60_000;
 /** Evidence gathered before the commit phase must be at most this old. */
 export const EVIDENCE_MAX_AGE_MS = 2 * 60_000;
 
-/** HTLC contracts the pilot trusts per chain (Satora HTLCErc20 v6). Provider-named addresses outside this set are refused. */
-export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
-  137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
-};
+/** HTLC trust list now lives with the chain verifiers (P5); re-exported for P4 callers. */
+export { TRUSTED_HTLC_CONTRACTS } from "@/lib/settlement";
 
 export const RESOLVABLE_FROM: readonly TransferStatus[] = ["RECONCILING"];
 

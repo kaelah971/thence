@@ -41,6 +41,7 @@ import { Activity } from "@/ui/screens/activity/Activity";
 import { activePaymentTrackerCount, resetPaymentTrackersForTests } from "@/ui/lib/payment-tracker";
 import { reportHandoffResult } from "@/ui/lib/handoff-client";
 import { createMemoryVault, RECOVERY_VAULT_VERSION } from "@/ui/lib/recovery-vault";
+import { REFUNDED_BODY } from "@/ui/lib/settlement-client";
 
 const DEADLINE_MS = INCIDENT.satora.getSwap.evm_refund_locktime * 1000;
 const FIRST_OBSERVED = INCIDENT.observations[0]!.observed_at; // 21:30:26Z, serverfunded
@@ -203,7 +204,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(document.body.textContent ?? "").toMatch(DEADLINE_COPY);
   });
 
-  it("after the deadline passes unclaimed, the provider refunds and the screen ends at 'Payment refunded'", async () => {
+  it("after the deadline passes unclaimed, the provider refunds and the screen ends at 'Not delivered — Polygon lock refunded'", async () => {
     vi.setSystemTime(new Date(DEADLINE_MS - 20 * 60_000));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     renderSend();
@@ -212,8 +213,10 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     // Real: refund tx 0x57c4…851b mined 22:16:54Z; Thence observed it at 12:32Z the next day.
     api.set(INCIDENT.transfer.id, { status: "REFUNDED", providerStatus: "clientfundedserverrefunded", observedAt: INCIDENT.observations[1]!.observed_at });
     await advance(10 * 60_000);
-    expect(screen.getAllByText("Payment refunded").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("The provider refunded this payment. No delivery was confirmed.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Not delivered — Polygon lock refunded").length).toBeGreaterThan(0);
+    // P5: the Polygon refund is never presented as the NIM coming back.
+    expect(screen.getAllByText(REFUNDED_BODY).length).toBeGreaterThan(0);
+    expect(document.body.textContent ?? "").not.toMatch(/your NIM (was|has been) (refunded|returned)/i);
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
     expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
     // Polling stops at the terminal state.
@@ -441,7 +444,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     renderSend(INCIDENT.transfer.id);
     renderSend(STALE.transfer.id);
     await advance(0);
-    expect(screen.getAllByText("Payment refunded").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Not delivered — Polygon lock refunded").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Payment expired — not delivered").length).toBeGreaterThan(0);
     const settled = api.calls.length;
     await advance(10 * 60_000);
@@ -558,11 +561,11 @@ describe("Activity — the two real incident payments", () => {
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
   });
 
-  it("refunded 077770a1: closed with 'Payment refunded — no delivery'; no check or finish actions", async () => {
+  it("refunded 077770a1: closed with 'Not delivered — Polygon lock refunded'; no check or finish actions", async () => {
     vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "REFUNDED", providerStatus: "clientfundedserverrefunded", observedAt: INCIDENT.observations[1]!.observed_at } });
     await openActivityDetail(/They/);
-    expect(screen.getAllByText("Payment refunded — no delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Not delivered — Polygon lock refunded").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
   });

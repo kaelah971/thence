@@ -211,6 +211,14 @@ export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiRe
 export const EXPIRED_UNFUNDED_BODY =
   "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on Polygon for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
 
+/**
+ * P5: a verified REFUNDED is the POLYGON side only — the provider's USDC lock
+ * returned to the provider. It is never a NIM refund: Thence cannot observe
+ * Nimiq Pay's NIM HTLC, so the two refunds are always described separately.
+ */
+export const REFUNDED_BODY =
+  "Nothing reached their wallet. The USDC locked on Polygon for this payment went back to the provider, and Thence verified that on-chain. That is not a refund of your NIM. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+
 const OWNER_CLAIM_PROVIDER = new Set(["serverfunded", "clientredeeming", "clientredeemed"]);
 
 /**
@@ -313,8 +321,8 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
     body: "This payment was cancelled. The server confirmed no settlement.",
   },
   refunded: {
-    title: "Payment refunded",
-    body: "The provider refunded this payment. No delivery was confirmed.",
+    title: "Not delivered — Polygon lock refunded",
+    body: REFUNDED_BODY,
   },
   expired: {
     title: "Payment expired — not delivered",

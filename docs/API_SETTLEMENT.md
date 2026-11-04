@@ -128,6 +128,44 @@ may advance `SERVER_FUNDED` (or another legal pre-delivery state) to durable
 The transition is locked and idempotent, so one refunded transfer releases only
 its own exposure slot while unresolved `RECONCILING` transfers remain active.
 
+P5 hardening (`verifyHtlcRefund` in `src/lib/settlement.ts`):
+
+- The provider-named HTLC must be on the pinned trust list
+  (`TRUSTED_HTLC_CONTRACTS`, shared with P4). Any other contract is `INVALID`
+  before any chain read.
+- Satora's refund pointer (empirically reported in `evm_claim_txid`) is a hint
+  only. When it is missing, or its receipt holds no matching `SwapRefunded`,
+  Thence scans the pinned HTLC's own logs for this hash lock (from the EVM
+  refund locktime minus 5 min, bounded to 40 000 blocks). Exactly one refund
+  transaction must be found, and it is verified like the pointer (receipt,
+  event, reorg check, finality). Several candidates, none, or an RPC failure or
+  timeout never yield `VERIFIED`.
+- The `REFUNDED` audit row records `refundTxHash`, `refundEvidenceSource`
+  (`provider_pointer` | `htlc_log_scan`), `refundScope: "polygon_htlc"` and
+  `nimiqSideRefund: "not_observable"`.
+- `REFUNDED` is the **Polygon side only**: the provider's USDC lock went back
+  to the provider. It is never a NIM refund. Thence cannot observe Nimiq Pay's
+  NIM HTLC, so customer copy says "Not delivered — Polygon lock refunded" and
+  points to Nimiq Pay for the NIM side (`REFUNDED_BODY`).
+
+## 8a. Transition audit and consistency (P5)
+
+Every writer of `transfers.status` now records a `transfer_transitions` row in
+the same database transaction: attach (`SWAP_ATTACHED`), authorize
+(`HANDOFF_AUTHORIZED`), handoff-outcome reports (`CLIENT_REPORTED_*`,
+`CANCELLED_*`, `CANCEL_UNPROVEN_RECONCILE`), reconciliation (`PROVIDER_*`),
+P4 closure and settlement (`SETTLEMENT_VERIFIED`). Rows use
+`clock_timestamp()`, so the hops of one multi-step path are strictly ordered.
+If the audit insert fails, the status change rolls back with it.
+
+`src/lib/consistency.ts` is a read-only checker. It verifies that `DELIVERED`
+has a complete proof, that a proof implies `DELIVERED`, that bound or
+authorized statuses have their swap or authorization, that `REFUNDED` has a
+verified-refund audit row, and that the audit chain is legal, contiguous,
+ends at the current status, and has at most one terminal row. The P5 tests
+enforce it strictly. Pre-P5 rows have no audit trail and are checked without
+`requireAudit`.
+
 ## 9. State machine
 
 `DELIVERED` is reachable only from `CLAIMING` or `SERVER_FUNDED` via
