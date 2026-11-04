@@ -204,3 +204,200 @@ reverted.
 merging*. It deploys nothing to production (Preview only, which has no
 database URL) and gives the first remote CI evidence. It still needs approval
 because it uploads the code to GitHub and starts a Preview build.
+
+## 10. Step 3 result — read-only production preflight (2026-11-04)
+
+Run with the operator production env file, one `READ ONLY` transaction,
+`ROLLBACK`; no credential, user id, address or hash printed.
+
+- **Identity:** database `neondb`, owner role; no test anchor; the configured
+  test URL is a different database. Postgres 18.6.
+- **Pilot switch:** `DISABLED` since 2026-11-03T15:35:24Z ("P0 incident:
+  recovery engineering in progress").
+- **Migrations:** 15 tracked = local 0000–0014 exactly (LF-normalised hashes;
+  this Windows tree holds 0011–0014 with CRLF, which only changes the raw
+  hash). Pending: **0015, 0016, 0017** — the three objects are absent.
+  Run the production migration from LF files (pin
+  `src/db/migrations/*.sql eol=lf` before step 5).
+- **Incidents:** 077770a1 `REFUNDED` (observations: serverfunded 21:30Z,
+  clientfundedserverrefunded 2026-11-03 12:32Z; no settlement proof).
+  eddaa6de `RECONCILING` since 2026-11-02 13:18Z; provider `expired` ×3, no
+  fund/claim tx, invoice expired 2026-11-02 14:24Z — eligible for the P4
+  evidence-gated owner close after deploy.
+- **In flight:** no live handoff attempt. 22 rows in CLIENT_FUNDED /
+  SERVER_FUNDED / CLAIMING and 16 other non-terminal rows are **pre-S0 test
+  artifacts** (test swap-id patterns, owners created 2026-10-27/29, invoices
+  expired). The only real non-terminal transfer is eddaa6de (unfunded).
+- **Pilot exposure (owner):** eddaa6de only, 300000 atomic, no actual spend.
+- **Audit/observations:** 70 observations (68 observation, 2 provider_error);
+  no transition table yet.
+- **Row counts (fingerprint):** transfers 90, swap_attachments 44,
+  handoff_attempts 65, reconciliation_observations 70, transfer_proofs 48,
+  users 537, sessions 619, recipients 40, recipient_destinations 33,
+  pilot_controls 1.
+
+**Verdict: GO to prepare the additive migrations** (steps 4–5, each still
+needing approval). Not migration blockers, but decide before deploy (step 7):
+the ~38 non-terminal **test-artifact rows** will become P6 cron candidates
+(provider 404s recorded as `provider_error` observations, budget spent on
+them) — quarantine/close them in a separately approved data operation, or
+accept the noise.
+
+## 11. Tracked reliability risk — recipient default switching
+
+CI run 41871083400 attempt 1: `recipients.test.ts` "keeps exactly one default
+under concurrent switches" (500 `DESTINATION_FAILED`) and `f3-data.test.ts`
+preferred-wallet switch failed; both passed on re-run and locally. Code
+unchanged since the initial release (`src/lib/recipients.ts`: advisory lock +
+unique-index backstop + 3× retry on 23505). Root cause not established — it
+may be retry exhaustion under remote DB latency, a different transient error
+masked by the route's generic 500, or a real race. Not on the payment path.
+Status: **open, tracked**; not classified as a database-only issue.
+
+## 12. Step 4 status — backup branch (BLOCKED on control-plane access)
+
+- **Not created.** Creating a Neon branch needs the Neon control plane (console,
+  `neonctl` or an API key). None is configured on the operator machine; the
+  production *database* credential cannot create branches, and no workaround
+  was attempted. Production data, connections, pilot switch: unchanged.
+- **Migration-hash finding resolved (commit `87cffea`):** `.gitattributes`
+  pins `src/db/migrations/*.sql` (and journal JSON) to LF; the working tree was
+  refreshed. All 18 files now hash identically raw and LF-normalised, so
+  drizzle will record canonical hashes for 0015–0017 from this checkout, and
+  0000–0014 match production's tracked hashes exactly.
+- **To proceed (owner):** either (a) authenticate the CLI once —
+  `npx neonctl@latest auth` (browser OAuth; no key is shown to the agent) — so
+  the branch can be created and verified, or (b) create it in the Neon console
+  (project containing the production database → Branches → Create branch from
+  the production/primary branch, "current point in time", name
+  `pre-release-0015-20261104`) and share only its name/ID for read-only
+  verification.
+
+## 13. Step 4 result — production backup branch (2026-11-04, VERIFIED)
+
+Neon access via `neonctl` (owner OAuth). Production was identified by
+matching the production `DATABASE_URL` endpoint, not by name:
+
+| | |
+|---|---|
+| Organization | `Thence` (`org-polished-forest-85191582`) |
+| Project | `thence` — `restless-haze-69652455` (aws-us-east-2, Postgres 18, PITR history 6 h) |
+| Production endpoint | `ep-rapid-… (production read-write endpoint; full id in the operator env file)` (read_write) |
+| Production branch | `production` — `br-crimson-term-b4l6luj2` (default, primary, the only branch) |
+| **Backup branch** | **`pre-release-0015-20261104` — `br-odd-snow-b4w1k3i6`** |
+| Parent / point | `br-crimson-term-b4l6luj2` at LSN `0/A82D600`, created 2026-11-04T18:16:35Z |
+| Backup compute | `ep-weathered-… (backup read-only endpoint)`, **read_only** (verification cannot write) |
+
+Verification (read-only transactions on both; credentials never printed):
+
+- Backup is read-only (`transaction_read_only=on`, in recovery).
+- 15 migrations tracked; 0015–0017 not applied; `transfer_transitions`,
+  `job_leases`, `swap_attachments.evm_refund_locktime` absent — on both the
+  backup and production.
+- Records present: 077770a1 `REFUNDED`, eddaa6de `RECONCILING`; the same
+  status distribution (90 transfers) as the step-3 preflight; pilot switch
+  `DISABLED` (2026-11-03T15:35:24Z).
+- **Row counts: identical** to production for all 15 tables (step-3
+  fingerprint unchanged). **Content fingerprints identical** for transfers,
+  swap_attachments, handoff_attempts, reconciliation_observations,
+  transfer_proofs, pilot_controls, users, recipients, recipient_destinations.
+- Production unchanged: no row, setting or switch differs; only a new branch
+  was added to the project.
+
+Migration hashes (corrects the `87cffea` message): production recorded
+0000–0013 from LF files and **0014 from a CRLF copy** (its hash equals the
+CRLF variant). Drizzle selects pending migrations by journal timestamp, not
+hash, so step 5 applies exactly 0015–0017; from this LF-pinned checkout they
+are recorded with canonical LF hashes. 0014's tracked hash stays as recorded
+(cosmetic; do not edit it).
+
+Recovery and limitations:
+
+- Restore = Neon "restore branch" of `production` from
+  `br-odd-snow-b4w1k3i6` (or repoint the app to it) — loses every production
+  write after LSN `0/A82D600` (sessions, auth challenges, any later
+  transfers). Prefer the additive-rollback SQL (§4) or a deployment rollback;
+  this branch is the last resort.
+- Independent of the 6 h PITR window; the branch has no expiry and counts
+  toward the project's branch limit until deleted.
+- Database only — not Vercel env, code or deployments.
+- **Security:** the branch copied production's roles **with their current
+  (exposed) passwords**. Resetting the password on `production` during
+  credential rotation does **not** change it on this branch. During rotation
+  Phase 1, also reset the role password on `br-odd-snow-b4w1k3i6` or delete
+  its compute endpoint (keep the branch), and delete the branch once the
+  release is stable.
+
+## 14. Step 5 result — production migrations 0015–0017 APPLIED (2026-11-04)
+
+Runner: the documented `src/db/migrate.ts` with
+`THENCE_MIGRATE_PRODUCTION=I_UNDERSTAND`, invoked through a wrapper that loads
+`DATABASE_URL` only from the operator production env file and refuses unless
+its endpoint is `ep-rapid-… (production read-write endpoint; full id in the operator env file)` (branch `production`) and no test
+anchor exists — instead of `--env-file`, so a CLI that ignored the flag could
+never fall back to `.env`. Files: canonical LF (0016 is a single line).
+Drizzle ran the three pending migrations in one transaction.
+
+| Check | Before | After |
+|---|---|---|
+| Endpoint / branch | production / `br-crimson-term-b4l6luj2` | same |
+| Backup `br-odd-snow-b4w1k3i6` | ready | (unchanged) |
+| Pilot switch | DISABLED (2026-11-03T15:35:24Z) | **DISABLED**, unchanged |
+| Tracked migrations | 15; pending 0015, 0016, 0017 | **18**; none pending |
+| 0014 tracked hash | `e35a13d0…` (CRLF variant) | **unchanged** |
+| 0015–0017 tracked hashes | — | canonical LF |
+| `transfer_transitions`, `job_leases`, `swap_attachments.evm_refund_locktime` | absent | **present**; 0 rows / all NULL |
+| Real in-flight | eddaa6de RECONCILING (unfunded); 0 live attempts | same |
+| Row counts (10 money/account tables) | transfers 90 … payment_requests 8 | **identical** |
+| Content fingerprints (pre-existing columns) | recorded | **identical** for all 10 tables |
+| Live app (old build `1f28983`) | — | `/api/health` 200, db reachable |
+
+No unexpected change. Nothing deployed; the new code is still undeployed.
+
+## 15. Step 6 result — app role + Vercel Production env (2026-11-04)
+
+**Database (project `restless-haze-69652455`, branch `production`):**
+- Role `thence_app` created by SQL as the owner (Neon accepts only plaintext
+  passwords; a locally generated 256-bit password was sent over TLS, never
+  printed or logged). A first attempt with a client-computed SCRAM verifier
+  was rejected by Neon and rolled back with no effect.
+- Grants: `CONNECT` on `neondb`; `USAGE` on schema `public`;
+  `SELECT, INSERT, UPDATE, DELETE` on all public tables; `USAGE, SELECT` on
+  public sequences (none exist); default privileges from `neondb_owner` for
+  future tables/sequences. Attributes: `NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOREPLICATION NOBYPASSRLS`. No DDL rights.
+- Verified as `thence_app`: login OK; 17 tables incl. `transfer_transitions`
+  and `job_leases` with exactly S/I/U/D (no TRUNCATE/REFERENCES); reads and
+  transaction-scoped advisory locks work; CREATE/DROP/ALTER TABLE, TRUNCATE
+  and `drizzle.__drizzle_migrations` access are refused.
+- Owner role and its (exposed) password unchanged, as instructed. Backup
+  branch untouched (it predates `thence_app`).
+
+**Vercel (project `thence`), Production scope only, values via stdin:**
+- `DATABASE_URL` → updated to the pooled `thence_app` URL (same host/options
+  as before, only the role changed). `vercel env update` succeeded.
+- `CRON_SECRET` → added, Sensitive, 64 chars (`base64url` of 48 random
+  bytes).
+- Flags: Vercel stores them as Sensitive (values not readable). The live
+  production bundle inlines both `NEXT_PUBLIC_THENCE_ENABLE_PAYMENT` and
+  `NEXT_PUBLIC_THENCE_ENABLE_CLAIM` as `"1"` (`{[M]:"1"}`, `{[v]:"1"}`), and the
+  variables were not updated since — they already match the release plan; not
+  changed. `THENCE_PILOT_ENABLED`, owner allowlist and caps: unreadable,
+  **not changed** (financial limits untouched). Their values must be confirmed
+  in the dashboard before the pilot (eddaa6de still counts as exposure).
+- Preview scope still has only `THENCE_APP_ORIGIN`.
+
+**Operator copies (outside the repo, owner-only ACL):**
+`~/.thence/production-app.env` (app-role URL) and `~/.thence/cron-secret`
+(for Hermes: copy into `/etc/thence/cron-secret` over SSH with an editor or
+`scp`, never via shell history — see ops/hermes/README.md).
+
+**No deployment / no activation:** env changes do not deploy. Production is
+still `thence-5x3boyuyb` (old code, old env snapshot — still the owner URL, no
+`CRON_SECRET`); both take effect only on the next production deployment
+(step 7). `/api/health` 200 with db reachable on both public aliases. Pilot
+switch `DISABLED`; data unchanged since step 5 (row counts + fingerprints of
+10 money/account tables identical, 0014 hash unchanged); 0 live attempts.
+Payment initiation stays blocked: `assertPilotDbEnabled` gates
+create/requote/prepare/attach/authorize in both the deployed and release code
+and the switch is FALSE.
