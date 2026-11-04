@@ -344,7 +344,13 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
     windowEnd: window.end,
   });
   const chainBlock = chainRefusal(chain);
-  if (chainBlock) throw refusal(chainBlock);
+  if (chainBlock) {
+    // Operator diagnostics (non-secret): which chain gate refused and why.
+    console.warn(
+      `thence-p4-close-refused ${JSON.stringify({ transfer: transfer.id.slice(0, 8), refusal: chainBlock, verdict: chain.verdict, reason: chain.reason, failure: chain.failure ?? null })}`,
+    );
+    throw refusal(chainBlock);
+  }
 
   const evidence: ExpiredUnfundedEvidence = {
     version: 1,
