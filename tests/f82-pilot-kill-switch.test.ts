@@ -63,7 +63,21 @@ function throwingDb(): { select: () => unknown } {
 }
 
 describe("F8.3 production-mandatory allowlist (pure, no DB)", () => {
-  const prodBase = { NODE_ENV: "production" };
+  // Public launch: these pin the PILOT mode's production rule, so the mode is
+  // explicit. A production env with NO mode is refused even earlier (below).
+  const prodBase = { NODE_ENV: "production", THENCE_PAYMENTS_MODE: "pilot" };
+
+  it("production with no THENCE_PAYMENTS_MODE refuses every gate (PAYMENTS_OFF) without touching the database", async () => {
+    for (const env of [{ NODE_ENV: "production" }, { NODE_ENV: "production", THENCE_PILOT_ENABLED: "1", THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: OWNER }]) {
+      const cfg = getPilotConfig(env);
+      expect(() => assertPilotIntent({ routeId: "usdc-polygon", targetAmountAtomic: "300000", ownerAddress: OWNER }, cfg)).toThrowError(
+        expect.objectContaining({ code: "PAYMENTS_OFF" }),
+      );
+      await expect(assertPilotBudget("user-1", "300000", cfg, throwingDb() as never)).rejects.toMatchObject({ code: "PAYMENTS_OFF" });
+      await expect(assertPilotDbEnabled(cfg, throwingDb() as never)).rejects.toMatchObject({ code: "PAYMENTS_OFF" });
+      await expect(isPilotDbEnabled(cfg, throwingDb() as never)).resolves.toBe(false);
+    }
+  });
 
   it("production with a missing allowlist fails closed on every gate", async () => {
     // Disarmed production without allowlist: the legacy skip must NOT apply.

@@ -9,8 +9,9 @@
  *
  * Then:
  * 1. starts the SIMULATED Satora + Polygon services (e2e/mock-services.ts);
- * 2. generates an ephemeral E2E wallet (ed25519; this run only) and puts its
- *    Nimiq address on the pilot owner allowlist of the E2E server ONLY;
+ * 2. generates an ephemeral E2E wallet (ed25519; this run only). The E2E
+ *    server runs THENCE_PAYMENTS_MODE=public with NO allowlist or caps, so
+ *    this wallet is an ordinary, non-allowlisted payer;
  * 3. makes sure the TEST database pilot switch allows test payments
  *    (restored afterwards);
  * 4. builds `.next-e2e` (payment + claim flags on — never the release `.next`);
@@ -20,7 +21,7 @@
 import "dotenv/config";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createPrivateKey, generateKeyPairSync } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { loadProductionDatabaseUrl } from "../scripts/db-guard";
@@ -76,6 +77,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   if (cert.status !== 0) throw new Error("E2E: could not generate the simulator certificate (openssl).");
   const stopMocks = await startMockServices(E2E_MOCK_PORT, { port: E2E_MOCK_TLS_PORT, key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") });
   const wallet = walletFile();
+  rmSync(join(RUN_DIR, "wallets.txt"), { force: true }); // per-test wallets of this run only
 
   // ---- TEST database pilot switch (restored in teardown) ----
   const pool = new Pool({ connectionString: testUrl, max: 1 });
@@ -123,11 +125,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     THENCE_NIMIQ_RPC_URL: `${mock}/nimiq`,
     THENCE_ENABLED_ROUTES: "usdc-polygon",
     THENCE_ROUTE_TOKENS_JSON: JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" }),
-    THENCE_PILOT_ENABLED: "1",
-    THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: wallet.address,
-    THENCE_PILOT_MAX_TARGET_ATOMIC: "300000",
-    THENCE_PILOT_MAX_SPEND_ATOMIC: "100000000",
-    THENCE_PILOT_MAX_TRANSFERS: "50",
+    // Public launch: the simulated wallet is on NO allowlist and no Thence
+    // cap applies — the whole lifecycle runs in public mode, gated only by
+    // the database kill switch (enabled above, test database only).
+    THENCE_PAYMENTS_MODE: "public",
     THENCE_TRANSFERS_WRITE_RATE_PER_MINUTE: "600",
     THENCE_QUOTES_RATE_PER_MINUTE: "600",
     THENCE_CHALLENGE_RATE_PER_MINUTE: "600",
@@ -138,6 +139,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     NODE_EXTRA_CA_CERTS: certPath,
   };
   delete serverEnv["THENCE_PRODUCTION_ENV_FILE"];
+  for (const k of ["THENCE_PILOT_ENABLED", "THENCE_PILOT_OWNER_NIMIQ_ADDRESSES", "THENCE_PILOT_MAX_TARGET_ATOMIC", "THENCE_PILOT_MAX_SPEND_ATOMIC", "THENCE_PILOT_MAX_TRANSFERS"]) {
+    delete serverEnv[k];
+  }
   const server: ChildProcess = spawn("npx", ["next", "start", "-p", String(E2E_APP_PORT)], { cwd: ROOT, env: serverEnv, stdio: ["ignore", "pipe", "pipe"], shell: true });
   // Server output is kept (test run only) so specs can prove no secret is ever logged.
   const serverLog = join(RUN_DIR, "server.log");
@@ -170,6 +174,12 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     await stopMocks();
     // TEST database cleanup: the ephemeral E2E owner and everything it created (cascade).
     await pool.query("DELETE FROM users WHERE nimiq_address = $1", [wallet.address]);
+    // Per-test wallets (e2e/harness.ts freshWallet): one Thence user per test.
+    const perTest = existsSync(join(RUN_DIR, "wallets.txt"))
+      ? readFileSync(join(RUN_DIR, "wallets.txt"), "utf8").split(/\r?\n/).filter((a) => a.trim() !== "")
+      : [];
+    if (perTest.length > 0) await pool.query("DELETE FROM users WHERE nimiq_address = ANY($1::text[])", [perTest]);
+    rmSync(join(RUN_DIR, "wallets.txt"), { force: true });
     await pool.query("DELETE FROM job_leases WHERE name LIKE 'claim:%' AND expires_at < NOW() - interval '1 hour'");
     // Restore the suites' defined baseline (DISABLED, fail-closed — see
     // tests/f81-pilot-attempt-limits.test.ts), never a remembered value.

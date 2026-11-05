@@ -59,7 +59,39 @@ export const DEFAULT_MAX_TARGET_ATOMIC = "300000"; // 0.30 USDC
 export const DEFAULT_MAX_SPEND_ATOMIC = "300000"; // 0.30 USDC total (single shot)
 export const DEFAULT_MAX_TRANSFERS = 1;
 
+/**
+ * Public launch — explicit payment mode (THENCE_PAYMENTS_MODE).
+ *
+ * - "off":    no new funded execution at all (PAYMENTS_OFF).
+ * - "pilot":  the restricted pilot below, unchanged (allowlist, caps,
+ *             THENCE_PILOT_ENABLED, database switch).
+ * - "public": any authenticated Nimiq Pay wallet. No allowlist and no
+ *             Thence-imposed amount/spend caps; amounts are bounded only by
+ *             the provider's live quote limits (assertSourceBounds), the
+ *             enabled routes (THENCE_ENABLED_ROUTES) and the payer's wallet.
+ *             STILL enforced: the database kill switch (pilot_controls,
+ *             the administrator's emergency stop) and the one-unresolved-
+ *             payment-per-user rule (double-payment protection).
+ *
+ * Fail-closed resolution: an invalid value is "off"; a missing value is
+ * "off" in production. Outside production a missing value keeps the
+ * pre-mode behaviour ("legacy", used by development and test fixtures).
+ */
+export type PaymentsMode = "off" | "pilot" | "public";
+export type ResolvedPaymentsMode = PaymentsMode | "legacy";
+
+export function resolvePaymentsMode(source: Record<string, string | undefined> = process.env): ResolvedPaymentsMode {
+  const raw = (source["THENCE_PAYMENTS_MODE"] ?? "").trim().toLowerCase();
+  if (raw === "off" || raw === "pilot" || raw === "public") return raw;
+  if (raw !== "") return "off";
+  return (source["NODE_ENV"] ?? "").trim() === "production" ? "off" : "legacy";
+}
+
+const paymentsOff = () => new AuthError(403, "PAYMENTS_OFF", "Payments are not available right now.");
+
 export interface PilotConfig {
+  /** Resolved payment mode; omitted (hand-built test configs) means "legacy". */
+  mode?: ResolvedPaymentsMode;
   enabled: boolean;
   owners: string[];
   maxTargetAtomic: string;
@@ -97,6 +129,7 @@ function parseOwners(raw: string | undefined): string[] {
 
 export function getPilotConfig(source: Record<string, string | undefined> = process.env): PilotConfig {
   return {
+    mode: resolvePaymentsMode(source),
     enabled: (source["THENCE_PILOT_ENABLED"] ?? "").trim() === "1",
     production: (source["NODE_ENV"] ?? "").trim() === "production",
     owners: parseOwners(source["THENCE_PILOT_OWNER_NIMIQ_ADDRESSES"]),
@@ -186,6 +219,17 @@ export function assertPilotIntent(
   input: { routeId: string; targetAmountAtomic: string; ownerAddress: string | null },
   config: PilotConfig = getPilotConfig(),
 ): void {
+  if (config.mode === "off") throw paymentsOff();
+  if (config.mode === "public") {
+    // Any authenticated wallet; no allowlist, no Thence amount cap, no
+    // single-route restriction (route enablement and provider bounds are
+    // enforced by the quote/route layer).
+    if (!input.ownerAddress) throw new AuthError(403, "PAYMENTS_NOT_AUTHORIZED", "Sign in with Nimiq Pay to pay.");
+    if (!/^\d+$/.test(input.targetAmountAtomic) || BigInt(input.targetAmountAtomic) <= 0n) {
+      throw new AuthError(400, "BAD_AMOUNT", "targetAmountAtomic must be a positive atomic integer string.");
+    }
+    return;
+  }
   if (config.owners.length === 0) {
     if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
     // F8.3: production must be explicitly allowlisted. Missing allowlist
@@ -236,7 +280,9 @@ export async function isPilotDbEnabled(
   config: PilotConfig = getPilotConfig(),
   db: KillSwitchDb = getDb(),
 ): Promise<boolean> {
-  if (config.owners.length === 0 || !config.enabled) return false;
+  if (config.mode === "off") return false;
+  // Public mode: the database switch alone is the administrator's control.
+  if (config.mode !== "public" && (config.owners.length === 0 || !config.enabled)) return false;
   try {
     const rows = await db
       .select({ enabled: pilotControls.enabled })
@@ -263,6 +309,13 @@ export async function assertPilotDbEnabled(
   config: PilotConfig = getPilotConfig(),
   db: KillSwitchDb = getDb(),
 ): Promise<void> {
+  if (config.mode === "off") throw paymentsOff();
+  if (config.mode === "public") {
+    if (!(await isPilotDbEnabled(config, db))) {
+      throw new AuthError(403, "PILOT_DISABLED", "Payments are paused (emergency switch). No new funding is permitted.");
+    }
+    return;
+  }
   // F8.3: production with a missing allowlist fails closed here too, so a
   // caller that reaches the database gate first can never slip through.
   // (Normal ordering runs assertPilotIntent first, which throws first.)
@@ -320,6 +373,9 @@ export async function assertPilotBudget(
   config: PilotConfig = getPilotConfig(),
   db: BudgetDb = getDb(),
 ): Promise<void> {
+  if (config.mode === "off") throw paymentsOff();
+  // Public mode imposes no Thence spend ceiling (provider bounds apply).
+  if (config.mode === "public") return;
   if (config.owners.length === 0) {
     if (config.enabled) throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
     if (config.production) {
@@ -360,13 +416,16 @@ export async function assertFundingExposure(
   db: Pick<PilotDb, "select"> = getDb(),
   excludeTransferId: string | null = null,
 ): Promise<void> {
-  if (config.owners.length === 0 && (config.enabled || config.production)) {
+  if (config.mode === "off") throw paymentsOff();
+  const publicMode = config.mode === "public";
+  if (!publicMode && config.owners.length === 0 && (config.enabled || config.production)) {
     throw new AuthError(403, "PILOT_NOT_AUTHORIZED", "Pilot allowlist is missing; funded execution is blocked.");
   }
-  // Funding exposure is a lifecycle safety rule even while the pilot is OFF.
+  // Funding exposure is a lifecycle safety rule in EVERY mode, public
+  // included: one unresolved payment per user (double-payment protection).
   // When the pilot is armed, it narrows the same rule to its configured route
   // and applies its independent count/spend caps below.
-  const pilotArmed = config.enabled && config.owners.length > 0;
+  const pilotArmed = !publicMode && config.enabled && config.owners.length > 0;
   const rows = await db
     .select({ id: transfers.id, amount: transfers.targetAmountAtomic, status: transfers.status, routeId: transfers.routeId })
     .from(transfers)

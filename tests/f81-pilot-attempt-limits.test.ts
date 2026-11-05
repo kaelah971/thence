@@ -511,6 +511,7 @@ describe.skipIf(!LIVE)("F8.3 production-mandatory allowlist (isolated TEST datab
     const env = process.env as Record<string, string | undefined>;
     const savedNodeEnv = env["NODE_ENV"];
     const savedOrigin = env["THENCE_APP_ORIGIN"];
+    const savedMode = env["THENCE_PAYMENTS_MODE"];
     try {
       // Production runtime posture with no allowlist configured.
       env["NODE_ENV"] = "production";
@@ -521,12 +522,20 @@ describe.skipIf(!LIVE)("F8.3 production-mandatory allowlist (isolated TEST datab
       // Database switch ON proves it cannot compensate for the missing allowlist.
       await setPilotDb(true);
       const me = await login("prod-norow");
-      const res = await createDirect(me.cookie, "prod-norow", "prod-missing-allowlist", "300000");
-      expect(res.status).toBe(403);
-      expect(res.body.error).toBe("PILOT_NOT_AUTHORIZED");
+      // Public launch: pilot mode keeps the production-mandatory allowlist;
+      // with no mode at all, production refuses even earlier (PAYMENTS_OFF).
+      for (const [mode, code] of [["pilot", "PILOT_NOT_AUTHORIZED"], [undefined, "PAYMENTS_OFF"]] as const) {
+        if (mode === undefined) delete env["THENCE_PAYMENTS_MODE"];
+        else env["THENCE_PAYMENTS_MODE"] = mode;
+        const res = await createDirect(me.cookie, "prod-norow", `prod-missing-allowlist-${mode ?? "unset"}`, "300000");
+        expect(res.status, String(mode)).toBe(403);
+        expect(res.body.error, String(mode)).toBe(code);
+      }
       const rows = await getDb().select({ id: transfers.id }).from(transfers).where(eq(transfers.ownerUserId, me.userId));
       expect(rows).toHaveLength(0);
     } finally {
+      if (savedMode === undefined) delete env["THENCE_PAYMENTS_MODE"];
+      else env["THENCE_PAYMENTS_MODE"] = savedMode;
       if (savedNodeEnv === undefined) delete env["NODE_ENV"];
       else env["NODE_ENV"] = savedNodeEnv;
       if (savedOrigin === undefined) delete env["THENCE_APP_ORIGIN"];

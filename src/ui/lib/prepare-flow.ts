@@ -395,6 +395,8 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "PILOT_ATTEMPTS_EXCEEDED":
       return { title: "You already have this payment in progress", body: "Continue it from Activity instead of starting over — nothing new was created.", retryable: true, action: "resume" };
     case "PILOT_DISABLED":
+    case "PAYMENTS_OFF":
+    case "PAYMENTS_NOT_AUTHORIZED":
       return { title: "Payments temporarily unavailable", body: "Thence isn't accepting new payments right now. Nothing was created or charged.", retryable: false, action: "abort" };
     case "PILOT_EXPOSURE_LIMIT":
     case "PAYMENT_EXPOSURE_UNCERTAIN":
