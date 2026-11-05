@@ -91,3 +91,75 @@ export function serializeClearedDiagCookie(): string {
   if (getEnv().NODE_ENV === "production") parts.push("Secure");
   return parts.join("; ");
 }
+
+/* ------------------------------------------------------------------ */
+/* v2: cookie persistence comparison (all carry only the random run id) */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Four variants written together so a relaunch shows WHICH kind of cookie the
+ * host keeps. None authenticates anything; the real session cookie is never
+ * touched.
+ * - persistent:   = `thence_diag`, the login cookie's exact attributes
+ * - session:      HttpOnly, SameSite=Lax, no Max-Age/Expires (browser-session lifetime)
+ * - sameSiteNone: HttpOnly, SameSite=None, Secure, same Max-Age
+ * - script:       written by page script (not HttpOnly); the server only echoes it
+ */
+export const DIAG_COOKIES = {
+  persistent: DIAG_COOKIE_NAME,
+  session: "thence_diag_s",
+  sameSiteNone: "thence_diag_n",
+  script: "thence_diag_js",
+} as const;
+export type DiagCookieVariant = keyof typeof DIAG_COOKIES;
+export const DIAG_COOKIE_VARIANTS = Object.keys(DIAG_COOKIES) as DiagCookieVariant[];
+
+/** Run id per variant from a Cookie header (null when absent or malformed). */
+export function readDiagCookies(cookieHeader: string | null): Record<DiagCookieVariant, string | null> {
+  const out: Record<DiagCookieVariant, string | null> = { persistent: null, session: null, sameSiteNone: null, script: null };
+  if (!cookieHeader) return out;
+  const byName = new Map<string, DiagCookieVariant>(DIAG_COOKIE_VARIANTS.map((v) => [DIAG_COOKIES[v], v]));
+  for (const part of cookieHeader.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    const variant = byName.get(part.slice(0, idx).trim());
+    if (!variant) continue;
+    let value: string;
+    try {
+      value = decodeURIComponent(part.slice(idx + 1).trim());
+    } catch {
+      continue;
+    }
+    if (DIAG_RUN_ID.test(value)) out[variant] = value;
+  }
+  return out;
+}
+
+/** Set-Cookie values for the three server-written variants. */
+export function serializeDiagCookieVariants(runId: string): string[] {
+  if (!DIAG_RUN_ID.test(runId)) throw new Error("invalid diagnostic run id");
+  const env = getEnv();
+  const ttl = env.THENCE_SESSION_TTL_SECONDS;
+  const expires = new Date(Date.now() + ttl * 1000).toUTCString();
+  const secure = env.NODE_ENV === "production" ? ["Secure"] : [];
+  const v = encodeURIComponent(runId);
+  return [
+    serializeDiagCookie(runId),
+    [`${DIAG_COOKIES.session}=${v}`, "Path=/", "HttpOnly", "SameSite=Lax", ...secure].join("; "),
+    // SameSite=None is only accepted with Secure, so it is always Secure.
+    [`${DIAG_COOKIES.sameSiteNone}=${v}`, "Path=/", "HttpOnly", "SameSite=None", "Secure", `Max-Age=${ttl}`, `Expires=${expires}`].join("; "),
+  ];
+}
+
+/** Clear every diagnostic variant (including the script-written one). */
+export function serializeClearedDiagCookieVariants(): string[] {
+  const env = getEnv();
+  const secure = env.NODE_ENV === "production" ? ["Secure"] : [];
+  const gone = ["Max-Age=0", "Expires=Thu, 01 Jan 1970 00:00:00 GMT"];
+  return [
+    serializeClearedDiagCookie(),
+    [`${DIAG_COOKIES.session}=`, "Path=/", "HttpOnly", "SameSite=Lax", ...gone, ...secure].join("; "),
+    [`${DIAG_COOKIES.sameSiteNone}=`, "Path=/", "HttpOnly", "SameSite=None", "Secure", ...gone].join("; "),
+    [`${DIAG_COOKIES.script}=`, "Path=/", "SameSite=Lax", ...gone, ...secure].join("; "),
+  ];
+}

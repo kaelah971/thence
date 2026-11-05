@@ -163,7 +163,8 @@ Not acceptable as fixes: moving the session token to localStorage or an
 `Secure` or `SameSite=Lax`, relaxing the Origin check, or replacing wallet
 signature sign-in. None is proposed.
 
-Next no-money diagnostic (needs approval; all stay owner-only):
+Next no-money diagnostic. Items 1–3 are implemented as diagnostic v2
+(`docs/IOS_STORAGE_DIAGNOSTIC.md`, "Version 2 additions"); device run pending:
 
 1. Cookie variants written together, compared after each relaunch: the
    current HttpOnly server cookie; a session cookie (no `Max-Age`/`Expires`);
