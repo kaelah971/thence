@@ -37,6 +37,57 @@ stays UNRESOLVED until the results below are recorded.
   pageshow, resume) and on every load. A new page id in History means the
   webview reloaded the page.
 
+## Version 2 additions
+
+| Added check | How | Counted in the headline? |
+|---|---|---|
+| Cookie variants | Written together at **Start test**: `thence_diag` (exactly the login cookie's attributes), `thence_diag_s` (HttpOnly, SameSite=Lax, **no expiry**: browser-session lifetime), `thence_diag_n` (HttpOnly, **SameSite=None**, Secure), `thence_diag_js` (**written by page script**, not HttpOnly). Each holds only the random run id. The server reports which ones each request carried | Only `thence_diag` (as in v1). The other three are a comparison |
+| Launch counter | Stored in IndexedDB and localStorage with the run id. Each page load adds 1. A load **without** the sessionStorage "alive" marker started a new browsing session and is counted as a **relaunch**; with it, a **reload** | No (informational); FAIL if the counter disappeared while the run marker survived |
+| Real recovery databases | `indexedDB.databases()` lists database **names**. Only whether `lendaswap-v3` (swap SDK claim data) and `thence-recovery` (Thence binding) appear is kept; every other name is discarded | Separate headline: **Real recovery databases** |
+
+Real-database verdicts:
+
+- **PASS**: the name is listed now.
+- **FAIL**: it was listed at Start test and is gone now.
+- **UNKNOWN**: the browser cannot list names, or the database was not on the
+  device when the test started (never created here, or already cleared).
+
+The real databases are **never opened, created, modified, deleted or read**:
+the only call is `indexedDB.databases()`. Tests fail if any other IndexedDB
+call touches them, if the names drift from the SDK's `DB_NAME` and the vault's
+`DB_NAME`, or if any other database name reaches the page state or the report.
+
+### What v2 can prove
+
+- Which kinds of cookie the host keeps across a relaunch (all lost points to
+  the host clearing cookies; only the no-expiry one lost points to
+  session-lifetime cookies; only the script one kept, or the reverse, points
+  to how the cookie was set).
+- How many relaunches and reloads happened between checks, even without a
+  scenario label.
+- Whether the real recovery databases still **exist by name** after those
+  relaunches.
+
+### What v2 cannot prove
+
+- **That a claim secret survived.** A database can exist while the record or
+  key inside it is gone, damaged, or from another swap. Only the real claim
+  path (vault binding + SDK readback + server claim intent) proves it, and
+  that runs only for a real funded payment.
+- Why the host drops cookies. v2 narrows it; only the Nimiq Pay team can
+  confirm.
+- Behaviour on other devices, iOS versions or Nimiq Pay versions.
+
+### v2 on the iPhone
+
+Same procedure as above, with three changes:
+
+1. Tap **Start test** again, even if an older run exists. v1 runs have no
+   launch counter or cookie variants.
+2. **Pick the step before every action** so each result is labelled.
+3. Read both headlines after each step: **Result now** and **Real recovery
+   databases**. Note the load number and whether it says "(relaunch)".
+
 ## Verdicts
 
 - **PASS**: the marker from the current test was found (session: the same

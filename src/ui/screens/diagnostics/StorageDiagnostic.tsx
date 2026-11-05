@@ -15,10 +15,13 @@ import {
   StorageDiagnosticEngine,
   buildReport,
   fetchServerApi,
+  databaseNameLister,
+  documentScriptCookie,
   indexedDbStore,
   newRunId,
   webStorageStore,
   type KvStore,
+  type ScriptCookie,
   type ServerApi,
   type Verdict,
 } from "@/ui/lib/storage-diagnostic";
@@ -49,6 +52,8 @@ export interface StorageDiagnosticProps {
   /** Test seams. */
   stores?: KvStore[];
   server?: ServerApi;
+  scriptCookie?: ScriptCookie | undefined;
+  listDatabaseNames?: (() => Promise<string[] | null>) | undefined;
   pageInstance?: string;
   navigation?: string;
 }
@@ -71,6 +76,9 @@ export function StorageDiagnostic(props: StorageDiagnosticProps): React.JSX.Elem
         server: props.server ?? fetchServerApi(),
         pageInstance: page,
         navigationType: nav,
+        scriptCookie: props.scriptCookie ?? (typeof document === "undefined" ? undefined : documentScriptCookie(() => document)),
+        listDatabaseNames:
+          props.listDatabaseNames ?? databaseNameLister(() => (typeof indexedDB === "undefined" ? undefined : indexedDB)),
       }),
   );
   const state = useSyncExternalStore(engine.subscribe, engine.getState, engine.getState);
@@ -191,7 +199,7 @@ export function StorageDiagnostic(props: StorageDiagnosticProps): React.JSX.Elem
         <h1 className={styles.title}>Storage check</h1>
         <p className={styles.muted}>
           Tests whether this phone keeps Thence&apos;s saved data when Nimiq Pay is switched away, locked, reloaded or closed.
-          It uses its own test markers only — it never reads or changes payment recovery data, and it moves no money.
+          It uses its own test markers only — it never opens, reads or changes payment recovery data, and it moves no money.
         </p>
 
         {state.startError && (
@@ -237,6 +245,32 @@ export function StorageDiagnostic(props: StorageDiagnosticProps): React.JSX.Elem
           </div>
         </section>
 
+        <section className={styles.card} aria-labelledby="diag-real">
+          <div className={styles.cardHead}>
+            <h2 id="diag-real" className={styles.h2}>
+              Real recovery databases
+            </h2>
+            {evaluation && <VerdictBadge verdict={evaluation.realDbsOverall} />}
+          </div>
+          <p className={styles.muted}>
+            Checks only whether the databases holding a payment&apos;s claim data still exist, by name. They are never opened, so this
+            cannot show that the claim secrets inside survived.
+          </p>
+          {evaluation && (
+            <ul className={styles.lines}>
+              {evaluation.realDbLines.map((l) => (
+                <li key={l.name} className={styles.line}>
+                  <VerdictBadge verdict={l.verdict} />
+                  <div>
+                    <p className={styles.lineLabel}>{l.label}</p>
+                    <p className={styles.lineDetail}>{l.detail}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
         <section className={styles.card} aria-labelledby="diag-step">
           <h2 id="diag-step" className={styles.h2}>
             What are you about to do?
@@ -272,12 +306,13 @@ export function StorageDiagnostic(props: StorageDiagnosticProps): React.JSX.Elem
                   <VerdictBadge verdict={h.overall} />
                   <span>
                     {new Date(h.at).toLocaleTimeString()} · {h.trigger}
+                    {h.launch ? ` · load #${h.launch.n}${h.launch.relaunch ? " (relaunch)" : ""}` : ""}
                     {h.scenario ? ` · ${h.scenario}` : ""}
                     {h.page !== page ? " · earlier page load" : ""}
                     <br />
                     <span className={styles.lineDetail}>
-                      IndexedDB {h.results.indexedDB} · localStorage {h.results.localStorage} · cookie {h.results.diagCookie} · session{" "}
-                      {h.results.session}
+                      IndexedDB {h.results.indexedDB ?? "-"} · localStorage {h.results.localStorage ?? "-"} · cookie {h.results.diagCookie ?? "-"}
+                      {" "}· session {h.results.session ?? "-"} · real DBs {h.realDbs ?? "-"}
                     </span>
                   </span>
                 </li>

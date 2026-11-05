@@ -15,8 +15,10 @@ import {
   MAX_BODY_BYTES,
   checkDestination,
   isValidEvmAddress,
+  lockRecipient,
   readJsonBody,
   rejectForbiddenKeys,
+  setDefaultAtomic,
 } from "@/lib/recipients";
 import { LIVE, RUN, deleteJson, fixtureWallet, loginAs, patchJson, postJson } from "./helpers";
 import { DELETE as deleteDest, PATCH as patchDest } from "../app/api/recipients/[id]/destinations/[destId]/route";
@@ -277,6 +279,52 @@ describe.skipIf(!LIVE)("destinations", () => {
       await listDest(new Request(`http://localhost/api/recipients/${id}/destinations`, { headers: { cookie } }), { params: Promise.resolve({ id }) })
     ).json()) as { destinations: { isDefault: boolean }[] };
     expect(all.destinations.filter((d) => d.isDefault).length).toBe(1);
+  });
+
+  /**
+   * CI flake root cause (runs 41954540750, 42071551419, 42073802340): the
+   * single-default partial unique index is non-deferrable, so PostgreSQL
+   * checks it ROW BY ROW during an UPDATE. A one-statement switch
+   * (`SET is_default = (id = target)`) raises 23505 whenever the scan reaches
+   * the new default before the old one — no concurrency needed, and retries
+   * replay the same physical order. Routes reach this with whatever heap
+   * layout the row churn produced, so the switch is pinned here directly with
+   * the order forced both ways.
+   */
+  it("default switch succeeds whichever row PostgreSQL scans first (sequential, no concurrency)", async () => {
+    for (const order of ["target-first", "default-first"] as const) {
+      const { id } = await recipientWith(`order-${order}`);
+      // One multi-row INSERT keeps both rows consecutive on one heap page, in
+      // VALUES order (separate INSERTs may land on any page via the FSM).
+      const target = { recipientId: id, asset: "USDC", network: "Polygon", address: EVM_A, isDefault: false };
+      const prior = { recipientId: id, asset: "USDC", network: "Polygon", address: EVM_B, isDefault: true };
+      const rowsIn = await getDb()
+        .insert(recipientDestinations)
+        .values(order === "target-first" ? [target, prior] : [prior, target])
+        .returning({ id: recipientDestinations.id, isDefault: recipientDestinations.isDefault });
+      const targetId = rowsIn.find((r) => !r.isDefault)!.id;
+      const previous = rowsIn.find((r) => r.isDefault)!.id;
+      // Precondition: the physical order is what this case claims.
+      const ctids = await getPool().query<{ id: string; page: string; item: string }>(
+        "SELECT id::text, (ctid::text::point)[0] AS page, (ctid::text::point)[1] AS item FROM recipient_destinations WHERE recipient_id = $1",
+        [id],
+      );
+      const pos = (rid: string) => {
+        const r = ctids.rows.find((x) => x.id === rid)!;
+        return Number(r.page) * 100_000 + Number(r.item);
+      };
+      expect(pos(targetId) < pos(previous), `${order}: physical order precondition`).toBe(order === "target-first");
+      await getDb().transaction(async (tx) => {
+        await lockRecipient(tx, id);
+        await setDefaultAtomic(tx, id, targetId);
+      });
+      const rows = await getDb()
+        .select({ id: recipientDestinations.id, isDefault: recipientDestinations.isDefault })
+        .from(recipientDestinations)
+        .where(eq(recipientDestinations.recipientId, id));
+      expect(rows.filter((r) => r.isDefault).map((r) => r.id), order).toEqual([targetId]);
+      expect(rows.find((r) => r.id === previous)?.isDefault, order).toBe(false);
+    }
   });
 
   it("promotes the most recent sibling when the default is deleted", async () => {

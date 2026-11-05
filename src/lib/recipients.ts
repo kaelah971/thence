@@ -306,16 +306,26 @@ async function withUniqueRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T
 }
 
 /**
- * Single atomic statement: exactly the target row becomes the default.
- * Runs under the recipient advisory lock; the partial unique index
- * underneath is a backstop. Concurrent same-recipient switches retry
- * on 23505 via withUniqueRetry instead of surfacing a 500.
+ * Exactly the target row becomes the default (same end state as before).
+ *
+ * Two statements, clear THEN set, inside the caller's transaction and under
+ * the recipient advisory lock. A single `SET is_default = (id = target)`
+ * is NOT safe: the partial unique index is non-deferrable, so PostgreSQL
+ * checks it row by row and raises 23505 whenever the scan reaches the target
+ * before the old default (heap-layout dependent; retries replay the same
+ * order). That was the intermittent 500 DESTINATION_FAILED in CI. The index
+ * stays the backstop; concurrent switches still retry on 23505.
  */
-async function setDefaultAtomic(db: Queryable, recipientId: string, destinationId: string): Promise<void> {
+export async function setDefaultAtomic(db: Queryable, recipientId: string, destinationId: string): Promise<void> {
   await db.execute(sql`
     UPDATE recipient_destinations
-    SET is_default = (id = ${destinationId}::uuid)
-    WHERE recipient_id = ${recipientId}::uuid
+    SET is_default = FALSE
+    WHERE recipient_id = ${recipientId}::uuid AND is_default = TRUE AND id <> ${destinationId}::uuid
+  `);
+  await db.execute(sql`
+    UPDATE recipient_destinations
+    SET is_default = TRUE
+    WHERE recipient_id = ${recipientId}::uuid AND id = ${destinationId}::uuid
   `);
 }
 

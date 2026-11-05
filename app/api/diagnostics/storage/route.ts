@@ -1,9 +1,9 @@
 /**
  * /api/diagnostics/storage — iOS WebView storage diagnostic (owner only, no money).
  *
- * GET    → { owner, session: { authenticated, tag, createdAt, expiresAt }, diagCookie, serverTime }
- * POST   { runId } → sets the non-sensitive `thence_diag` cookie (owner only)
- * DELETE → clears `thence_diag` (owner only)
+ * GET    → { owner, session: { authenticated, tag, createdAt, expiresAt }, diagCookie, diagCookies, serverTime }
+ * POST   { runId } → sets the non-sensitive diagnostic cookie variants (owner only)
+ * DELETE → clears every diagnostic cookie variant (owner only)
  *
  * - No session: 401. When the request still carries `thence_diag`, the body
  *   echoes only that cookie's presence and run id (the caller's own random
@@ -18,12 +18,16 @@ import { AuthError, assertSafeOrigin, getAuthenticatedSession, readSessionToken,
 import {
   DIAG_RUN_ID,
   isDiagnosticsOwner,
-  readDiagCookie,
-  serializeClearedDiagCookie,
-  serializeDiagCookie,
+  readDiagCookies,
+  serializeClearedDiagCookieVariants,
+  serializeDiagCookieVariants,
   sessionCreatedAt,
   sessionTag,
+  type DiagCookieVariant,
 } from "@/lib/diagnostics";
+
+type CookieEcho = Record<DiagCookieVariant, string | null>;
+const NO_COOKIES: CookieEcho = { persistent: null, session: null, sameSiteNone: null, script: null };
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
@@ -36,7 +40,8 @@ async function ownerSession(request: Request): Promise<{ session: AuthenticatedS
   return { session, owner: session !== null && isDiagnosticsOwner(session.nimiqAddress) };
 }
 
-async function payload(session: AuthenticatedSession, diagRunId: string | null) {
+async function payload(session: AuthenticatedSession, cookies: CookieEcho) {
+  const diagRunId = cookies.persistent;
   const createdAt = await sessionCreatedAt(session.sessionId);
   return {
     owner: true,
@@ -47,6 +52,7 @@ async function payload(session: AuthenticatedSession, diagRunId: string | null) 
       expiresAt: session.expiresAt.toISOString(),
     },
     diagCookie: { present: diagRunId !== null, runId: diagRunId },
+    diagCookies: cookies,
     serverTime: new Date().toISOString(),
   };
 }
@@ -60,15 +66,17 @@ function failure(err: unknown): NextResponse {
 
 export async function GET(request: Request): Promise<NextResponse> {
   try {
-    const diagRunId = readDiagCookie(request.headers.get("cookie"));
+    const cookies = readDiagCookies(request.headers.get("cookie"));
+    const diagRunId = cookies.persistent;
     const { session, owner } = await ownerSession(request);
     if (!session) {
       const body: Record<string, unknown> = { error: "UNAUTHORIZED", message: "Authentication required." };
       if (diagRunId !== null) body["diagCookie"] = { present: true, runId: diagRunId };
+      if (Object.values(cookies).some((v) => v !== null)) body["diagCookies"] = cookies;
       return NextResponse.json(body, { status: 401, headers: NO_STORE });
     }
     if (!owner) return notFound();
-    return NextResponse.json(await payload(session, diagRunId), { status: 200, headers: NO_STORE });
+    return NextResponse.json(await payload(session, cookies), { status: 200, headers: NO_STORE });
   } catch (err) {
     return failure(err);
   }
@@ -89,8 +97,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (typeof runId !== "string" || !DIAG_RUN_ID.test(runId)) {
       return NextResponse.json({ error: "INVALID_RUN_ID", message: "Invalid diagnostic run id." }, { status: 400, headers: NO_STORE });
     }
-    const res = NextResponse.json(await payload(session, runId), { status: 200, headers: NO_STORE });
-    res.headers.append("Set-Cookie", serializeDiagCookie(runId));
+    // The script variant is written by the page; echo what this request carried.
+    const sent = readDiagCookies(request.headers.get("cookie"));
+    const echo: CookieEcho = { persistent: runId, session: runId, sameSiteNone: runId, script: sent.script };
+    const res = NextResponse.json(await payload(session, echo), { status: 200, headers: NO_STORE });
+    for (const cookie of serializeDiagCookieVariants(runId)) res.headers.append("Set-Cookie", cookie);
     return res;
   } catch (err) {
     return failure(err);
@@ -103,8 +114,8 @@ export async function DELETE(request: Request): Promise<NextResponse> {
     const { session, owner } = await ownerSession(request);
     if (!session) return NextResponse.json({ error: "UNAUTHORIZED", message: "Authentication required." }, { status: 401, headers: NO_STORE });
     if (!owner) return notFound();
-    const res = NextResponse.json(await payload(session, null), { status: 200, headers: NO_STORE });
-    res.headers.append("Set-Cookie", serializeClearedDiagCookie());
+    const res = NextResponse.json(await payload(session, NO_COOKIES), { status: 200, headers: NO_STORE });
+    for (const cookie of serializeClearedDiagCookieVariants()) res.headers.append("Set-Cookie", cookie);
     return res;
   } catch (err) {
     return failure(err);

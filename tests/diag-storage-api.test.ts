@@ -14,7 +14,9 @@ import { getDb } from "@/lib/db";
 import { users } from "@/db/schema";
 import { hashSessionToken } from "@/lib/auth";
 import {
+  DIAG_COOKIES,
   DIAG_COOKIE_NAME,
+  readDiagCookies,
   diagnosticsOwners,
   isDiagnosticsOwner,
   readDiagCookie,
@@ -51,6 +53,13 @@ describe("diagnostics owner list (pure)", () => {
         THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: OWNER_ADDR,
       }),
     ).toBe(false);
+  });
+
+  it("v2: reads each cookie variant by name; ignores the login cookie and malformed values", () => {
+    const header = `thence_session=tok; ${DIAG_COOKIES.persistent}=r-aaaaaaaa1; ${DIAG_COOKIES.session}=r-aaaaaaaa2; ${DIAG_COOKIES.sameSiteNone}=<x>; ${DIAG_COOKIES.script}=r-aaaaaaaa4`;
+    expect(readDiagCookies(header)).toEqual({ persistent: "r-aaaaaaaa1", session: "r-aaaaaaaa2", sameSiteNone: null, script: "r-aaaaaaaa4" });
+    expect(readDiagCookies(null)).toEqual({ persistent: null, session: null, sameSiteNone: null, script: null });
+    expect(readDiagCookies("thence_session=r-aaaaaaaa1")).toEqual({ persistent: null, session: null, sameSiteNone: null, script: null });
   });
 
   it("parses only well-formed diagnostic cookies", () => {
@@ -93,7 +102,9 @@ describe.skipIf(!LIVE)("/api/diagnostics/storage (live TEST database)", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["diagCookie"]).toEqual({ present: true, runId: "r-device-run-1" });
-    expect(Object.keys(body).sort()).toEqual(["diagCookie", "error", "message"]);
+    // v2 also echoes the variant map — still only this device's own diagnostic run ids.
+    expect(Object.keys(body).sort()).toEqual(["diagCookie", "diagCookies", "error", "message"]);
+    expect(body["diagCookies"]).toEqual({ persistent: "r-device-run-1", session: null, sameSiteNone: null, script: null });
   });
 
   it("signed-in non-owner → 404 for GET, POST and DELETE", async () => {
@@ -152,6 +163,51 @@ describe.skipIf(!LIVE)("/api/diagnostics/storage (live TEST database)", () => {
     expect(set).not.toContain("thence_session");
     const seen = (await (await get(`${owner.cookie}; ${DIAG_COOKIE_NAME}=r-abcdef123456`)).json()) as { diagCookie: unknown };
     expect(seen.diagCookie).toEqual({ present: true, runId: "r-abcdef123456" });
+  });
+
+  it("v2: owner POST writes three server variants with their exact attributes; never the login cookie", async () => {
+    asOwner();
+    const res = await POST(postJson(URL, { runId: "r-abcdef123456" }, { cookie: `${owner.cookie}; ${DIAG_COOKIES.script}=r-abcdef123456` }));
+    expect(res.status).toBe(200);
+    const set = res.headers.getSetCookie();
+    expect(set).toHaveLength(3);
+    const byName = (n: string) => set.find((c) => c.startsWith(`${n}=`)) ?? "";
+    const persistent = byName(DIAG_COOKIES.persistent);
+    const session = byName(DIAG_COOKIES.session);
+    const none = byName(DIAG_COOKIES.sameSiteNone);
+    for (const attr of ["Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=", "Expires="]) expect(persistent).toContain(attr);
+    for (const attr of ["Path=/", "HttpOnly", "SameSite=Lax"]) expect(session).toContain(attr);
+    expect(session).not.toMatch(/Max-Age|Expires/);
+    for (const attr of ["Path=/", "HttpOnly", "SameSite=None", "Secure", "Max-Age="]) expect(none).toContain(attr);
+    expect(set.join("\n")).not.toContain("thence_session");
+    const body = (await res.json()) as { diagCookies: unknown };
+    // The script variant is never set by the server, only echoed from the request.
+    expect(body.diagCookies).toEqual({ persistent: "r-abcdef123456", session: "r-abcdef123456", sameSiteNone: "r-abcdef123456", script: "r-abcdef123456" });
+  });
+
+  it("v2: owner GET echoes each variant the request carried", async () => {
+    asOwner();
+    const res = await get(`${owner.cookie}; ${DIAG_COOKIES.persistent}=r-run-00001; ${DIAG_COOKIES.script}=r-run-00001`);
+    const body = (await res.json()) as { diagCookies: unknown; diagCookie: unknown };
+    expect(body.diagCookies).toEqual({ persistent: "r-run-00001", session: null, sameSiteNone: null, script: "r-run-00001" });
+    expect(body.diagCookie).toEqual({ present: true, runId: "r-run-00001" });
+  });
+
+  it("v2: signed out with only a variant cookie → 401 echoing only the variants (no account data)", async () => {
+    asOwner();
+    const res = await get(`${DIAG_COOKIES.session}=r-run-00002`);
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["diagCookies", "error", "message"]);
+    expect(body["diagCookies"]).toEqual({ persistent: null, session: "r-run-00002", sameSiteNone: null, script: null });
+  });
+
+  it("v2: owner DELETE clears all four variants (and only them)", async () => {
+    asOwner();
+    const res = await DELETE(deleteJson(URL, { cookie: owner.cookie }));
+    const set = res.headers.getSetCookie();
+    expect(set.map((c) => c.split("=")[0]).sort()).toEqual(Object.values(DIAG_COOKIES).sort());
+    for (const c of set) expect(c).toContain("Max-Age=0");
   });
 
   it("POST rejects malformed run ids and foreign origins", async () => {
