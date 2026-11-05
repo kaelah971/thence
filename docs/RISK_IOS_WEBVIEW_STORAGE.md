@@ -51,6 +51,10 @@ called); on iOS that request is largely advisory anyway.
 
 ## How to verify (no money, owner device)
 
+The diagnostic page now exists (`/app/diagnostics/storage`, owner only); the
+procedure and verdicts are in `docs/IOS_STORAGE_DIAGNOSTIC.md`. **The device
+test has not been run; this risk remains open.**
+
 1. Build a diagnostics-only page (no swap, no invoice) that writes a random
    marker to IndexedDB (a dedicated database), localStorage and a test cookie,
    and shows them.

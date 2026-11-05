@@ -50,6 +50,7 @@ export const SHARDS: Record<string, string[]> = {
     "f81-pilot-attempt-limits",
     "f8-pilot-gates",
     "f82-pilot-kill-switch",
+    "diag-storage-api",
     "p2-claim-deadline",
     "p4-expiry-resolution",
     "p5-locking-audit",
