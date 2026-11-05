@@ -116,9 +116,12 @@ production deployment of that commit finished.
   `src/lib/satora.ts`). Re-check on the day: catalogue listings can
   change; a mismatch blocks quoting fail-closed.
 - **Trusted Polygon RPC:** `THENCE_EVM_RPCS_JSON["137"]` is an https
-  endpoint you operate or explicitly trust. Empty/public RPCs =
-  `verify-settlement` returns `UNAVAILABLE` (fail-closed, never
-  `DELIVERED`). Polygon finality here is 256 confirmations (~9 min at
+  endpoint you operate or explicitly trust (there is no built-in default;
+  empty = `verify-settlement` returns `UNAVAILABLE`, fail-closed, never
+  `DELIVERED`). It must support 2000-block `eth_getLogs` — Alchemy Free
+  (10 blocks) cannot run the P4 scan. Requirements, the 2026-11-05
+  evaluation, the chosen endpoint and public-RPC risks:
+  `docs/POLYGON_RPC.md`. Polygon finality here is 256 confirmations (~9 min at
   2s/block) — evidence of inclusion, documented as NOT L1 finality.
 - **Owner allowlist:** exactly the one test wallet; canonical-compare
   verified (spacing/case-insensitive, `canonicalKey`).

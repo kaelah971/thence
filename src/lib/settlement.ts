@@ -347,6 +347,58 @@ export interface HtlcActivityResult {
   logCount: number;
   /** topic[0] of each matching log (event signatures only; no data). */
   eventTopics: string[];
+  /** Sanitized cause when verdict is UNAVAILABLE (operator diagnostics; never an RPC URL or key). */
+  failure?: ChainScanFailure;
+}
+
+/** Which chain read failed during an HTLC scan, and how (no URLs, keys or payloads). */
+export interface ChainScanFailure {
+  op: string;
+  kind: "timeout" | "http" | "rpc" | "other";
+  httpStatus: number | null;
+  rpcCode: number | null;
+  detail: string;
+}
+
+/** Strip anything that could carry a credential: URLs and long opaque tokens (hex values kept). */
+export function sanitizeChainDetail(text: string): string {
+  return text
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "<url>")
+    .replace(/[A-Za-z0-9_-]{24,}/g, (m) => (/^0x[0-9a-fA-F]+$/.test(m) ? m : "<redacted>"))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+}
+
+/**
+ * Classify a chain-read error without leaking the RPC endpoint. viem errors
+ * embed the full request URL (which may contain an API key) in `message`,
+ * `url` and `details`; only status codes and a sanitized short reason survive.
+ */
+export function describeChainError(err: unknown, op: string): ChainScanFailure {
+  let httpStatus: number | null = null;
+  let rpcCode: number | null = null;
+  let timeout = false;
+  const reasons: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur && typeof cur === "object" && depth < 6; depth++) {
+    const e = cur as { name?: unknown; status?: unknown; code?: unknown; shortMessage?: unknown; details?: unknown; message?: unknown; cause?: unknown };
+    if (httpStatus === null && typeof e.status === "number") httpStatus = e.status;
+    if (rpcCode === null && typeof e.code === "number") rpcCode = e.code;
+    if (e.name === "TimeoutError" || (typeof e.message === "string" && /timed out/i.test(e.message))) timeout = true;
+    const text =
+      typeof e.details === "string" && e.details
+        ? e.details
+        : typeof e.shortMessage === "string"
+          ? e.shortMessage
+          : typeof e.message === "string"
+            ? (e.message.split("\n")[0] ?? "")
+            : "";
+    if (text) reasons.push(text);
+    cur = e.cause;
+  }
+  const kind: ChainScanFailure["kind"] = timeout ? "timeout" : httpStatus !== null ? "http" : rpcCode !== null ? "rpc" : "other";
+  return { op, kind, httpStatus, rpcCode, detail: sanitizeChainDetail([...new Set(reasons)].join(" | ")) };
 }
 
 type TimestampReader = (chainId: number, blockNumber: bigint) => Promise<number>;
@@ -399,17 +451,22 @@ export async function verifyNoHtlcActivity(input: {
   }
   const getTs: TimestampReader = chain.getBlockTimestamp.bind(chain);
   const getLogs = chain.getLogsByTopic1.bind(chain);
+  // Operator diagnostics only: which read is in flight if something throws.
+  let op = "getBlockNumber";
   try {
     const latest = await chain.getLatestBlockNumber(input.chainId);
     const startTs = Math.floor(input.windowStart.getTime() / 1000);
     const endTs = Math.ceil(input.windowEnd.getTime() / 1000);
+    op = "blockSearch(windowStart)";
     const fromBlock = await blockAtOrBefore(getTs, input.chainId, startTs, latest);
     if (fromBlock === null) return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window starts before chain history." };
+    op = "blockSearch(windowEnd)";
     const endBefore = await blockAtOrBefore(getTs, input.chainId, endTs, latest);
     if (endBefore === null) return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window end is not resolvable." };
     // Cover the whole window: include the first block at/after windowEnd.
     const toBlock = endBefore < latest ? endBefore + 1n : latest;
     const span = { fromBlock: fromBlock.toString(), toBlock: toBlock.toString(), latestBlock: latest.toString() };
+    op = "getBlock(windowEnd)";
     if ((await getTs(input.chainId, toBlock)) < endTs) {
       return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "The chain has not yet reached the end of the scan window." };
     }
@@ -425,6 +482,7 @@ export async function verifyNoHtlcActivity(input: {
     const matches: ChainLog[] = [];
     for (let s = fromBlock; s <= toBlock; s += HTLC_LOG_CHUNK_BLOCKS) {
       const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > toBlock ? toBlock : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
+      op = `getLogs(${(e - s + 1n).toString()} blocks)`;
       const logs = await getLogs(input.chainId, input.htlcAddress, input.hashLock, s, e);
       for (const log of logs) {
         // Defensive re-filter: never trust the RPC's own filtering for a match.
@@ -441,8 +499,12 @@ export async function verifyNoHtlcActivity(input: {
       };
     }
     return { ...span, verdict: "NO_ACTIVITY", reason: "No HTLC event for this hash lock in the finalized scan window.", logCount: 0, eventTopics: [] };
-  } catch {
-    return { ...base, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable." };
+  } catch (err) {
+    // Verdict unchanged: any failed read is UNAVAILABLE, never "no activity".
+    // Only a sanitized cause is added and logged so operators can act on it.
+    const failure = describeChainError(err, op);
+    console.warn(`thence-chain-scan ${JSON.stringify({ verdict: "UNAVAILABLE", chainId: input.chainId, ...failure })}`);
+    return { ...base, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", failure };
   }
 }
 
