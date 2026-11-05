@@ -8,6 +8,7 @@ import { AddressDisplay } from "@/ui/components/AddressDisplay";
 import { Button, ButtonLink } from "@/ui/components/Button";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { DestinationPicker } from "@/ui/components/DestinationPicker";
+import { DiagnosticsLink } from "@/ui/components/DiagnosticsLink";
 import { Icon } from "@/ui/components/Icon";
 import { AssetMark } from "@/ui/components/PaymentCard";
 import { Avatar, EmptyState, Notice, PreviewTag } from "@/ui/components/primitives";
@@ -179,6 +180,7 @@ export function Home(): React.JSX.Element {
               {signingOut ? "Signing out…" : "Sign out of Thence"}
             </Button>
             <p className={styles.accountNote}>Thence build {buildId()} — quote this if reporting an issue.</p>
+            {accountOpen && <DiagnosticsLink className={styles.accountNote} />}
           </div>
         )}
       </Sheet>
