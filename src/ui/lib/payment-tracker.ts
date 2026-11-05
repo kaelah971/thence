@@ -40,6 +40,7 @@
 import { isTerminal, TRANSFER_STATUSES, type TransferStatus } from "@/domain/transfers";
 import type { ApiFailureKind, ApiResult } from "./api";
 import { getReconciliation, postReconcile, postVerifySettlement, type ReconciliationView } from "./settlement-client";
+import { invalidateData } from "./resource";
 
 export const TRACKER_BACKOFF_MS = [3_000, 5_000, 8_000, 13_000, 20_000, 30_000] as const;
 export const TRACKER_PRE_FUNDING_CAP_MS = 15_000;
@@ -215,6 +216,7 @@ class PaymentTracker {
     this.inFlight = controller;
     this.lastStepAt = Date.now();
     const before = fingerprint(this.snapshot.view);
+    const statusBefore = this.snapshot.view?.transfer.status ?? null;
     let refreshError: TrackerError | null = null;
     try {
       const knownStatus = this.snapshot.view?.transfer.status ?? null;
@@ -273,6 +275,9 @@ class PaymentTracker {
     if (this.stopped) return;
     this.backoffIndex = fingerprint(this.snapshot.view) !== before ? 0 : Math.min(this.backoffIndex + 1, TRACKER_BACKOFF_MS.length - 1);
     this.emit();
+    // A new server status (e.g. CLAIMING -> DELIVERED) re-reads every mounted
+    // list (Activity, Home), so no screen keeps an old snapshot. Read-only.
+    if (statusBefore !== null && this.snapshot.view && this.snapshot.view.transfer.status !== statusBefore) invalidateData();
     this.scheduleNext();
   }
 

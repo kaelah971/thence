@@ -71,13 +71,17 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await returnToThence(app);
     // The approval sheet no longer offers a second Nimiq Pay confirmation.
     await expect(app.getByRole("button", { name: "Confirm in Nimiq Pay" })).toHaveCount(0);
-    await expect(app.getByText("Submitted to Nimiq Pay")).toBeVisible();
+    // The sheet follows the submitted payment (summary line under the amount).
+    await expect(app.getByText(/^To .* on Polygon\. Don't pay again\.$/)).toBeVisible();
+    // One status, one timeline: no static "after you approve" copy, no way back to review.
+    await expect(app.getByText("What happens after you approve")).toHaveCount(0);
+    await expect(app.getByRole("button", { name: "Back to review" })).toHaveCount(0);
     await expectFinishWithDeadline(app, swap.deadline);
     await expect(app.getByText(DELIVERED_PROOF())).toHaveCount(0);
     expect((await swapState(swap.id)).claims).toHaveLength(0); // never unattended
 
     await finishButton(app).first().click();
-    await expect(app.getByText("Delivery submitted — confirming it arrived").first()).toBeVisible({ timeout: 30_000 });
+    await expect(app.getByText("Delivery submitted — verifying on Polygon").first()).toBeVisible({ timeout: 30_000 });
     const afterClaim = await swapState(swap.id);
     expect(afterClaim.claims).toHaveLength(1);
     expect(afterClaim.claims[0]!.preimageMatches).toBe(true); // the real SDK revealed THIS swap's secret
@@ -113,14 +117,14 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await returnToThence(app);
     await expectFinishWithDeadline(app, swap.deadline);
     await finishButton(app).first().click();
-    await expect(app.getByText("Delivery submitted — confirming it arrived").first()).toBeVisible({ timeout: 30_000 });
+    await expect(app.getByText("Delivery submitted — verifying on Polygon").first()).toBeVisible({ timeout: 30_000 });
     // The claim tx is mined (once, immutably) crediting USDT instead of USDC.
     // (Short amounts and wrong recipients are covered against the real server
     // in tests/settlement.test.ts.)
     await sim("settle", { swapId: swap.id, token: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f" });
     await expect(app.getByText("The on-chain record doesn't match this payment").first()).toBeVisible({ timeout: 60_000 });
     await expect(app.getByText(DELIVERED_PROOF())).toHaveCount(0);
-    await expect(app.getByText("Delivery submitted — confirming it arrived")).toHaveCount(0);
+    await expect(app.getByText("Delivery submitted — verifying on Polygon")).toHaveCount(0);
   });
 
   test("refund is never shown as delivery: unclaimed swap refunded on Polygon → 'Not delivered — Polygon lock refunded'", async ({ app }, testInfo) => {
@@ -150,7 +154,7 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await app.getByRole("button", { name: /Someone new|New recipient/ }).first().click();
     await expectFinishWithDeadline(app, swap.deadline);
     await finishButton(app).first().click();
-    await expect(app.getByText("Delivery submitted — confirming it arrived").first()).toBeVisible({ timeout: 30_000 });
+    await expect(app.getByText("Delivery submitted — verifying on Polygon").first()).toBeVisible({ timeout: 30_000 });
     expect((await swapState(swap.id)).claims).toHaveLength(1);
     await app.reload();
     await app.goto("/app/activity");

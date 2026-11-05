@@ -30,8 +30,7 @@ import {
 } from "@/ui/lib/settlement-client";
 import { invalidateData } from "@/ui/lib/resource";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
-import { useSettlement } from "@/ui/screens/send/useSettlement";
-import { ClaimDeadlineNotice } from "@/ui/components/ClaimDeadline";
+import { usePaymentProgress } from "@/ui/screens/send/SettlementProgress";
 import styles from "./activity.module.css";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -210,7 +209,9 @@ function LiveTransferDetail({
   const [providerEvidence, setProviderEvidence] = useState<ProviderEvidence | null>(null);
   const [providerEvidenceLoading, setProviderEvidenceLoading] = useState(false);
   const [providerEvidenceError, setProviderEvidenceError] = useState<string | null>(null);
-  const canCheck = !TERMINAL_DETAIL.has(item.status) && resource.status !== "loading";
+  // Money-moving payments are tracked live by the card below; a manual
+  // "Check for updates" next to it only duplicates that.
+  const canCheck = !TERMINAL_DETAIL.has(item.status) && !LIVE_PROGRESS_DETAIL.has(item.status) && resource.status !== "loading";
   return (
     <>
       {resource.status === "error" && (
@@ -249,6 +250,7 @@ function LiveTransferDetail({
           transferId={item.id}
           ownerUserId={userId}
           knownStatus={item.status}
+          routeId={item.routeId}
           onStatusChange={() => {
             if ("refresh" in resource) resource.refresh();
           }}
@@ -278,21 +280,36 @@ function LiveTransferDetail({
   );
 }
 
+/** Statuses where money is moving after approval: the live progress card speaks for the payment. */
+const LIVE_PROGRESS_DETAIL = new Set(["LIGHTNING_HANDOFF", "CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING"]);
+
 function ActivityClaimRecovery({
   transferId,
   ownerUserId,
   knownStatus,
+  routeId,
   onStatusChange,
 }: {
   transferId: string;
   ownerUserId: string;
   knownStatus: string;
+  routeId: ActivityItem["routeId"];
   onStatusChange: () => void;
 }): React.JSX.Element | null {
-  const settlement = useSettlement();
-  const [claiming, setClaiming] = useState(false);
-  const state = settlement.state;
-  const liveStatus = state.transferStatus;
+  // Same single view as the Send screen (status, deadline, ONE action); the
+  // detail below already shows the timeline and receipt, so compact here.
+  const progress = usePaymentProgress({
+    transferId,
+    ownerUserId,
+    requestPublicId: null,
+    sessionValid: true,
+    previewMode: false,
+    routeId,
+    asset: destinationFor(routeId).asset,
+    saveOffer: null,
+    compact: true,
+  });
+  const liveStatus = progress.transferStatus;
 
   // Keep the detail sheet's own status in step with the live tracker.
   useEffect(() => {
@@ -300,63 +317,14 @@ function ActivityClaimRecovery({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveStatus]);
 
-  useEffect(() => {
-    void settlement.track({ transferId, ownerUserId, sessionValid: true, previewMode: false });
-    return () => settlement.stop();
-    // Track once for this Activity detail; manual action uses the same hook state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownerUserId, transferId]);
-
-  const claimReady = needsOwnerClaim(state);
-  const title = state.phase === "attention" ? "Payment needs attention" : "Checking this payment";
-  const message = state.message || "Checking the same payment — do not resend.";
-  // Before funding the tracker runs silently (the detail below shows status).
-  const funded = FUNDED_DETAIL.has(liveStatus ?? knownStatus);
-  if (!funded && !claimReady) return null;
+  // Before approval the detail below explains the next step; the tracker runs silently.
+  const live = LIVE_PROGRESS_DETAIL.has(liveStatus ?? knownStatus) || progress.view?.action === "finish";
+  if (!live || !progress.content) return null;
 
   return (
     <div style={{ marginBottom: 12 }} data-recovery-transfer-id={transferId}>
-      {claimReady && state.claimPending && (
-        <Notice tone="info" icon="clock" title="Delivery submitted — confirming it arrived" live>
-          Thence is checking Polygon for the USDC reaching their wallet. Don&apos;t start another payment, and don&apos;t try again.
-        </Notice>
-      )}
-      {!claimReady && (
-        <Notice tone={state.phase === "attention" ? "warn" : "info"} icon={state.phase === "attention" ? "alert" : "clock"} title={title} live>
-          {message}
-        </Notice>
-      )}
-      {claimReady && !state.claimPending && (
-        <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
-          <p className={styles.latest}>This uses the saved recovery information in this browser. Do not start a new payment.</p>
-          <Button
-            variant="soft"
-            size="md"
-            icon="arrow-right"
-            block
-            disabled={claiming}
-            aria-busy={claiming}
-            onClick={() => {
-              if (claiming) return;
-              setClaiming(true);
-              void settlement
-                .attemptClaim({ transferId, ownerUserId, sessionValid: true, previewMode: false, explicitClaimAuthorization: true })
-                .finally(() => {
-                  setClaiming(false);
-                  invalidateData();
-                });
-            }}
-          >
-            {claiming ? "Checking delivery…" : "Finish delivery"}
-          </Button>
-          <p className={styles.latest}>One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.</p>
-        </ClaimDeadlineNotice>
-      )}
-      {state.claimMessage && !claiming && (
-        <p className={styles.latest} role="status" data-claim-result>
-          {state.claimMessage}
-        </p>
-      )}
+      {progress.content}
+      {progress.action}
     </div>
   );
 }
@@ -490,8 +458,8 @@ function TransferDetail({
           Nimiq Pay shows the exact NIM debit before you confirm.
         </Notice>
       )}
-      {(stage === "moving" || stage === "ready") && (
-        <Notice tone="info" icon="clock" title={stage === "moving" ? "Still on its way" : "Ready to continue"}>
+      {((stage === "moving" && preview) || stage === "ready") && (
+        <Notice tone="info" icon="clock" title={stage === "moving" ? "Payment in progress" : "Ready to continue"}>
           {stage === "moving"
             ? "Thence is still checking this payment. A receipt appears once delivery is confirmed on their network."
             : "No approval is recorded for this payment yet. You can continue where you left off."}
@@ -598,7 +566,7 @@ function TransferDetail({
       <div className={styles.timelineCard}>
         <div className={styles.timelineHead}>
           <p className={styles.timelineTitle}>Progress</p>
-          {item.statusLabel && <p className={styles.latest}>Latest: {item.statusLabel}</p>}
+          {item.statusLabel && !LIVE_PROGRESS_DETAIL.has(item.status) && <p className={styles.latest}>Latest: {item.statusLabel}</p>}
         </div>
         <Timeline steps={timelineFor(item.status)} />
       </div>

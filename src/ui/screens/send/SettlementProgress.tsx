@@ -3,38 +3,20 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/ui/components/Button";
 import { Icon } from "@/ui/components/Icon";
-import { AssetMark } from "@/ui/components/PaymentCard";
-import { Notice, Skeleton, TextField } from "@/ui/components/primitives";
+import { Skeleton, TextField } from "@/ui/components/primitives";
 import { addPerson } from "@/ui/lib/recipient-actions";
 import { Timeline } from "@/ui/components/Timeline";
-import { destinationFor, maskAddress } from "@/ui/lib/assets";
+import { maskAddress } from "@/ui/lib/assets";
 import { humanAmount } from "@/ui/lib/transfers-api";
-import { needsOwnerClaim, progressCopy } from "@/ui/lib/settlement-client";
-import { timelineFor } from "@/ui/lib/status";
+import { paymentProgress, type ProgressView } from "@/ui/lib/payment-progress";
+import { claimActionAllowed } from "@/domain/claim-deadline";
 import type { RouteId } from "@/domain/routes";
 import { useSettlement } from "./useSettlement";
-import { ClaimDeadlineNotice } from "@/ui/components/ClaimDeadline";
+import { ClaimDeadlineLine, useClaimWindow } from "@/ui/components/ClaimDeadline";
 import styles from "./send.module.css";
 
-/**
- * F4.3 — honest payment progress for a prepared transfer.
- *
- * Read-only tracking starts on mount (bounded, visibility-aware, cleaned
- * up on unmount). "Delivered" renders only with the backend-confirmed
- * immutable receipt — never from invoice, funding, claim or broadcast.
- * The claim control stays behind the owner/session/recovery claim gate.
- */
-export function SettlementProgress({
-  transferId,
-  ownerUserId,
-  requestPublicId,
-  sessionValid,
-  previewMode,
-  routeId,
-  asset,
-  saveOffer,
-}: {
-  transferId: string;
+export interface SettlementProgressProps {
+  transferId: string | null;
   ownerUserId: string | null;
   requestPublicId: string | null;
   sessionValid: boolean;
@@ -43,7 +25,43 @@ export function SettlementProgress({
   asset: string;
   /** One-off payee worth offering to save; null when N/A. Shown on the delivered receipt only. */
   saveOffer: { address: string; routeId: RouteId } | null;
-}): React.JSX.Element {
+  /** Status, deadline and action only — for screens that already show the timeline and receipt (Activity). */
+  compact?: boolean;
+  /** Nimiq Pay was already asked for this payment in this browser. */
+  handedOff?: boolean;
+}
+
+export interface PaymentProgressParts {
+  /** Status card + the ONE timeline + receipt (null before tracking starts). */
+  content: React.ReactNode;
+  /** The ONE contextual next action (Finish delivery / Check again), or null. */
+  action: React.ReactNode;
+  view: ProgressView | null;
+  /** Server status as last read (null until the first read). */
+  transferStatus: string | null;
+}
+
+/**
+ * F4.3/P3 — honest payment progress for a prepared transfer, as ONE view.
+ *
+ * Read-only tracking starts on mount (shared tracker, visibility-aware,
+ * cleaned up on unmount). "Delivered" renders only with the backend-confirmed
+ * immutable receipt — never from approval, funding, claim or broadcast. The
+ * Finish delivery control stays behind every existing gate: server
+ * claimReady, the client-clock claim window, the claim-pending record and
+ * the server claim lease (useSettlement.attemptClaim).
+ */
+export function usePaymentProgress({
+  transferId,
+  ownerUserId,
+  requestPublicId,
+  sessionValid,
+  previewMode,
+  asset,
+  saveOffer,
+  compact = false,
+  handedOff = false,
+}: SettlementProgressProps): PaymentProgressParts {
   const settlement = useSettlement();
   const [claiming, setClaiming] = useState(false);
   const state = settlement.state;
@@ -53,110 +71,80 @@ export function SettlementProgress({
       void settlement.track({ transferId, ownerUserId, sessionValid, previewMode });
     }
     return () => settlement.stop();
-    // Track once per transfer; manual refresh via Check again.
+    // Track once per transfer; the shared tracker wakes itself on foreground.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transferId, ownerUserId]);
 
-  const destination = destinationFor(routeId);
-  const phase = state.phase === "idle" ? ("checking" as const) : state.phase;
-  const title = state.phase === "idle" ? "Checking your payment" : progressCopy(phase).title;
-  const message =
-    state.phase === "idle" ? "Checking your payment — do not resend." : state.message || progressCopy(phase).body;
+  const { window } = useClaimWindow(state.claimDeadlineMs ?? null);
+  const tracking = Boolean(transferId && ownerUserId) && state.phase !== "idle";
+  const view = tracking
+    ? paymentProgress({
+        phase: state.phase,
+        transferStatus: state.transferStatus,
+        providerStatus: state.providerStatus,
+        claimReady: state.claimReady,
+        claimPending: state.claimPending === true,
+        identityMismatch: state.identityMismatch === true,
+        verifyVerdict: state.verifyVerdict,
+        receiptReady: state.receipt !== null,
+        message: state.message,
+        handedOff,
+      })
+    : null;
+  const finishNeeded = view?.action === "finish" && !previewMode && Boolean(ownerUserId);
+  // Both clocks must agree: the server's claimReady AND the local deadline window.
+  const finishAvailable = finishNeeded && state.claimReady && claimActionAllowed(window);
 
-  // P2: a funded payment that needs the owner's claim is an ACTION, with a
-  // deadline — never "on its way". The deadline notice decides (time-aware)
-  // whether the finish control may render at all.
-  const actionNeeded = needsOwnerClaim(state) && Boolean(ownerUserId) && !previewMode;
-  const headline = actionNeeded ? "Action needed — Finish delivery" : title;
-  const showCheckAgain = state.phase === "checking" || state.phase === "attention";
+  const startClaim = () => {
+    if (!transferId || !ownerUserId || claiming) return;
+    setClaiming(true);
+    void settlement
+      .attemptClaim({ transferId, ownerUserId, sessionValid, previewMode, explicitClaimAuthorization: true })
+      .finally(() => setClaiming(false));
+  };
 
-  return (
-    <div className={styles.quoteBox}>
-      <p className={styles.quoteLine} role="status" aria-live="polite">
-        {state.phase === "checking" || state.phase === "idle" ? (
-          <span className={styles.quoteSpinner} aria-hidden="true" />
-        ) : (
-          <Icon name={state.phase === "delivered" ? "check" : state.phase === "attention" ? "alert" : "clock"} size={14} strokeWidth={2.6} />
-        )}{" "}
-        {headline}
-      </p>
-      {!actionNeeded && (
-      <Notice
-        tone={state.phase === "attention" ? "warn" : state.phase === "delivered" ? "info" : "info"}
-        icon={state.phase === "delivered" ? "check" : state.phase === "attention" ? "alert" : "clock"}
-        title={title}
-        live
-      >
-        {message}
-      </Notice>
-      )}
+  const content = !tracking ? null : (
+    <div className={styles.progress} data-progress-action={view?.action} data-tone={view?.tone}>
+      <div className={styles.progressCard} role="status" aria-live="polite">
+        <span className={styles.progressIcon} aria-hidden="true">
+          {view?.action === "wait" || view?.action === "verifying" ? (
+            <span className={styles.quoteSpinner} />
+          ) : (
+            <Icon name={view?.tone === "done" ? "check" : view?.tone === "action" || view?.tone === "warn" ? "alert" : "clock"} size={18} strokeWidth={2.6} />
+          )}
+        </span>
+        <div>
+          <p className={styles.progressHeadline}>{view?.headline}</p>
+          {view?.body ? <p className={styles.progressBody}>{view.body}</p> : null}
+        </div>
+      </div>
 
-      {requestPublicId && (
-        <p className={styles.ctaNote}>
-          <Icon name="lock" size={14} /> Pays request {requestPublicId.slice(0, 8)}… — the amount stays locked to the request. It counts as paid only
-          once delivery below is confirmed.
+      {finishNeeded && <ClaimDeadlineLine deadlineMs={state.claimDeadlineMs ?? null} className={styles.deadline} />}
+      {finishNeeded && !finishAvailable && claimActionAllowed(window) && (
+        <p className={styles.ctaNote} data-finish-pending>
+          <span className={styles.quoteSpinner} aria-hidden="true" /> Getting Finish delivery ready — the button appears here in a moment.
         </p>
       )}
 
-      {state.transferStatus && (
-        <div className={styles.next}>
-          <Timeline steps={timelineFor(state.transferStatus as never)} />
-        </div>
-      )}
-
-      {actionNeeded && state.claimPending && (
-        <Notice tone="info" icon="clock" title="Delivery submitted — confirming it arrived" live>
-          Your Finish delivery went through to the provider. Thence is now checking Polygon for the USDC reaching their wallet. Don&apos;t
-          start another payment, and don&apos;t try again.
-        </Notice>
-      )}
-
-      {actionNeeded && !state.claimPending && (
-        <ClaimDeadlineNotice deadlineMs={state.claimDeadlineMs ?? null} actionAvailable={state.claimReady}>
-          <Button
-            variant="soft"
-            size="md"
-            icon="arrow-right"
-            block
-            disabled={claiming}
-            aria-busy={claiming}
-            onClick={() => {
-              if (!ownerUserId || claiming) return;
-              setClaiming(true);
-              void settlement
-                .attemptClaim({ transferId, ownerUserId, sessionValid, previewMode, explicitClaimAuthorization: true })
-                .finally(() => setClaiming(false));
-            }}
-          >
-            {claiming ? "Checking delivery…" : "Finish delivery"}
-          </Button>
-          <p className={styles.ctaNote}>
-            <Icon name="lock" size={14} /> One explicit attempt only. If the result is unclear, wait for Activity to verify it before trying again.
-          </p>
-        </ClaimDeadlineNotice>
-      )}
-
-      {state.claimMessage && !claiming && (
+      {state.claimMessage && !claiming && view?.action !== "receipt" && !/^Delivery submitted/.test(state.claimMessage) && (
         <p className={styles.ctaNote} role="status" data-claim-result>
           {state.claimMessage}
         </p>
       )}
 
-      {showCheckAgain && ownerUserId && (
-        <Button
-          variant="soft"
-          size="md"
-          icon="refresh"
-          block
-          onClick={() => {
-            void settlement.checkAgain({ transferId, ownerUserId, sessionValid, previewMode });
-          }}
-        >
-          Check again
-        </Button>
+      {requestPublicId && (
+        <p className={styles.ctaNote}>
+          <Icon name="lock" size={14} /> Pays request {requestPublicId.slice(0, 8)}… — it counts as paid once delivery is confirmed.
+        </p>
       )}
 
-      {state.phase === "delivered" && state.receipt && (
+      {!compact && view?.steps && view.action !== "receipt" && (
+        <div className={styles.next}>
+          <Timeline steps={view.steps} />
+        </div>
+      )}
+
+      {!compact && state.phase === "delivered" && state.receipt && (
         <div className={styles.receipt}>
           <div className={styles.receiptHead}>
             <Icon name="receipt" size={18} />
@@ -204,17 +192,51 @@ export function SettlementProgress({
         </div>
       )}
 
-      {state.phase === "delivered" && !state.receipt && (
+      {!compact && state.phase === "delivered" && !state.receipt && (
         <div className={styles.receipt} aria-busy="true">
           <Skeleton width="40%" height={14} />
           <Skeleton width="100%" height={60} />
         </div>
       )}
-      {state.phase !== "idle" && state.phase !== "delivered" && state.phase !== "refunded" && state.phase !== "expired" && (
-        <p className={styles.ctaNote}>
-          <AssetMark asset={destination.asset} size={14} /> {destination.network} · Checking payment — do not resend.
+    </div>
+  );
+
+  let action: React.ReactNode = null;
+  if (finishAvailable) {
+    action = (
+      <Button variant="ink" block icon="arrow-right" disabled={claiming} aria-busy={claiming} onClick={startClaim}>
+        {claiming ? "Checking delivery…" : "Finish delivery"}
+      </Button>
+    );
+  } else if (view?.action === "check" && transferId && ownerUserId) {
+    action = (
+      <Button
+        variant="soft"
+        icon="refresh"
+        block
+        onClick={() => {
+          void settlement.checkAgain({ transferId, ownerUserId, sessionValid, previewMode });
+        }}
+      >
+        Check again
+      </Button>
+    );
+  }
+
+  return { content, action, view, transferStatus: state.transferStatus };
+}
+
+/** Standalone progress (content followed by its action), for screens without a sticky footer. */
+export function SettlementProgress(props: SettlementProgressProps): React.JSX.Element {
+  const parts = usePaymentProgress(props);
+  return (
+    <div className={styles.quoteBox}>
+      {parts.content ?? (
+        <p className={styles.quoteLine} role="status" aria-live="polite">
+          <span className={styles.quoteSpinner} aria-hidden="true" /> Checking your payment
         </p>
       )}
+      {parts.action}
     </div>
   );
 }

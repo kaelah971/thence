@@ -73,3 +73,20 @@ export function destinationAddressIssue(network: SupportedNetwork, value: string
 export function maskAddress(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
 }
+
+/**
+ * Display-only: pad a plain decimal amount to the asset's entry decimals
+ * ("0.3" → "0.30" for USDC) so the same amount reads the same everywhere.
+ * Never trims or rounds: an amount with more digits than the entry precision
+ * (e.g. a proven on-chain amount) is returned unchanged, and anything that
+ * isn't a plain non-negative decimal is returned as-is.
+ */
+export function padAmountDecimals(amount: string, asset: string): string {
+  const meta = ASSET_META[asset as SupportedAsset];
+  if (!meta || !/^\d+(\.\d+)?$/.test(amount)) return amount;
+  const [whole, fraction = ""] = amount.split(".");
+  // Same rule as Activity rows (formatReceive): BTC keeps its own precision (min 2).
+  const decimals = asset === "BTC" ? Math.max(2, fraction.length) : meta.entryDecimals;
+  if (fraction.length >= decimals) return amount;
+  return `${whole}.${fraction.padEnd(decimals, "0")}`;
+}

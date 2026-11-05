@@ -16,9 +16,8 @@ import { RecipientRow, RowSkeletons, type RecipientItem } from "@/ui/components/
 import { Sheet } from "@/ui/components/Sheet";
 import shell from "@/ui/components/shell.module.css";
 import { SwipeToConfirm } from "@/ui/components/SwipeToConfirm";
-import { Timeline } from "@/ui/components/Timeline";
 import type { AvatarTone } from "@/ui/fixtures/preview";
-import { ASSET_META, DEFAULT_DESTINATION, destinationFor, isEvmNetwork, maskAddress } from "@/ui/lib/assets";
+import { ASSET_META, DEFAULT_DESTINATION, destinationFor, isEvmNetwork, maskAddress, padAmountDecimals } from "@/ui/lib/assets";
 import { amountIssue, evaluate, formatFixed, keyFromKeyboard, type CalcKey } from "@/ui/lib/calculator";
 import { cn } from "@/ui/lib/cn";
 import { useRecipientData } from "@/ui/lib/data";
@@ -29,7 +28,6 @@ import { canPayRequest, getPublicRequest, isPublicId, requestRouteId, type ApiOw
 import { useApiResource } from "@/ui/lib/resource";
 import { availabilityFor, tokenDecimalsFor, useRouteCatalogue } from "@/ui/lib/routes-api";
 import { useSession } from "@/ui/lib/session";
-import { timelineFor } from "@/ui/lib/status";
 import { usePreviewMode } from "@/ui/lib/stores";
 import { isPaymentFlagEnabled } from "@/ui/lib/payment-gate";
 import { RequestDetailsStep, RequestSharedStep } from "./RequestSteps";
@@ -37,7 +35,7 @@ import { useCalculator } from "./useCalculator";
 import { humanAmount } from "@/ui/lib/transfers-api";
 import { useLiveQuote } from "./useLiveQuote";
 import { loadHandoffRecord, useHandoff } from "./useHandoff";
-import { SettlementProgress } from "./SettlementProgress";
+import { usePaymentProgress } from "./SettlementProgress";
 import { usePreparation, type PreparationInput } from "./usePreparation";
 import { WalletChooser, type ChosenWallet } from "./WalletChooser";
 import { clearPending, displayAmountForHandoff, fetchPaymentAvailability, fetchTransfer, pendingBannerAction } from "@/ui/lib/prepare-flow";
@@ -777,7 +775,7 @@ export function SendFlow(): React.JSX.Element {
               <div className={styles.cta}>
                 {mode === "send" ? (
                   <Button variant="ink" block onClick={toNext} disabled={!amountOk} trailingIcon="arrow-right">
-                    Review
+                    Review payment
                   </Button>
                 ) : preview ? (
                   <>
@@ -822,7 +820,7 @@ export function SendFlow(): React.JSX.Element {
           {step === "handoff" && handoffInput && (
             <HandoffStep
               payeeName={handoffInput.payee.name || payee?.name || "They"}
-              amount={handoffDisplayAmount}
+              amount={padAmountDecimals(handoffDisplayAmount, destinationFor(handoffInput.payee.routeId).asset)}
               assetLabel={destinationFor(handoffInput.payee.routeId).asset}
               routeId={handoffInput.payee.routeId}
               asset={destinationFor(handoffInput.payee.routeId).asset}
@@ -1140,7 +1138,8 @@ function QuoteStatus({
 
 type PreparationState = ReturnType<typeof usePreparation>["state"];
 
-function HandoffStep({
+/** Exported for rendered regression tests only (tests/ui-payment-progress.test.tsx). */
+export function HandoffStep({
   payeeName,
   amount,
   assetLabel,
@@ -1187,7 +1186,6 @@ function HandoffStep({
     // Resume once per prepared transfer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preparation.phase === "ready" ? preparation.transferId : null]);
-  const steps = timelineFor("AWAITING_NIM_APPROVAL");
   // P7: once Nimiq Pay was asked for THIS transfer (handoff record is saved
   // before the native call; resume maps any later server status to
   // "checking"), the sheet must never again say "not yet paid" or offer a
@@ -1196,6 +1194,22 @@ function HandoffStep({
     preparation.phase === "ready" &&
     ((handoff.state.transferId === preparation.transferId && (handoff.state.phase === "checking" || handoff.state.phase === "cancelled")) ||
       (ownerUserId !== null && loadHandoffRecord(preparation.transferId, ownerUserId) !== null && handoff.state.phase !== "confirming"));
+  const progress = usePaymentProgress({
+    transferId: preparation.phase === "ready" ? preparation.transferId : null,
+    ownerUserId,
+    requestPublicId,
+    sessionValid,
+    previewMode,
+    routeId,
+    asset,
+    saveOffer,
+    handedOff,
+  });
+  // ONE status source after approval: the live, server-driven progress. Before
+  // approval the hero says everything; the progress appears as soon as the
+  // server knows more than "awaiting approval" (e.g. resumed after a reload).
+  const serverPastApproval = progress.transferStatus !== null && !PRE_APPROVAL_STATUSES.has(progress.transferStatus);
+  const showProgress = preparation.phase === "ready" && (handedOff || serverPastApproval);
   const recoveryNeedsActivity = preparation.phase === "failed" && preparation.issue.action === "resume";
   const working =
     preparation.phase === "working"
@@ -1203,32 +1217,39 @@ function HandoffStep({
       : preparation.phase === "idle"
         ? { step: "creating" as const, message: "Preparing your payment…" }
         : null;
+  const network = destinationFor(routeId).network;
+  const goToActivity = () => {
+    onDone();
+    router.push("/app/activity");
+  };
   return (
     <div className={styles.handoffStep} key="handoff">
       <div className={styles.handoffScroll}>
-        <div className={styles.handoffHero}>
-          <span className={styles.handoffMark}>
-            <NimMark size={40} />
-          </span>
+        <div className={styles.handoffHero} data-compact={showProgress || undefined}>
+          {!showProgress && (
+            <span className={styles.handoffMark}>
+              <NimMark size={40} />
+            </span>
+          )}
           <h2 className={styles.handoffTitle}>
-            {handedOff
-              ? "Submitted to Nimiq Pay"
+            {showProgress
+              ? `${amount} ${assetLabel}`
               : preparation.phase === "ready"
-              ? "Ready for Nimiq Pay approval"
-              : preparation.phase === "failed"
-                ? preparation.issue.title
-                : "Preparing your payment"}
+                ? "Ready for Nimiq Pay approval"
+                : preparation.phase === "failed"
+                  ? preparation.issue.title
+                  : "Preparing your payment"}
           </h2>
           <p className={styles.handoffBody}>
-            {handedOff
-              ? "Nimiq Pay has your approval. " + payeeName + " will receive exactly " + amount + " " + assetLabel + ". Thence is following it below — don't pay again."
+            {showProgress
+              ? `To ${payeeName === "They" ? "their wallet" : payeeName} on ${network}. Don't pay again.`
               : preparation.phase === "ready"
-              ? payeeName + " will receive exactly " + amount + " " + assetLabel + ". No approval is recorded yet — Nimiq Pay shows the exact NIM amount before you approve."
-              : preparation.phase === "failed"
-                ? recoveryNeedsActivity
-                  ? "This payment needs to be checked before continuing. Check Activity for its current status and do not resend it."
-                  : "No payment outcome is confirmed. Your recovery information was kept so you can continue safely."
-                : payeeName + " will receive exactly " + amount + " " + assetLabel + ". Getting everything ready so Nimiq Pay can ask for approval."}
+                ? `${payeeName} will receive exactly ${amount} ${assetLabel}. Nimiq Pay shows the exact NIM amount before you approve.`
+                : preparation.phase === "failed"
+                  ? recoveryNeedsActivity
+                    ? "Check Activity for this payment's status. Don't send it again."
+                    : "No payment outcome is confirmed. Your recovery information was kept so you can continue safely."
+                  : `${payeeName} will receive exactly ${amount} ${assetLabel}.`}
           </p>
         </div>
 
@@ -1238,24 +1259,18 @@ function HandoffStep({
               <span className={styles.quoteSpinner} aria-hidden="true" /> {working.message}
             </p>
             <p className={styles.ctaNote}>
-              <Icon name="lock" size={14} /> Saving recovery information on this device before approval. Browser storage is not automatically safe against clearing, device loss or snooping — that is why we check the save before continuing.
+              <Icon name="lock" size={14} /> Saving recovery information on this device, then checking it. Keep Thence open.
             </p>
           </div>
         )}
 
-        {preparation.phase === "ready" && (
+        {preparation.phase === "ready" && !handedOff && (
           <div className={styles.quoteBox}>
-            {!handedOff && (
-            <Notice tone="info" icon="shield" title="Prepared — not yet paid" live>
-              A prepared payment is not a delivered payment. Approve it in Nimiq Pay next. Payment approval is part of the next step and has not happened here.
-            </Notice>
-            )}
             {preparation.sourceSats ? (
               <p className={styles.quoteLine} data-tone="ok">
                 <Icon name="check" size={14} strokeWidth={2.6} /> Lightning needed: <span className="tabular">{preparation.sourceSats} sats</span>
               </p>
             ) : null}
-            {!handedOff && (
             <Button
               variant="ink"
               block
@@ -1274,55 +1289,42 @@ function HandoffStep({
             >
               {handoff.state.phase === "confirming" ? "Waiting for Nimiq Pay…" : "Confirm in Nimiq Pay"}
             </Button>
-            )}
-            {!handedOff && (
-            <p className={styles.ctaNote}>
-              {(!isPaymentFlagEnabled() || previewMode) ? (
-                <>
-                  <Icon name="lock" size={14} /> Payments are paused in this preview — no native payment call was made. Nimiq Pay would show the exact NIM amount before you approve.
-                </>
-              ) : (
-                <>
-                  <Icon name="lock" size={14} /> Nimiq Pay shows the exact NIM amount before you approve. The debit happens only after you confirm there.
-                </>
-              )}
-            </p>
+            {(!isPaymentFlagEnabled() || previewMode) && (
+              <p className={styles.ctaNote}>
+                <Icon name="lock" size={14} /> Payments are paused in this preview — no native payment call was made.
+              </p>
             )}
             {handoff.state.transferId === preparation.transferId && handoff.state.phase === "confirming" && (
               <p className={styles.quoteLine} role="status" aria-live="polite">
                 <span className={styles.quoteSpinner} aria-hidden="true" /> {handoff.state.message}
               </p>
             )}
-            {handoff.state.transferId === preparation.transferId && handoff.state.phase === "checking" && (
-              <Notice tone="warn" icon="clock" title="Payment being checked" live>
-                {handoff.state.message}
-              </Notice>
-            )}
-            {handoff.state.transferId === preparation.transferId && handoff.state.phase === "cancelled" && (
-              <Notice tone="info" icon="check" title="Payment cancelled" live>
-                {handoff.state.message}
-              </Notice>
-            )}
-            {handoff.state.transferId === preparation.transferId && handoff.state.phase === "attention" && (
-              <Notice tone="warn" icon="alert" title="Payment needs attention" live>
-                {handoff.state.message}
-              </Notice>
-            )}
           </div>
         )}
 
-        {preparation.phase === "ready" && preparation.transferId && ownerUserId && (
-          <SettlementProgress
-            transferId={preparation.transferId}
-            ownerUserId={ownerUserId}
-            requestPublicId={requestPublicId}
-            sessionValid={sessionValid}
-            previewMode={previewMode}
-            routeId={routeId}
-            asset={asset}
-            saveOffer={saveOffer}
-          />
+        {preparation.phase === "ready" && handoff.state.transferId === preparation.transferId && handoff.state.phase === "cancelled" && (
+          <Notice tone="info" icon="check" title="Payment cancelled" live>
+            {handoff.state.message}
+          </Notice>
         )}
+        {preparation.phase === "ready" && handoff.state.transferId === preparation.transferId && handoff.state.phase === "attention" && (
+          <Notice tone="warn" icon="alert" title="Payment needs attention" live>
+            {handoff.state.message}
+          </Notice>
+        )}
+        {preparation.phase === "ready" && !showProgress && handoff.state.transferId === preparation.transferId && handoff.state.phase === "checking" && (
+          <Notice tone="warn" icon="clock" title="Checking your payment" live>
+            {handoff.state.message}
+          </Notice>
+        )}
+
+        {showProgress &&
+          (progress.content ?? (
+            // Until the first server read lands: never an empty sheet after approval.
+            <p className={styles.quoteLine} role="status" aria-live="polite">
+              <span className={styles.quoteSpinner} aria-hidden="true" /> Checking your payment — don&apos;t pay again.
+            </p>
+          ))}
 
         {preparation.phase === "failed" && (
           <div className={styles.quoteBox}>
@@ -1355,29 +1357,37 @@ function HandoffStep({
                 Try again
               </Button>
             ) : null}
-            <p className={styles.ctaNote}>
-              {recoveryNeedsActivity ? "Do not resend while this payment is being checked." : "Checking payment — do not resend while a step is in progress."}
-            </p>
+            <p className={styles.ctaNote}>Don&apos;t send it again while it&apos;s being checked.</p>
           </div>
         )}
+      </div>
 
-        <div className={styles.next}>
-          <p className={styles.nextTitle}>What happens after you approve</p>
-          <Timeline steps={steps} />
+      {showProgress ? (
+        // After approval was requested there is no way "back to review": the
+        // footer holds the ONE next action, and Done goes to Activity (it
+        // never implies delivery).
+        <div className={styles.handoffActions} data-single>
+          {progress.action}
+          <Button variant={progress.action ? "soft" : "ink"} onClick={goToActivity}>
+            Done
+          </Button>
         </div>
-      </div>
-
-      <div className={styles.handoffActions}>
-        <Button variant="soft" onClick={onBack}>
-          Back to review
-        </Button>
-        <Button variant="ink" onClick={onDone}>
-          Done
-        </Button>
-      </div>
+      ) : (
+        <div className={styles.handoffActions}>
+          <Button variant="soft" onClick={onBack} disabled={handoff.state.phase === "confirming"}>
+            Back to review
+          </Button>
+          <Button variant="ink" onClick={onDone}>
+            Done
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
+
+/** Server statuses at which nothing has been approved yet (the hero covers them). */
+const PRE_APPROVAL_STATUSES: ReadonlySet<string> = new Set(["DRAFT", "QUOTED", "SWAP_CREATED", "AWAITING_NIM_APPROVAL"]);
 
 /**
  * Explicit refreshed-price acceptance (F8.12): the swap now costs more

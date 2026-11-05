@@ -45,10 +45,13 @@ describe("transfer status presentation", () => {
     expect(pillLabel("RECONCILING")).toBe("Checking your payment");
     expect(pillLabel("REFUNDED")).toBe("Not delivered — Polygon lock refunded");
     expect(matchesFilter("REFUNDED", "progress")).toBe(false);
-    expect(timelineFor("OUTCOME_UNKNOWN")[1]).toMatchObject({ label: "Nimiq Pay approval", state: "paused" });
-    expect(timelineFor("RECONCILING")[1]?.state).toBe("paused");
-    expect(timelineFor("OUTCOME_UNKNOWN")[2]?.detail).toMatch(/Do not resend/);
-    expect(timelineFor("CLIENT_FUNDED")[1]).toMatchObject({ label: "Approved in Nimiq Pay", state: "done" });
+    // Unresolved outcomes leave approval itself unconfirmed (paused), never done or failed.
+    expect(timelineFor("OUTCOME_UNKNOWN")[0]).toMatchObject({ label: "Approve in Nimiq Pay", state: "paused" });
+    expect(timelineFor("RECONCILING")[0]?.state).toBe("paused");
+    expect(timelineFor("OUTCOME_UNKNOWN")[0]?.detail).toMatch(/Do not resend/);
+    expect(timelineFor("OUTCOME_UNKNOWN").slice(1).every((s) => s.state === "upcoming")).toBe(true);
+    // Funding evidence is what completes approval.
+    expect(timelineFor("CLIENT_FUNDED")[0]).toMatchObject({ label: "Approved in Nimiq Pay", state: "done" });
   });
 
   it("filters by product stage", () => {

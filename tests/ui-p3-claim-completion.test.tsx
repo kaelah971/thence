@@ -166,7 +166,7 @@ describe("P3: the Nov 2 failure path now completes — explicit Finish delivery,
     vi.setSystemTime(new Date(FUNDED_SEEN));
     fundedServer();
     await advance(15_000);
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
     expect(text()).toContain(`Finish delivery before ${clock(DEADLINE_MS)}`);
     expect(finishButtons()).toHaveLength(1);
     // Funding alone is never delivery.
@@ -183,7 +183,7 @@ describe("P3: the Nov 2 failure path now completes — explicit Finish delivery,
     expect(posts()).toContain("claim-intent");
     expect(api.state[ID]!.status).toBe("CLAIMING");
     // Claim outcome is checked, not trusted: "confirming", no second button, not Delivered.
-    expect(screen.getAllByText("Delivery submitted — confirming it arrived").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Delivery submitted — verifying on Polygon").length).toBeGreaterThan(0);
     expect(finishButtons()).toHaveLength(0);
     expect(text()).not.toMatch(/They received the exact amount/);
 
@@ -221,7 +221,7 @@ describe("P3: the Nov 2 failure path now completes — explicit Finish delivery,
     await advance(60_000);
     expect(api.state[ID]!.status).toBe("CLAIMING");
     expect(text()).toContain("The on-chain record doesn't match this payment");
-    expect(text()).not.toContain("Delivery submitted — confirming it arrived");
+    expect(text()).not.toContain("Delivery submitted — verifying on Polygon");
     expect(text()).not.toMatch(/They received the exact amount/);
     expect(finishButtons()).toHaveLength(0);
   });
@@ -293,7 +293,7 @@ describe("P3: interruptions keep claim eligibility and never double-claim", () =
     renderSend();
     await advance(3_000);
     expect(finishButtons()).toHaveLength(0);
-    expect(screen.getAllByText("Delivery submitted — confirming it arrived").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Delivery submitted — verifying on Polygon").length).toBeGreaterThan(0);
     await advance(5 * 60_000);
     expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
   });
