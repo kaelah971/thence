@@ -242,8 +242,11 @@ describe("incident 077770a1 — approval → funded swap → no claim → deadli
 
 describe("stale eddaa6de — expired, never funded, still RECONCILING and occupying capacity", () => {
   const OWNER = fixture._meta.redactions.ownerUserId;
+  // The 2026-11-02 incident ran under the restricted pilot: explicit pilot mode
+  // (a production env with no THENCE_PAYMENTS_MODE is "off" since the public launch).
   const armed = getPilotConfig({
     NODE_ENV: "production",
+    THENCE_PAYMENTS_MODE: "pilot",
     THENCE_PILOT_ENABLED: "1",
     THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: "NQ07 0000 0000 0000 0000 0000 0000 0000 0000",
     THENCE_PILOT_MAX_TRANSFERS: "1",
