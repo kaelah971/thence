@@ -115,10 +115,31 @@ export function priorityOrder(a: Candidate, b: Candidate, now: number): number {
   return (a.lastObservedAt?.getTime() ?? 0) - (b.lastObservedAt?.getTime() ?? 0);
 }
 
-async function loadCandidates(scope: string[] | null): Promise<Candidate[]> {
+/**
+ * Provider swap ids are UUIDs: the provider rejects anything else outright
+ * ("UUID parsing failed"), and attach only binds ids the provider returned.
+ * Pre-S0 test rows written to production (ids like `swap-1111…`) can never
+ * be read from the provider, so the scheduled reconciler skips them — they
+ * would only accumulate provider_error rows and crowd out real payments.
+ * Scheduled selection ONLY: the rows stay untouched and visible, and the
+ * owner route / P4 / settlement paths are unchanged.
+ */
+export const PROVIDER_SWAP_ID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+const PROVIDER_SWAP_ID_RE = new RegExp(PROVIDER_SWAP_ID_PATTERN);
+
+export function isWellFormedProviderSwapId(id: string | null | undefined): boolean {
+  return typeof id === "string" && PROVIDER_SWAP_ID_RE.test(id);
+}
+
+async function loadCandidates(scope: string[] | null): Promise<{ candidates: Candidate[]; excludedMalformedSwapIds: number }> {
   const statuses = sql.join(SERVER_RECONCILABLE.map((s) => sql`${s}`), sql`, `);
   const scoped: SQL = scope && scope.length > 0 ? sql`AND t.id IN (${sql.join(scope.map((id) => sql`${id}::uuid`), sql`, `)})` : sql``;
-  if (scope && scope.length === 0) return [];
+  if (scope && scope.length === 0) return { candidates: [], excludedMalformedSwapIds: 0 };
+  const eligible: SQL = sql`
+    t.status IN (${statuses})
+      AND (t.status <> 'AWAITING_NIM_APPROVAL' OR EXISTS (
+        SELECT 1 FROM handoff_attempts h WHERE h.transfer_id = t.id AND h.status = 'HANDOFF_AUTHORIZED'))
+      ${scoped}`;
   const result = await getDb().execute(sql`
     SELECT t.id AS transfer_id, t.status, a.evm_refund_locktime, a.invoice_expires_at,
            o.observed_at AS last_observed_at, o.provider_status AS last_provider_status, o.kind AS last_kind
@@ -128,16 +149,22 @@ async function loadCandidates(scope: string[] | null): Promise<Candidate[]> {
       SELECT observed_at, provider_status, kind FROM reconciliation_observations
       WHERE transfer_id = t.id ORDER BY observed_at DESC LIMIT 1
     ) o ON true
-    WHERE t.status IN (${statuses})
-      AND (t.status <> 'AWAITING_NIM_APPROVAL' OR EXISTS (
-        SELECT 1 FROM handoff_attempts h WHERE h.transfer_id = t.id AND h.status = 'HANDOFF_AUTHORIZED'))
-      ${scoped}
+    WHERE ${eligible}
+      AND a.satora_swap_id ~ ${PROVIDER_SWAP_ID_PATTERN}
     ORDER BY o.observed_at ASC NULLS FIRST
     LIMIT ${CANDIDATE_LIMIT}
   `);
+  const excluded = await getDb().execute(sql`
+    SELECT count(*)::int AS n
+    FROM transfers t
+    JOIN swap_attachments a ON a.transfer_id = t.id
+    WHERE ${eligible}
+      AND a.satora_swap_id !~ ${PROVIDER_SWAP_ID_PATTERN}
+  `);
+  const excludedMalformedSwapIds = Number((excluded as unknown as { rows: Array<{ n: unknown }> }).rows[0]?.n ?? 0);
   const rows = (result as unknown as { rows: Array<Record<string, unknown>> }).rows;
   const date = (v: unknown): Date | null => (v instanceof Date ? v : typeof v === "string" ? new Date(v) : null);
-  return rows.map((r) => ({
+  const candidates = rows.map((r) => ({
     transferId: String(r["transfer_id"]),
     status: String(r["status"]),
     claimDeadline: date(r["evm_refund_locktime"]),
@@ -146,6 +173,7 @@ async function loadCandidates(scope: string[] | null): Promise<Candidate[]> {
     lastProviderStatus: typeof r["last_provider_status"] === "string" ? (r["last_provider_status"] as string) : null,
     lastKind: typeof r["last_kind"] === "string" ? (r["last_kind"] as string) : null,
   }));
+  return { candidates, excludedMalformedSwapIds };
 }
 
 /* ---------------- lease ---------------- */
@@ -202,6 +230,8 @@ export interface RunSummary {
   startedAt: string;
   durationMs: number;
   candidates: number;
+  /** Eligible rows skipped because their bound swap id is not a provider UUID (pre-S0 synthetic history). Count only. */
+  excludedMalformedSwapIds: number;
   due: number;
   reconciled: number;
   deferredByBudget: number;
@@ -220,6 +250,7 @@ export async function runServerReconciliation(options: RunOptions = {}): Promise
     startedAt: new Date(started).toISOString(),
     durationMs: 0,
     candidates: 0,
+    excludedMalformedSwapIds: 0,
     due: 0,
     reconciled: 0,
     deferredByBudget: 0,
@@ -235,9 +266,10 @@ export async function runServerReconciliation(options: RunOptions = {}): Promise
     const maxTransfers = Math.max(1, Math.min(options.maxTransfers ?? DEFAULT_MAX_TRANSFERS, 50));
     const budget = options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
     const now = Date.now();
-    const candidates = await loadCandidates(options.scope ?? null);
+    const { candidates, excludedMalformedSwapIds } = await loadCandidates(options.scope ?? null);
     const due = candidates.filter((c) => isDue(c, now)).sort((a, b) => priorityOrder(a, b, now));
     summary.candidates = candidates.length;
+    summary.excludedMalformedSwapIds = excludedMalformedSwapIds;
     summary.due = due.length;
     const batch = due.slice(0, maxTransfers);
     for (const [index, candidate] of batch.entries()) {

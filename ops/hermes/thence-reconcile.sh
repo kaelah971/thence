@@ -42,7 +42,7 @@ status="$(
 )" || status="000"
 
 # One-line, secret-free summary for journald (outcome/counters/error codes only).
-summary="$(jq -c '(.reconciler // .) | {outcome, skipReason, candidates, due, reconciled, deferredByBudget, advanced: ((.advanced // []) | length), errors, error}' "$body" 2>/dev/null || echo '{"parse":"failed"}')"
+summary="$(jq -c '(.reconciler // .) | {outcome, skipReason, candidates, excludedMalformedSwapIds, due, reconciled, deferredByBudget, advanced: ((.advanced // []) | length), errors, error}' "$body" 2>/dev/null || echo '{"parse":"failed"}')"
 echo "http=$status $summary"
 
 case "$status" in
