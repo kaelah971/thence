@@ -21,7 +21,7 @@
 import "dotenv/config";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createPrivateKey, generateKeyPairSync } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { loadProductionDatabaseUrl } from "../scripts/db-guard";
@@ -77,6 +77,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   if (cert.status !== 0) throw new Error("E2E: could not generate the simulator certificate (openssl).");
   const stopMocks = await startMockServices(E2E_MOCK_PORT, { port: E2E_MOCK_TLS_PORT, key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") });
   const wallet = walletFile();
+  rmSync(join(RUN_DIR, "wallets.txt"), { force: true }); // per-test wallets of this run only
 
   // ---- TEST database pilot switch (restored in teardown) ----
   const pool = new Pool({ connectionString: testUrl, max: 1 });
@@ -173,6 +174,12 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     await stopMocks();
     // TEST database cleanup: the ephemeral E2E owner and everything it created (cascade).
     await pool.query("DELETE FROM users WHERE nimiq_address = $1", [wallet.address]);
+    // Per-test wallets (e2e/harness.ts freshWallet): one Thence user per test.
+    const perTest = existsSync(join(RUN_DIR, "wallets.txt"))
+      ? readFileSync(join(RUN_DIR, "wallets.txt"), "utf8").split(/\r?\n/).filter((a) => a.trim() !== "")
+      : [];
+    if (perTest.length > 0) await pool.query("DELETE FROM users WHERE nimiq_address = ANY($1::text[])", [perTest]);
+    rmSync(join(RUN_DIR, "wallets.txt"), { force: true });
     await pool.query("DELETE FROM job_leases WHERE name LIKE 'claim:%' AND expires_at < NOW() - interval '1 hour'");
     // Restore the suites' defined baseline (DISABLED, fail-closed — see
     // tests/f81-pilot-attempt-limits.test.ts), never a remembered value.

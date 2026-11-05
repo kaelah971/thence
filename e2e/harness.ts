@@ -12,11 +12,11 @@
  *   the page's IndexedDB; only its HTTP peer is simulated.
  * - Every other external request is aborted, so nothing leaves the machine.
  */
-import { createPrivateKey, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
+import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect, type BrowserContext, type Page } from "@playwright/test";
-import { buildSignPayload, sha256 } from "../src/lib/nimiq";
+import { buildSignPayload, deriveNimiqAddress, sha256 } from "../src/lib/nimiq";
 import { APP_URL, MOCK_URL, RUN_DIR } from "./config";
 
 interface Wallet {
@@ -27,6 +27,24 @@ interface Wallet {
 
 export function e2eWallet(): Wallet {
   return JSON.parse(readFileSync(join(RUN_DIR, "wallet.json"), "utf8")) as Wallet;
+}
+
+/** Addresses of every per-test wallet this run created (TEST database cleanup). */
+export const E2E_WALLETS_FILE = "wallets.txt";
+
+/**
+ * A fresh ephemeral wallet per test (= a separate Thence user). Public mode
+ * allows ONE unresolved payment per user, so specs must not share a payer;
+ * this also matches real use (independent users). Test keys only; they
+ * control no funds anywhere. Addresses are recorded for teardown.
+ */
+function freshWallet(): Wallet {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicKeyHex = Buffer.from(publicKey.export({ format: "der", type: "spki" }).subarray(-32)).toString("hex");
+  const pkcs8Hex = (privateKey.export({ format: "der", type: "pkcs8" }) as Buffer).toString("hex");
+  const address = deriveNimiqAddress(publicKeyHex);
+  appendFileSync(join(RUN_DIR, E2E_WALLETS_FILE), `${address}\n`, "utf8");
+  return { publicKeyHex, pkcs8Hex, address };
 }
 
 /** POST to the simulator's test-control API. */
@@ -87,7 +105,7 @@ function hostScript(): void {
 }
 
 export async function prepareContext(context: BrowserContext): Promise<void> {
-  const wallet = e2eWallet();
+  const wallet = freshWallet();
   const key = createPrivateKey({ key: Buffer.from(wallet.pkcs8Hex, "hex"), format: "der", type: "pkcs8" });
   await context.exposeBinding("__e2eSign", (_source, message: string) => ({
     publicKey: wallet.publicKeyHex,
