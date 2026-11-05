@@ -9,8 +9,9 @@
  *
  * Then:
  * 1. starts the SIMULATED Satora + Polygon services (e2e/mock-services.ts);
- * 2. generates an ephemeral E2E wallet (ed25519; this run only) and puts its
- *    Nimiq address on the pilot owner allowlist of the E2E server ONLY;
+ * 2. generates an ephemeral E2E wallet (ed25519; this run only). The E2E
+ *    server runs THENCE_PAYMENTS_MODE=public with NO allowlist or caps, so
+ *    this wallet is an ordinary, non-allowlisted payer;
  * 3. makes sure the TEST database pilot switch allows test payments
  *    (restored afterwards);
  * 4. builds `.next-e2e` (payment + claim flags on — never the release `.next`);
@@ -123,11 +124,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     THENCE_NIMIQ_RPC_URL: `${mock}/nimiq`,
     THENCE_ENABLED_ROUTES: "usdc-polygon",
     THENCE_ROUTE_TOKENS_JSON: JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" }),
-    THENCE_PILOT_ENABLED: "1",
-    THENCE_PILOT_OWNER_NIMIQ_ADDRESSES: wallet.address,
-    THENCE_PILOT_MAX_TARGET_ATOMIC: "300000",
-    THENCE_PILOT_MAX_SPEND_ATOMIC: "100000000",
-    THENCE_PILOT_MAX_TRANSFERS: "50",
+    // Public launch: the simulated wallet is on NO allowlist and no Thence
+    // cap applies — the whole lifecycle runs in public mode, gated only by
+    // the database kill switch (enabled above, test database only).
+    THENCE_PAYMENTS_MODE: "public",
     THENCE_TRANSFERS_WRITE_RATE_PER_MINUTE: "600",
     THENCE_QUOTES_RATE_PER_MINUTE: "600",
     THENCE_CHALLENGE_RATE_PER_MINUTE: "600",
@@ -138,6 +138,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     NODE_EXTRA_CA_CERTS: certPath,
   };
   delete serverEnv["THENCE_PRODUCTION_ENV_FILE"];
+  for (const k of ["THENCE_PILOT_ENABLED", "THENCE_PILOT_OWNER_NIMIQ_ADDRESSES", "THENCE_PILOT_MAX_TARGET_ATOMIC", "THENCE_PILOT_MAX_SPEND_ATOMIC", "THENCE_PILOT_MAX_TRANSFERS"]) {
+    delete serverEnv[k];
+  }
   const server: ChildProcess = spawn("npx", ["next", "start", "-p", String(E2E_APP_PORT)], { cwd: ROOT, env: serverEnv, stdio: ["ignore", "pipe", "pipe"], shell: true });
   // Server output is kept (test run only) so specs can prove no secret is ever logged.
   const serverLog = join(RUN_DIR, "server.log");

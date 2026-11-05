@@ -13,10 +13,12 @@
  * - `disable` stops NEW funded pilot execution immediately. Recovery
  *   (reconcile, resume, attempt status, receipt, settlement verification)
  *   keeps working — it never reads this switch.
- * - `enable` requires --yes AND only makes sense after the deployed env is
- *   armed (THENCE_PILOT_ENABLED=1 + allowlist + caps) on a fresh production
+ * - `enable` requires --yes AND only makes sense after the deployed
+ *   THENCE_PAYMENTS_MODE is "public" (any authenticated wallet) or "pilot"
+ *   (THENCE_PILOT_ENABLED=1 + allowlist + caps) on a fresh production
  *   deployment that was verified healthy. Enabling here alone changes
- *   nothing unless the deployed env gate is also armed.
+ *   nothing while the mode is "off" or unset (production default).
+ *   This switch is the emergency stop in EVERY mode.
  *
  * S0 TARGET SELECTION (explicit, never implicit):
  * - Without --production the target is DATABASE_URL from .env and it must
@@ -121,7 +123,7 @@ async function main(): Promise<void> {
     if (!enabled) {
       console.log("New funded pilot execution is now blocked on all deployments. Recovery endpoints stay available.");
     } else {
-      console.log("Reminder: this alone authorizes nothing unless the deployed env gate is also armed (THENCE_PILOT_ENABLED=1 + allowlist).");
+      console.log("Reminder: this alone authorizes nothing unless the deployed THENCE_PAYMENTS_MODE is public (or pilot with THENCE_PILOT_ENABLED=1 + allowlist).");
     }
   } catch (error) {
     // Static text only: pg errors can embed hosts and database names.
