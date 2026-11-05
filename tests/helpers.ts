@@ -79,10 +79,11 @@ export interface TestLogin {
 export async function loginAs(
   clientKey: Record<string, string>,
   onUser?: (userId: string) => void,
+  /** Sign in with an existing fixture wallet (re-authentication tests). */
+  wallet: ReturnType<typeof fixtureWallet> = fixtureWallet(),
 ): Promise<TestLogin> {
   const { issueChallenge } = await import("@/lib/auth");
   const { POST: verifyRoutePOST } = await import("../app/api/session/verify/route");
-  const wallet = fixtureWallet();
   const { message } = await issueChallenge();
   const res = await verifyRoutePOST(
     postJson(

@@ -21,13 +21,17 @@ import { setSatoraFetchersForTests } from "@/lib/satora";
 import { CLAIM_FUNDING_MIN_CONFIRMATIONS, SWAP_FUNDED_EVENT_TOPIC, TRANSFER_EVENT_TOPIC, setSettlementChainForTests, type ChainReads } from "@/lib/settlement";
 import { runServerReconciliation } from "@/lib/server-reconciler";
 import { checkTransferConsistency, readConsistencySnapshot } from "@/lib/consistency";
-import { LIVE, RUN, loginAs, postJson } from "./helpers";
+import { LIVE, RUN, fixtureWallet, loginAs, postJson } from "./helpers";
 import { POST as createTransfer } from "../app/api/transfers/route";
 import { POST as preparePost } from "../app/api/transfers/[id]/prepare/route";
 import { POST as attachPost } from "../app/api/transfers/[id]/attach/route";
 import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-handoff/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as claimIntentPost } from "../app/api/transfers/[id]/claim-intent/route";
+import { GET as listTransfers } from "../app/api/transfers/route";
+import { GET as getTransfer } from "../app/api/transfers/[id]/route";
+import { POST as logoutPost } from "../app/api/session/logout/route";
+import { handoffAttempts } from "@/db/schema";
 
 const INC = fixture.incident_077770a1;
 const LOCK = INC.attachment.payment_hash;
@@ -124,7 +128,7 @@ function installProvider(): void {
   });
 }
 
-interface Pay { id: string; cookie: string; swapId: string; sourceSats: string; lock: number; fundTx: string; tag: string }
+interface Pay { id: string; cookie: string; swapId: string; sourceSats: string; lock: number; fundTx: string; tag: string; userId: string; wallet: ReturnType<typeof fixtureWallet>; attemptToken: string }
 
 const swapShape = (p: Pick<Pay, "swapId" | "sourceSats" | "lock">, over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: p.swapId,
@@ -157,7 +161,8 @@ const params = (id: string) => ({ params: Promise.resolve({ id }) });
 
 /** An authorized payment that the provider then funds; the server reconciles it to SERVER_FUNDED. */
 async function fundedPayment(tag: string): Promise<Pay> {
-  const { cookie } = await loginAs(client(`login-${tag}`), (uid) => createdUserIds.push(uid));
+  const wallet = fixtureWallet();
+  const { cookie, userId } = await loginAs(client(`login-${tag}`), (uid) => createdUserIds.push(uid), wallet);
   const created = await createTransfer(
     postJson("http://localhost/api/transfers", { routeId: "usdc-polygon", targetAmountAtomic: "300000", idempotencyKey: `p3-${RUN}-${tag}`, direct: { asset: "USDC", network: "Polygon", address: EVM_A } }, { cookie, ...client(tag) }),
   );
@@ -168,7 +173,7 @@ async function fundedPayment(tag: string): Promise<Pay> {
   if (prep.status !== 201) throw new Error(`setup prepare failed: ${prep.status}`);
   const token = ((await prep.json()) as { attemptToken: string }).attemptToken;
   const p: Pay = { id: transfer.id, cookie, swapId: randomUUID(), // provider swap ids are UUIDs (the scheduled reconciler skips anything else)
-    sourceSats: transfer.quote.sourceSats, lock: nowSec() + 3500, fundTx: hex32(`fund-${tag}`), tag };
+    sourceSats: transfer.quote.sourceSats, lock: nowSec() + 3500, fundTx: hex32(`fund-${tag}`), tag, userId, wallet, attemptToken: token };
   provider.set(p.swapId, swapShape(p));
   const attached = await attachPost(postJson(`http://localhost/api/transfers/${p.id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: p.swapId, recoveryAcknowledged: true }, { cookie, ...client(tag) }), params(p.id));
   if (attached.status !== 201) throw new Error(`setup attach failed: ${attached.status} ${JSON.stringify(await attached.json())}`);
@@ -383,5 +388,110 @@ describe.skipIf(!LIVE)("P3 claim authorization (isolated test database)", () => 
 
   it("every transfer this suite created is consistent under the strict checker", async () => {
     for (const id of createdTransferIds) await expectConsistent(id);
+  });
+});
+
+/* ------------- iOS cookie loss: re-authentication and recovery ------------- */
+
+/**
+ * 2026-11-05: Nimiq Pay iOS dropped every cookie (login and diagnostic) while
+ * IndexedDB and localStorage survived. The owner then signs in again with the
+ * same wallet, which issues a NEW session. These pin that the funded payment
+ * is still the same owner's, resumable exactly once, and that nothing is
+ * created or re-approved; absent/stale sessions and other wallets fail safe.
+ */
+describe.skipIf(!LIVE)("re-authentication after login-cookie loss (isolated test database)", () => {
+  const transfersOf = async (userId: string) => getDb().select({ id: transfers.id }).from(transfers).where(eq(transfers.ownerUserId, userId));
+  const attemptsOf = async (id: string) => getDb().select({ id: handoffAttempts.id }).from(handoffAttempts).where(eq(handoffAttempts.transferId, id));
+  const swapsOf = async (id: string) => getDb().select({ id: swapAttachments.id }).from(swapAttachments).where(eq(swapAttachments.transferId, id));
+  const get = (url: string, cookie: string, tag: string) => new Request(url, { headers: { cookie, ...client(tag) } });
+
+  it("same wallet, new session: same owner and payment; no new transfer, swap or approval; Finish delivery authorized once", async () => {
+    const p = await fundedPayment("reauth");
+    const before = { transfers: await transfersOf(p.userId), attempts: await attemptsOf(p.id), swaps: await swapsOf(p.id) };
+    // Cookie lost on the device: the browser signs in again with the same wallet.
+    const again = await loginAs(client("reauth-again"), undefined, p.wallet);
+    expect(again.userId).toBe(p.userId);
+    expect(again.cookie).not.toBe(p.cookie);
+
+    // The new session sees the original payment, funded.
+    const listed = await listTransfers(get("http://localhost/api/transfers", again.cookie, "reauth-list"));
+    expect(listed.status).toBe(200);
+    expect(JSON.stringify(await listed.json())).toContain(p.id);
+    const one = await getTransfer(get(`http://localhost/api/transfers/${p.id}`, again.cookie, "reauth-get"), params(p.id));
+    expect(one.status).toBe(200);
+    expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
+
+    // Nimiq Pay approval cannot be requested again for this payment.
+    const reauthorize = await authorizePost(
+      postJson(`http://localhost/api/transfers/${p.id}/authorize-handoff`, { attemptToken: p.attemptToken }, { cookie: again.cookie, ...client("reauth-authz") }),
+      params(p.id),
+    );
+    expect(reauthorize.status).toBe(409);
+    expect((await errorOf(reauthorize)).error).toBe("NOT_AUTHORIZABLE");
+    // A second payment cannot be started while this one is unresolved.
+    const second = await createTransfer(
+      postJson(
+        "http://localhost/api/transfers",
+        { routeId: "usdc-polygon", targetAmountAtomic: "300000", idempotencyKey: `p3-${RUN}-reauth-second`, direct: { asset: "USDC", network: "Polygon", address: EVM_A } },
+        { cookie: again.cookie, ...client("reauth-second") },
+      ),
+    );
+    expect(second.status).toBe(409);
+    expect((await errorOf(second)).error).toBe("PAYMENT_EXPOSURE_UNCERTAIN");
+    expect(await transfersOf(p.userId)).toEqual(before.transfers);
+    expect(await attemptsOf(p.id)).toEqual(before.attempts);
+    expect(await swapsOf(p.id)).toEqual(before.swaps);
+    expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
+
+    // Finish delivery: authorized for exactly the bound swap, deadline and destination.
+    const res = await claim(p, again.cookie);
+    expect(res.status).toBe(200);
+    const intent = ((await res.json()) as { claim: Record<string, unknown> }).claim;
+    expect(intent).toMatchObject({
+      transferId: p.id,
+      status: "CLAIMING",
+      satoraSwapId: p.swapId,
+      paymentHash: LOCK,
+      destination: EVM_A,
+      targetAmountAtomic: "300000",
+      claimDeadline: new Date(p.lock * 1000).toISOString(),
+      retry: false,
+    });
+    // The old session (still valid server-side) cannot start a second claim while the lease is held.
+    const dup = await claim(p, p.cookie);
+    expect(dup.status).toBe(409);
+    expect((await reasonsOf(p.id)).filter((r) => r === "CLAIM_AUTHORIZED")).toHaveLength(1);
+    await expectConsistent(p.id);
+  }, 180_000); // two logins + a full funded setup + six reads on the live test database
+
+  it("no session, a forged token or a signed-out session: Finish delivery refused with 401, nothing changes", async () => {
+    const p = await fundedPayment("nosession");
+    const noCookie = await claimIntentPost(postJson(`http://localhost/api/transfers/${p.id}/claim-intent`, {}, client("nosession-none")), params(p.id));
+    expect(noCookie.status).toBe(401);
+    expect((await claim(p, "thence_session=forged-not-a-real-token")).status).toBe(401);
+    const out = await logoutPost(postJson("http://localhost/api/session/logout", {}, { cookie: p.cookie, ...client("nosession-logout") }));
+    expect(out.status).toBeLessThan(300);
+    expect((await claim(p)).status).toBe(401);
+    expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
+    expect(await reasonsOf(p.id)).not.toContain("CLAIM_AUTHORIZED");
+    // Signing in again with the same wallet restores access to the same payment.
+    const again = await loginAs(client("nosession-again"), undefined, p.wallet);
+    expect((await claim(p, again.cookie)).status).toBe(200);
+    expect((await reasonsOf(p.id)).filter((r) => r === "CLAIM_AUTHORIZED")).toHaveLength(1);
+  });
+
+  it("a different wallet signed in on the device can neither see nor finish the payment", async () => {
+    const p = await fundedPayment("otherwallet");
+    const other = await loginAs(client("otherwallet-login"), (uid) => createdUserIds.push(uid));
+    expect(other.userId).not.toBe(p.userId);
+    const seen = await getTransfer(get(`http://localhost/api/transfers/${p.id}`, other.cookie, "otherwallet-get"), params(p.id));
+    expect([403, 404]).toContain(seen.status);
+    const listed = await listTransfers(get("http://localhost/api/transfers", other.cookie, "otherwallet-list"));
+    expect(JSON.stringify(await listed.json())).not.toContain(p.id);
+    const res = await claim(p, other.cookie);
+    expect([403, 404]).toContain(res.status);
+    expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
+    expect(await reasonsOf(p.id)).not.toContain("CLAIM_AUTHORIZED");
   });
 });
