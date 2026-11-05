@@ -12,6 +12,7 @@
  * Every run is scoped to the test's own transfers and a unique lease name,
  * so it never touches unrelated rows in the shared test database.
  */
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import fixture from "./fixtures/incidents-2026-11-02.json";
@@ -22,6 +23,7 @@ import { setSettlementChainForTests, type ChainReads } from "@/lib/settlement";
 import {
   dueIntervalMs,
   isDue,
+  isWellFormedProviderSwapId,
   priorityOrder,
   runServerReconciliation,
   setCronRunOptionsForTests,
@@ -94,6 +96,19 @@ describe("P6 scheduling rules (pure)", () => {
     expect(verifyCronAuthorization(secret, secret)).toBe("unauthorized");
     expect(verifyCronAuthorization(`Bearer ${secret}x`, secret)).toBe("unauthorized");
     expect(verifyCronAuthorization(`Bearer ${secret}`, secret)).toBe("ok");
+  });
+
+  it("provider swap ids: only well-formed UUIDs are scheduled (pre-S0 synthetic ids are not)", () => {
+    // Real provider ids (eddaa6de/077770a1 shape) and any UUID version/case.
+    expect(isWellFormedProviderSwapId("5cc444f5-6a1b-4c2d-8e3f-0123456789ab")).toBe(true);
+    expect(isWellFormedProviderSwapId("5CC444F5-6A1B-4C2D-8E3F-0123456789AB")).toBe(true);
+    expect(isWellFormedProviderSwapId(randomUUID())).toBe(true);
+    // Synthetic shapes found in production (rejected by the provider: "UUID parsing failed").
+    for (const bad of ["swap-11111111-2222-3333-4444-555555555555", "p6-swap-abcd-tag", "e2e-0123456789abcdef", "swap-test-1", "", " 5cc444f5-6a1b-4c2d-8e3f-0123456789ab", "5cc444f5-6a1b-4c2d-8e3f-0123456789ab\n", "5cc444f56a1b4c2d8e3f0123456789ab"]) {
+      expect(isWellFormedProviderSwapId(bad), JSON.stringify(bad)).toBe(false);
+    }
+    expect(isWellFormedProviderSwapId(null)).toBe(false);
+    expect(isWellFormedProviderSwapId(undefined)).toBe(false);
   });
 });
 
@@ -178,7 +193,7 @@ function swapShape(id: string, sourceSats: string, over: Record<string, unknown>
 }
 
 /** Authorized, bound payment (AWAITING_NIM_APPROVAL); returns the swap id for provider scripting. */
-async function authorizedPayment(tag: string): Promise<{ id: string; cookie: string; swapId: string; sourceSats: string }> {
+async function authorizedPayment(tag: string, swapIdOverride?: string): Promise<{ id: string; cookie: string; swapId: string; sourceSats: string }> {
   const { cookie } = await loginAs(client(`login-${tag}`), (uid) => createdUserIds.push(uid));
   const created = await createTransfer(
     postJson("http://localhost/api/transfers", { routeId: "usdc-polygon", targetAmountAtomic: "300000", idempotencyKey: `p6-${RUN}-${tag}`, direct: { asset: "USDC", network: "Polygon", address: EVM_A } }, { cookie, ...client(tag) }),
@@ -188,7 +203,8 @@ async function authorizedPayment(tag: string): Promise<{ id: string; cookie: str
   const prep = await preparePost(postJson(`http://localhost/api/transfers/${transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie, ...client(tag) }), params(transfer.id));
   if (prep.status !== 201) throw new Error(`setup prepare failed: ${prep.status}`);
   const token = ((await prep.json()) as { attemptToken: string }).attemptToken;
-  const swapId = `p6-swap-${RUN}-${tag}`;
+  // Provider swap ids are UUIDs (the scheduled reconciler skips anything else).
+  const swapId = swapIdOverride ?? randomUUID();
   provider.set(swapId, swapShape(swapId, transfer.quote.sourceSats));
   const attached = await attachPost(
     postJson(`http://localhost/api/transfers/${transfer.id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: swapId, recoveryAcknowledged: true }, { cookie, ...client(tag) }),
@@ -408,4 +424,96 @@ describe.skipIf(!LIVE)("P6 server reconciliation (isolated test database)", () =
     expect((attempts as unknown as { rows: Array<{ status: string }> }).rows.map((r) => r.status)).toEqual(["HANDOFF_AUTHORIZED"]);
     void and;
   });
+
+  /* ---- pre-S0 synthetic history (production had 33 such rows) ---- */
+
+  /** Bind a swap with a non-UUID id exactly like the pre-S0 test rows (TEST database, mocked provider). */
+  async function syntheticPayment(tag: string): Promise<{ id: string; swapId: string }> {
+    const swapId = `swap-${RUN}-${tag}-1111-2222-3333`;
+    const p = await authorizedPayment(tag, swapId);
+    return { id: p.id, swapId };
+  }
+
+  it("synthetic non-UUID swaps are excluded and counted; untouched across repeated runs; UUID swaps still reconcile", async () => {
+    const synth = await syntheticPayment("synth");
+    const real = await authorizedPayment("real-uuid");
+    expect(isWellFormedProviderSwapId(real.swapId)).toBe(true);
+    provider.set(real.swapId, swapShape(real.swapId, real.sourceSats, { status: "serverfunded", evm_fund_txid: REAL_FUND_TX }));
+    const providerReads: string[] = [];
+    setSatoraFetchersForTests({
+      getSwap: async (id: string) => {
+        providerReads.push(id);
+        const b = provider.get(id);
+        if (b === undefined || typeof b === "string") throw Object.assign(new Error("not found"), { code: 404 });
+        return { ...b, id };
+      },
+    });
+    const statusBefore = await statusOf(synth.id);
+    const obsBefore = (await observationsOf(synth.id)).length;
+    const transitionsBefore = (await transitionsOf(synth.id)).length; // setup (attach/authorize) audit rows
+
+    const run = await runServerReconciliation({ scope: [synth.id, real.id], leaseName: lease("synth") });
+    expect(run).toMatchObject({ outcome: "completed", candidates: 1, excludedMalformedSwapIds: 1, due: 1, reconciled: 1 });
+    expect(run.advanced).toEqual([{ transferId: real.id, from: "AWAITING_NIM_APPROVAL", to: "SERVER_FUNDED" }]);
+    expect(await statusOf(real.id)).toBe("SERVER_FUNDED");
+    // Historical row: never read from the provider, never written to.
+    expect(providerReads).not.toContain(synth.swapId);
+    expect(await statusOf(synth.id)).toBe(statusBefore);
+    expect((await observationsOf(synth.id)).length).toBe(obsBefore);
+    expect(await transitionsOf(synth.id)).toHaveLength(transitionsBefore);
+    // Summary is counts + ids of reconciled rows only (no swap ids, hashes or invoices).
+    expect(JSON.stringify(run)).not.toContain(synth.swapId);
+    expect(JSON.stringify(run)).not.toContain(real.swapId);
+
+    // Retry behaviour: later runs (both made due again) still never touch the synthetic row.
+    for (let i = 0; i < 2; i++) {
+      await ageObservations(real.id, 30);
+      const again = await runServerReconciliation({ scope: [synth.id, real.id], leaseName: lease("synth") });
+      expect(again).toMatchObject({ candidates: 1, excludedMalformedSwapIds: 1 });
+    }
+    expect(providerReads).not.toContain(synth.swapId);
+    expect((await observationsOf(synth.id)).length).toBe(obsBefore);
+    expect(await transitionsOf(synth.id)).toHaveLength(transitionsBefore);
+    installProvider();
+  }, 240_000);
+
+  it("deadline priority: a claimable UUID swap closest to its deadline wins the only slot; synthetic funded rows never take it", async () => {
+    const synth = await syntheticPayment("prio-synth");
+    const soon = await authorizedPayment("prio-soon");
+    const later = await authorizedPayment("prio-later");
+    for (const p of [soon, later]) provider.set(p.swapId, swapShape(p.swapId, p.sourceSats, { status: "serverfunded", evm_fund_txid: REAL_FUND_TX }));
+    const setup = await runServerReconciliation({ scope: [soon.id, later.id], leaseName: lease("prio-setup") });
+    expect(setup.advanced.map((a) => a.to).sort()).toEqual(["SERVER_FUNDED", "SERVER_FUNDED"]);
+    // TEST database only: model a pre-S0 synthetic row stuck in a funded state with the
+    // EARLIEST deadline, and two genuine claimable swaps with open windows.
+    const at = (minutesFromNow: number) => new Date(Date.now() + minutesFromNow * 60_000);
+    await getDb().update(transfers).set({ status: "SERVER_FUNDED" }).where(eq(transfers.id, synth.id));
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: at(12) }).where(eq(swapAttachments.transferId, synth.id));
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: at(25) }).where(eq(swapAttachments.transferId, soon.id));
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: at(50) }).where(eq(swapAttachments.transferId, later.id));
+    await ageObservations(soon.id, 30);
+    await ageObservations(later.id, 30);
+    const before = { soon: (await observationsOf(soon.id)).length, later: (await observationsOf(later.id)).length, synth: (await observationsOf(synth.id)).length };
+
+    const run = await runServerReconciliation({ scope: [synth.id, soon.id, later.id], leaseName: lease("prio"), maxTransfers: 1 });
+    expect(run).toMatchObject({ candidates: 2, excludedMalformedSwapIds: 1, due: 2, reconciled: 1 });
+    expect((await observationsOf(soon.id)).length).toBe(before.soon + 1);
+    expect((await observationsOf(later.id)).length).toBe(before.later);
+    expect((await observationsOf(synth.id)).length).toBe(before.synth);
+  }, 240_000);
+
+  it("lease safety with excluded rows: concurrent deliveries still run once; the excluded count is reported by the run that ran", async () => {
+    const synth = await syntheticPayment("lease-synth");
+    const real = await authorizedPayment("lease-real");
+    const name = lease("lease-synth");
+    const [a, b] = await Promise.all([
+      runServerReconciliation({ scope: [synth.id, real.id], leaseName: name }),
+      runServerReconciliation({ scope: [synth.id, real.id], leaseName: name }),
+    ]);
+    const ran = [a, b].find((r) => r.outcome === "completed");
+    const skipped = [a, b].find((r) => r.outcome === "skipped");
+    expect(ran).toMatchObject({ candidates: 1, excludedMalformedSwapIds: 1 });
+    expect(skipped).toMatchObject({ skipReason: "lease-held", candidates: 0, excludedMalformedSwapIds: 0 });
+    expect(await runServerReconciliation({ scope: [synth.id, real.id], leaseName: name })).toMatchObject({ outcome: "skipped", skipReason: "too-soon" });
+  }, 120_000);
 });

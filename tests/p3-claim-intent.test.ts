@@ -10,6 +10,7 @@
  * 300000 USDC to the recipient. Nothing claims, pays or refunds — the
  * browser SDK claim is not involved at all; only the server gate is.
  */
+import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
@@ -166,7 +167,8 @@ async function fundedPayment(tag: string): Promise<Pay> {
   const prep = await preparePost(postJson(`http://localhost/api/transfers/${transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie, ...client(tag) }), params(transfer.id));
   if (prep.status !== 201) throw new Error(`setup prepare failed: ${prep.status}`);
   const token = ((await prep.json()) as { attemptToken: string }).attemptToken;
-  const p: Pay = { id: transfer.id, cookie, swapId: `p3-swap-${RUN}-${tag}`, sourceSats: transfer.quote.sourceSats, lock: nowSec() + 3500, fundTx: hex32(`fund-${tag}`), tag };
+  const p: Pay = { id: transfer.id, cookie, swapId: randomUUID(), // provider swap ids are UUIDs (the scheduled reconciler skips anything else)
+    sourceSats: transfer.quote.sourceSats, lock: nowSec() + 3500, fundTx: hex32(`fund-${tag}`), tag };
   provider.set(p.swapId, swapShape(p));
   const attached = await attachPost(postJson(`http://localhost/api/transfers/${p.id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: p.swapId, recoveryAcknowledged: true }, { cookie, ...client(tag) }), params(p.id));
   if (attached.status !== 201) throw new Error(`setup attach failed: ${attached.status} ${JSON.stringify(await attached.json())}`);

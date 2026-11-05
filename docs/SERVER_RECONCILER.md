@@ -62,11 +62,17 @@ not whether a claim happens.
   intervals per transfer — funded 1 min (2 min after the deadline), pre-
   funding 2 min (10 min after invoice expiry), provider `expired` 6 h,
   failed reads ≥ 5 min; priority = soonest open claim deadline first.
+- Only provider-shaped swaps are scheduled: a bound `satora_swap_id` must be
+  a UUID (the provider rejects anything else). Pre-S0 synthetic test rows in
+  production (`swap-1111…`-style ids, 33 rows on 2026-11-05) are skipped and
+  only counted (`excludedMalformedSwapIds`); they are never read, written,
+  closed or hidden, and the owner route, P4 and settlement paths are
+  unchanged.
 
 ## Observability
 
 Each run returns and logs one line `thence-reconciler {json}` with: run id,
-duration, candidates, due, reconciled, deferred-by-budget, error counts by
+duration, candidates, excluded non-UUID swaps (count), due, reconciled, deferred-by-budget, error counts by
 code, and `{transferId, from, to}` for each advance. The same summary is
 stored in `job_leases.last_summary`. No invoices, hashes, addresses, tokens
 or credentials are included.
