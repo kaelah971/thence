@@ -41,6 +41,7 @@ export const SHARDS: Record<string, string[]> = {
     "db-pool",
     "schema",
     "p5-chain-timeout",
+    "p4-chain-diagnostics",
     "p5-refund-consistency",
     "p3-claim-verification",
   ],
