@@ -252,7 +252,26 @@ unchanged since the initial release (`src/lib/recipients.ts`: advisory lock +
 unique-index backstop + 3× retry on 23505). Root cause not established — it
 may be retry exhaustion under remote DB latency, a different transient error
 masked by the route's generic 500, or a real race. Not on the payment path.
-Status: **open, tracked**; not classified as a database-only issue.
+Status: ~~open, tracked~~ **root cause found and fixed (2026-11-05, PR #39).**
+
+Root cause (reproduced deterministically on the test database): the default
+switch was ONE statement, `SET is_default = (id = target)`, against the
+partial unique index `recipient_destinations_single_default_uidx`. That index
+is non-deferrable, so PostgreSQL checks it row by row during the UPDATE and
+raises 23505 whenever the scan reaches the target before the old default —
+no concurrency required. Scan order follows the heap layout left by earlier
+row rewrites (HOT pruning / free-space reuse), hence intermittent; the 3×
+retry replayed the same order, and the route mapped the 23505 to a generic
+500. Fix: `setDefaultAtomic` clears the old default, then sets the target,
+in the same transaction under the recipient advisory lock (same end state;
+index still the backstop). Pinned by `tests/recipients.test.ts` "default
+switch succeeds whichever row PostgreSQL scans first", which forces both
+physical orders (failed before the fix with 23505, passes after).
+
+Separate, unrelated CI flake: `p4-expiry-resolution` setup creates a transfer
+through the live Satora quote API; run 42071551419 logged
+`thence funded create: PROVIDER_TIMEOUT` (503). External dependency, not
+recipient-related; not changed here.
 
 ## 12. Step 4 status — backup branch (BLOCKED on control-plane access)
 
