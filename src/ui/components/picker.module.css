@@ -180,8 +180,19 @@
    keeps it clear of the home indicator. Opt-in per form (stickyCta). */
 .stickyCta {
   position: sticky;
-  bottom: 0;
+  /* Clear of the floating bottom navigation (12px gap + nav + home indicator). */
+  bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom, 0px));
+  z-index: 2;
   margin: 0 -4px;
-  padding: 16px 4px calc(env(safe-area-inset-bottom, 0px) + 12px);
-  background: linear-gradient(to bottom, transparent 0, var(--paper) 45%);
+  padding: 16px 4px 12px;
+  background: linear-gradient(to bottom, transparent 0, var(--paper) 40%);
+}
+
+/* While typing on a touch device the navigation hides (shell.module.css), so
+   the CTA sits directly above the keyboard. */
+@media (pointer: coarse) {
+  :root:has(input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus) .stickyCta {
+    bottom: 0;
+    padding-bottom: 12px;
+  }
 }

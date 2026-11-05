@@ -157,6 +157,14 @@
   pointer-events: none;
 }
 
+/* Touch keyboards: hide the floating navigation while a field is being
+   edited so the form's primary action stays visible above the keyboard. */
+@media (pointer: coarse) {
+  :root:has(input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus) .navWrap {
+    display: none;
+  }
+}
+
 .nav {
   position: relative;
   display: grid;

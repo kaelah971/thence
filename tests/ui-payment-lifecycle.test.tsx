@@ -117,19 +117,19 @@ function renderSend(transferId = INCIDENT.transfer.id) {
 }
 
 describe("Send settlement screen — Nov 2 incident: approval → funded swap → no claim → deadline → refund", () => {
-  it("P2: after approval the funded swap is 'Action needed — Finish delivery' with the real deadline and time left; nothing claims on its own", async () => {
+  it("P2: after approval the funded swap is 'Action required — Finish delivery' with the real deadline and time left; nothing claims on its own", async () => {
     vi.setSystemTime(new Date(INCIDENT.attempt.handoff_authorized_at!));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! } });
     renderSend();
     await advance(0);
-    expect(screen.getAllByText("Payment on its way").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Confirming your approval").length).toBeGreaterThan(0);
 
     // Provider funds the Polygon HTLC (real: block 96632367, 21:13:27Z).
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
     await advance(3_000);
     // No reassuring "Thence is moving it" while the owner must act.
     expect(screen.queryByText(/Thence is moving it to their wallet now/)).toBeNull();
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
     const text = () => document.body.textContent ?? "";
     // Real deadline 22:12:42Z (evm_refund_locktime, fixed at swap creation 21:12:44Z):
     // right after approval only 59 min remain, not a fresh hour from funding.
@@ -170,7 +170,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     // Funding lands: the next refresh sees it and the cadence resets to fast.
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
     await advance(15_000);
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
     // Progress resets the cadence: the next read follows 3 s later (provider
     // refreshes stay ≥ 5 s apart to protect the shared write budget).
     const afterProgress = api.count("GET", "/reconciliation");
@@ -284,7 +284,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     renderSend();
     await advance(3_000);
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
-    expect(screen.queryByText("Action needed — Finish delivery")).toBeNull();
+    expect(screen.queryByText("Action required — Finish delivery")).toBeNull();
   });
 
   it("P1: mounted while AWAITING_NIM_APPROVAL, tracking continues through approval and funding", async () => {
@@ -292,14 +292,14 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "AWAITING_NIM_APPROVAL", providerStatus: "pending", observedAt: INCIDENT.attempt.created_at } });
     renderSend();
     await advance(0);
-    expect(screen.getAllByText("Waiting for approval").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Approve in Nimiq Pay").length).toBeGreaterThan(0);
     // Owner approves in Nimiq Pay; provider funds Polygon 39 s later (real timeline).
     api.set(INCIDENT.transfer.id, { status: "LIGHTNING_HANDOFF", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! });
     await advance(15_000);
-    expect(screen.queryByText("Waiting for approval")).toBeNull();
+    expect(screen.queryByText("Nimiq Pay shows the exact NIM amount before you confirm.")).toBeNull();
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
     await advance(15_000);
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
     expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
     expect(ownerWrites()).toEqual([]);
@@ -321,7 +321,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     // …and on return the very next refresh happens immediately.
     await setVisible(true);
     await advance(0);
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
     // 21:12:48 + 5 min = 21:17:48 → deadline 22:12:42 is 54 min away.
     expect(document.body.textContent).toContain(`Finish delivery before ${clock(DEADLINE_MS)} — 54 min left`);
@@ -355,7 +355,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     });
     await advance(2_000);
     expect(api.count("GET", "/reconciliation")).toBeGreaterThan(before);
-    expect(screen.queryByText("Waiting for approval")).toBeNull();
+    expect(screen.queryByText("Nimiq Pay shows the exact NIM amount before you confirm.")).toBeNull();
   });
 
   it("P1: a reload rebuilds tracking from the persisted transfer — no new swap, invoice or payment", async () => {
@@ -372,7 +372,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     renderSend(); // reload: same transfer id from the persisted pointer / URL
     await advance(0);
     expect(activePaymentTrackerCount()).toBe(1);
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
     expect(ownerWrites()).toEqual([]);
     expect(api.calls.every((c) => c.path.startsWith(`/api/transfers/${INCIDENT.transfer.id}`))).toBe(true);
   });
@@ -432,7 +432,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(api.count("POST", "/reconcile")).toBeLessThanOrEqual(26);
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
     await advance(15_000);
-    expect(screen.getAllByText("Action needed — Finish delivery").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Action required — Finish delivery").length).toBeGreaterThan(0);
   });
 
   it("P1: terminal outcomes stop tracking — refunded and expired-unfunded", async () => {
@@ -539,12 +539,12 @@ async function openActivityDetail(rowName: RegExp): Promise<void> {
 }
 
 describe("Activity — the two real incident payments", () => {
-  it("P2: funded 077770a1 in Activity: 'Action needed — Finish delivery' with time left; nothing automatic", async () => {
+  it("P2: funded 077770a1 in Activity: 'Action required — Finish delivery' with time left; nothing automatic", async () => {
     vi.setSystemTime(new Date(FIRST_OBSERVED));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED } });
     await openActivityDetail(/They/);
     await advance(3_000);
-    expect(screen.getByText("Action needed — Finish delivery")).toBeTruthy();
+    expect(screen.getByText("Action required — Finish delivery")).toBeTruthy();
     expect(document.body.textContent).toContain(`Finish delivery before ${clock(DEADLINE_MS)} — 42 min left`);
     expect(screen.getByRole("button", { name: "Finish delivery" })).toBeTruthy();
     await advance(5 * 60_000);

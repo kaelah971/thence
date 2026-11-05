@@ -54,6 +54,35 @@ export function formatClockTime(ms: number): string {
 export const NIM_TIMER_SEPARATE_NOTE =
   "This is the delivery deadline on Polygon. It's separate from Nimiq Pay's own timer for returning NIM.";
 
+/** Live claim window for a deadline (re-evaluated on a clock tick and on foreground). */
+export function useClaimWindow(deadlineMs: number | null, intervalMs = 5_000): { window: ClaimWindow; now: number } {
+  const now = useNow(intervalMs);
+  return { window: claimWindowAt(deadlineMs, now), now };
+}
+
+/**
+ * Compact deadline line for the primary "Finish delivery" state: the real
+ * Polygon deadline and a live countdown. Outside the open/closing window it
+ * renders the same explicit warnings as ClaimDeadlineNotice, and the caller
+ * must not offer the action (see useClaimWindow + claimActionAllowed).
+ */
+export function ClaimDeadlineLine({ deadlineMs, className }: { deadlineMs: number | null; className?: string | undefined }): React.JSX.Element {
+  const { window, now } = useClaimWindow(deadlineMs);
+  if (window === "unknown" || window === "passed" || window === "unsafe" || deadlineMs === null) {
+    return <ClaimDeadlineNotice deadlineMs={deadlineMs} actionAvailable={false} />;
+  }
+  return (
+    <div data-claim-window={window} className={className}>
+      <p data-deadline-line data-tone={window === "closing" ? "warn" : undefined}>
+        Finish delivery before {formatClockTime(deadlineMs)} — <span className="tabular">{formatTimeLeft(deadlineMs - now)}</span> left
+      </p>
+      <p data-deadline-note>
+        After that, the funds go back to the provider and this payment can&apos;t be delivered. {NIM_TIMER_SEPARATE_NOTE}
+      </p>
+    </div>
+  );
+}
+
 export function ClaimDeadlineNotice({
   deadlineMs,
   actionAvailable,

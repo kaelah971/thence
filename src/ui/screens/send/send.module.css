@@ -700,3 +700,107 @@ button.walletLine:active {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* ---------- Payment progress (one status, one timeline, one action) ---------- */
+.progress {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.progressCard {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  align-items: start;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--r-xl);
+  background: var(--mist-100);
+}
+
+.progress[data-tone="action"] .progressCard {
+  background: var(--ink-900);
+  color: var(--on-ink);
+}
+
+.progress[data-tone="done"] .progressCard {
+  background: var(--status-done-bg);
+}
+
+.progress[data-tone="warn"] .progressCard {
+  background: var(--status-wait-bg);
+}
+
+.progressIcon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--text);
+}
+
+.progress[data-tone="action"] .progressIcon {
+  background: var(--status-wait-bg);
+  color: var(--status-wait);
+}
+
+.progress[data-tone="done"] .progressIcon {
+  color: var(--status-done);
+}
+
+.progressHeadline {
+  font-family: var(--font-display);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.progressBody {
+  margin-top: 4px;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.progress[data-tone="action"] .progressBody {
+  color: var(--on-ink-2);
+}
+
+.deadline {
+  display: grid;
+  gap: 4px;
+  text-align: center;
+}
+
+.deadline [data-deadline-line] {
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.deadline [data-deadline-line][data-tone="warn"] {
+  color: var(--status-wait);
+}
+
+.deadline [data-deadline-note] {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+
+/* Footer of the approval sheet: always visible (outside the scroll area). */
+.handoffActions[data-single] {
+  grid-template-columns: 1fr;
+}
+
+/* After approval the hero is just the payment summary; status lives below. */
+.handoffHero[data-compact] {
+  gap: 4px;
+  padding: 18px 0 16px;
+}
+
+.handoffHero[data-compact] .handoffTitle {
+  max-width: none;
+  font-size: 1.375rem;
+}

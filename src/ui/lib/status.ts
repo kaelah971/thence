@@ -64,7 +64,11 @@ export function pillLabel(status: TransferStatus): string {
   // P3: a funded payment waits for the owner's Finish delivery (Nov 2: "On
   // its way" here told the owner nothing was needed while the deadline ran).
   if (status === "SERVER_FUNDED") return "Finish delivery needed";
-  if (status === "CLAIMING") return "Finishing delivery";
+  // After Finish delivery the chain verifier decides; nothing more to tap.
+  if (status === "CLAIMING") return "Verifying delivery";
+  // Funds are being locked on Polygon; the owner's tap comes next.
+  if (status === "CLIENT_FUNDED") return "Preparing delivery";
+  if (status === "LIGHTNING_HANDOFF") return "Confirming approval";
   const stage = STAGE_OF[status];
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];
 }
@@ -91,65 +95,79 @@ export function matchesFilter(status: TransferStatus, filter: ActivityFilter): b
 export type StepState = "done" | "current" | "upcoming" | "paused";
 
 export interface TimelineStep {
-  key: "ready" | "approved" | "moving" | "delivered";
+  key: "approve" | "finish" | "verify" | "delivered";
   label: string;
   detail: string;
   state: StepState;
 }
 
-const STEP_ORDER = ["ready", "approved", "moving", "delivered"] as const;
+/**
+ * Context the server status alone cannot carry (UI-only, never authority):
+ * - claimSubmitted: THIS browser already submitted Finish delivery (local
+ *   claim record) — the step must not ask for it again.
+ * - awaitingFinality: the chain verifier saw the delivery but it needs more
+ *   confirmations (INSUFFICIENT_CONFIRMATIONS / PENDING).
+ */
+export interface TimelineContext {
+  claimSubmitted?: boolean;
+  awaitingFinality?: boolean;
+}
 
-function progressIndex(status: TransferStatus): number {
-  switch (STAGE_OF[status]) {
-    case "ready":
-    case "approval":
-    case "closed":
-      return 0;
-    case "moving":
-      // A handoff response is not proof that the user approved the NIM debit.
-      // Funding evidence is the first state that can complete approval.
-      return status === "LIGHTNING_HANDOFF" ? 1 : 2;
-    case "checking":
-    case "attention":
-      // Timeouts and ambiguous recovery must leave approval unresolved.
+const STEP_ORDER = ["approve", "finish", "verify", "delivered"] as const;
+
+/** Index of the CURRENT step (4 = all done). Approval completes only on funding evidence. */
+function progressIndex(status: TransferStatus, ctx: TimelineContext): number {
+  switch (status) {
+    case "CLIENT_FUNDED":
       return 1;
-    case "delivered":
+    case "SERVER_FUNDED":
+      return ctx.claimSubmitted ? 2 : 1;
+    case "CLAIMING":
+      return 2;
+    case "DELIVERED":
       return 4;
+    default:
+      // Preparing, approval, handoff, checking, attention and closed states:
+      // nothing after approval is proven yet.
+      return 0;
   }
 }
 
-/** Build the readable four-step timeline for a transfer. Delivered is only "done" for DELIVERED. */
-export function timelineFor(status: TransferStatus): TimelineStep[] {
+/**
+ * The single, status-driven payment timeline (Send and Activity).
+ * Delivered is "done" only for DELIVERED. Finish delivery is shown as the
+ * owner's own step, never as something that happens on its own.
+ */
+export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): TimelineStep[] {
   const stage = STAGE_OF[status];
-  const index = progressIndex(status);
-  const label = USER_FACING_LABEL[status];
-  const approvalConfirmed = status === "CLIENT_FUNDED" || status === "SERVER_FUNDED" || status === "CLAIMING" || status === "DELIVERED";
+  const index = progressIndex(status, ctx);
   const copy: Record<TimelineStep["key"], { label: string; detail: string }> = {
-    ready: {
-      label: "Preparing payment",
-      detail: stage === "approval" ? "Approve the NIM payment in Nimiq Pay." : stage === "closed" ? label : "Recipient, amount and route reviewed.",
-    },
-    approved: {
-      label: approvalConfirmed ? "Approved in Nimiq Pay" : "Nimiq Pay approval",
-      detail: approvalConfirmed ? "Funding evidence supports the approved payment." : "Approval outcome is not confirmed. Do not resend; check payment status.",
-    },
-    moving: {
-      label: stage === "checking" ? "Checking your payment" : stage === "attention" ? "Needs your attention" : "On its way",
+    approve: {
+      label: index > 0 ? "Approved in Nimiq Pay" : "Approve in Nimiq Pay",
       detail:
-        stage === "checking"
-          ? "We can't confirm the outcome yet. Do not resend."
-          : stage === "attention"
-            ? "Follow the next step before starting another payment."
-            : stage === "moving"
-              ? label
-              : "Converting and sending to their network.",
+        stage === "closed"
+          ? USER_FACING_LABEL[status]
+          : stage === "checking"
+            ? "We can't confirm the outcome yet. Do not resend."
+            : stage === "attention"
+              ? "Follow the next step before starting another payment."
+              : status === "LIGHTNING_HANDOFF"
+                ? "Confirming your Nimiq Pay payment."
+                : "Nimiq Pay shows the exact NIM amount first.",
+    },
+    finish: {
+      label: "Finish delivery",
+      detail: status === "CLIENT_FUNDED" ? "Locking the USDC on Polygon. You'll tap Finish delivery next." : "Your tap is needed to release the funds.",
+    },
+    verify: {
+      label: "Verifying on Polygon",
+      detail: ctx.awaitingFinality ? "Seen on Polygon. Waiting for confirmations — usually about 10 minutes." : "Usually about 10 minutes.",
     },
     delivered: { label: "Delivered", detail: "Confirmed on their network." },
   };
   return STEP_ORDER.map((key, i) => {
     let state: StepState = i < index ? "done" : i === index ? "current" : "upcoming";
-    if (stage === "closed" && i === 0) state = "paused";
-    if ((stage === "checking" || stage === "attention") && i === index) state = "paused";
+    if (i === 0 && index === 0 && (stage === "closed" || stage === "checking" || stage === "attention")) state = "paused";
     return { key, ...copy[key], state };
   });
 }

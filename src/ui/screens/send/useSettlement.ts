@@ -251,7 +251,10 @@ export function useSettlement(): {
     // without this a payment delivered while only tracking (Activity, reload,
     // server cron) never showed its receipt.
     const phase: ProgressPhase = status === "DELIVERED" ? "delivered" : progressForStatus(status);
-    const base = { transferId: input.transferId, transferStatus: status as string, statusLabel, providerStatus, receipt: null, verifyVerdict: null };
+    // Display only: the tracker's latest on-chain verdict (e.g. waiting for
+    // confirmations) lets the screen say WHY delivery isn't final yet. It
+    // never moves the payment — DELIVERED still needs the server's proof.
+    const base = { transferId: input.transferId, transferStatus: status as string, statusLabel, providerStatus, receipt: null, verifyVerdict: snapshot.settlementVerdict };
     if (phase === "cancelled") {
       setState({ ...base, phase: "cancelled", claimReady: false, message: copyFor("cancelled").body });
       clearPending(input.ownerUserId, input.transferId);
