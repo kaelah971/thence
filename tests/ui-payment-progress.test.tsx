@@ -557,3 +557,20 @@ describe("approval sheet right after Nimiq Pay returns (server not caught up yet
     expect(text()).toMatch(/To their wallet on Polygon/);
   });
 });
+
+describe("amount display consistency (0.3 vs 0.30) — display only", () => {
+  it("pads to the asset's entry decimals like Activity rows, never trims or rounds", async () => {
+    const { padAmountDecimals } = await import("@/ui/lib/assets");
+    expect(padAmountDecimals("0.3", "USDC")).toBe("0.30");
+    expect(padAmountDecimals("5", "USDC")).toBe("5.00");
+    expect(padAmountDecimals("25.5", "USDT")).toBe("25.50");
+    expect(padAmountDecimals("0.30", "USDC")).toBe("0.30");
+    // A proven on-chain amount with more digits is shown exactly (2c2432af: 300394 atomic).
+    expect(padAmountDecimals("0.300394", "USDC")).toBe("0.300394");
+    // BTC keeps its own precision (same rule as Activity rows); non-decimal input is untouched.
+    expect(padAmountDecimals("0.00001", "BTC")).toBe("0.00001");
+    expect(padAmountDecimals("1", "BTC")).toBe("1.00");
+    expect(padAmountDecimals("abc", "USDC")).toBe("abc");
+    expect(padAmountDecimals("0.3", "NIM")).toBe("0.3");
+  });
+});

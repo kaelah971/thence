@@ -5,8 +5,9 @@
  * device viewport AND a tall viewport (whole sheet), into
  * e2e/.run/shots/<SHOTS_LABEL>/<viewport>/NN-state.png, so before/after can be
  * compared by a human. Assertions here are deliberately minimal and
- * label-tolerant; behavioural guarantees live in payment.e2e.ts and
- * payment-ux.e2e.ts.
+ * label-tolerant (strict unless SHOTS_LABEL=before, which captures old builds);
+ * behavioural guarantees live in payment.e2e.ts and
+ * tests/ui-payment-progress.test.tsx.
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -77,7 +78,7 @@ for (const width of WIDTHS) {
     await expect.poll(() => hostPayments(app)).toHaveLength(1);
     await app.waitForTimeout(1_500);
     await setHidden(app, false);
-    if (LABEL === "after") {
+    if (LABEL !== "before") {
       // Back from Nimiq Pay before funding: a real status, never an empty sheet or "Approve in Nimiq Pay".
       await expect(app.getByText(/Confirming your approval|Payment received — preparing delivery/).first()).toBeVisible({ timeout: 30_000 });
     } else {
@@ -117,7 +118,7 @@ for (const width of WIDTHS) {
     if (await row.isVisible().catch(() => false)) {
       await row.click();
       // The live status card must appear in Activity too (one view, no stale snapshot).
-      if (LABEL === "after") {
+      if (LABEL !== "before") {
         await expect(app.getByText("Delivery submitted — verifying on Polygon").first()).toBeVisible({ timeout: 30_000 });
         await expect(app.getByRole("button", { name: "Finish delivery", exact: true })).toHaveCount(0);
       } else {

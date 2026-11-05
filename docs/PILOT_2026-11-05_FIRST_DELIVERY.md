@@ -2,7 +2,8 @@
 
 Read-only postmortem. No funds were moved, no claim replayed, no handoff
 repeated and no setting changed to produce it. Personal identifiers are
-omitted or masked; transaction hashes are public chain data.
+omitted or masked. Transaction hashes are masked too (an explorer would show the
+full wallet); block numbers are kept for audit. Full hashes: operator records.
 
 ## Outcome
 

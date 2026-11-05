@@ -17,7 +17,7 @@ import { Sheet } from "@/ui/components/Sheet";
 import shell from "@/ui/components/shell.module.css";
 import { SwipeToConfirm } from "@/ui/components/SwipeToConfirm";
 import type { AvatarTone } from "@/ui/fixtures/preview";
-import { ASSET_META, DEFAULT_DESTINATION, destinationFor, isEvmNetwork, maskAddress } from "@/ui/lib/assets";
+import { ASSET_META, DEFAULT_DESTINATION, destinationFor, isEvmNetwork, maskAddress, padAmountDecimals } from "@/ui/lib/assets";
 import { amountIssue, evaluate, formatFixed, keyFromKeyboard, type CalcKey } from "@/ui/lib/calculator";
 import { cn } from "@/ui/lib/cn";
 import { useRecipientData } from "@/ui/lib/data";
@@ -820,7 +820,7 @@ export function SendFlow(): React.JSX.Element {
           {step === "handoff" && handoffInput && (
             <HandoffStep
               payeeName={handoffInput.payee.name || payee?.name || "They"}
-              amount={handoffDisplayAmount}
+              amount={padAmountDecimals(handoffDisplayAmount, destinationFor(handoffInput.payee.routeId).asset)}
               assetLabel={destinationFor(handoffInput.payee.routeId).asset}
               routeId={handoffInput.payee.routeId}
               asset={destinationFor(handoffInput.payee.routeId).asset}
