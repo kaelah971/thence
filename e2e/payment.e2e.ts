@@ -71,7 +71,8 @@ test.describe("payment lifecycle (simulated host/provider/chain)", () => {
     await returnToThence(app);
     // The approval sheet no longer offers a second Nimiq Pay confirmation.
     await expect(app.getByRole("button", { name: "Confirm in Nimiq Pay" })).toHaveCount(0);
-    await expect(app.getByText(/Don't pay again\./)).toBeVisible();
+    // The sheet follows the submitted payment (summary line under the amount).
+    await expect(app.getByText(/^To .* on Polygon\. Don't pay again\.$/)).toBeVisible();
     // One status, one timeline: no static "after you approve" copy, no way back to review.
     await expect(app.getByText("What happens after you approve")).toHaveCount(0);
     await expect(app.getByRole("button", { name: "Back to review" })).toHaveCount(0);

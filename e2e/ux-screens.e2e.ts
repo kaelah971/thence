@@ -77,7 +77,12 @@ for (const width of WIDTHS) {
     await expect.poll(() => hostPayments(app)).toHaveLength(1);
     await app.waitForTimeout(1_500);
     await setHidden(app, false);
-    await app.waitForTimeout(3_000);
+    if (LABEL === "after") {
+      // Back from Nimiq Pay before funding: a real status, never an empty sheet or "Approve in Nimiq Pay".
+      await expect(app.getByText(/Confirming your approval|Payment received — preparing delivery/).first()).toBeVisible({ timeout: 30_000 });
+    } else {
+      await app.waitForTimeout(3_000);
+    }
     await shot(app, width, "06-approved-waiting-funding");
 
     // 07 — Funded: action required (Finish delivery).
@@ -111,7 +116,13 @@ for (const width of WIDTHS) {
     const row = app.getByRole("button", { name: /0\.3|USDC/ }).first();
     if (await row.isVisible().catch(() => false)) {
       await row.click();
-      await app.waitForTimeout(3_000);
+      // The live status card must appear in Activity too (one view, no stale snapshot).
+      if (LABEL === "after") {
+        await expect(app.getByText("Delivery submitted — verifying on Polygon").first()).toBeVisible({ timeout: 30_000 });
+        await expect(app.getByRole("button", { name: "Finish delivery", exact: true })).toHaveCount(0);
+      } else {
+        await app.waitForTimeout(3_000);
+      }
       await shot(app, width, "11-activity-detail-pending");
     }
 

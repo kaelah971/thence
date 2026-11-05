@@ -44,6 +44,8 @@ export interface ProgressInput {
   receiptReady: boolean;
   /** Error/attention text from the tracker (session ended, network, mismatch). */
   message?: string;
+  /** This browser already handed the payment to Nimiq Pay (server may not know yet). */
+  handedOff?: boolean;
 }
 
 export interface ProgressView {
@@ -74,7 +76,9 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   // If the server re-allows ONE retry after an unknown outcome (claimReady
   // true, nothing pending here), the owner's tap is the next step again.
   const submitted = s.claimPending === true || claimLanded || (status === "CLAIMING" && !s.claimReady);
-  const steps = isStatus(status) ? timelineFor(status as TransferStatus, { claimSubmitted: submitted, awaitingFinality }) : null;
+  // Handed to Nimiq Pay but the server hasn't recorded it yet: same step, "confirming" wording.
+  const stepStatus = status === "AWAITING_NIM_APPROVAL" && s.handedOff === true ? "LIGHTNING_HANDOFF" : status;
+  const steps = isStatus(stepStatus) ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, awaitingFinality }) : null;
 
   if (s.phase === "delivered" || status === "DELIVERED") {
     return s.receiptReady
@@ -123,6 +127,9 @@ export function paymentProgress(s: ProgressInput): ProgressView {
     };
   }
   if (status === "LIGHTNING_HANDOFF") {
+    return { headline: "Confirming your approval", body: "Checking that Nimiq Pay sent the payment. Don't pay again.", tone: "neutral", action: "wait", steps };
+  }
+  if ((status === "AWAITING_NIM_APPROVAL" || s.phase === "waiting-approval") && s.handedOff === true) {
     return { headline: "Confirming your approval", body: "Checking that Nimiq Pay sent the payment. Don't pay again.", tone: "neutral", action: "wait", steps };
   }
   if (status === "AWAITING_NIM_APPROVAL" || s.phase === "waiting-approval") {

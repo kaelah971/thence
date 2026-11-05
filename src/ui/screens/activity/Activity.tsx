@@ -209,7 +209,9 @@ function LiveTransferDetail({
   const [providerEvidence, setProviderEvidence] = useState<ProviderEvidence | null>(null);
   const [providerEvidenceLoading, setProviderEvidenceLoading] = useState(false);
   const [providerEvidenceError, setProviderEvidenceError] = useState<string | null>(null);
-  const canCheck = !TERMINAL_DETAIL.has(item.status) && resource.status !== "loading";
+  // Money-moving payments are tracked live by the card below; a manual
+  // "Check for updates" next to it only duplicates that.
+  const canCheck = !TERMINAL_DETAIL.has(item.status) && !LIVE_PROGRESS_DETAIL.has(item.status) && resource.status !== "loading";
   return (
     <>
       {resource.status === "error" && (
@@ -564,7 +566,7 @@ function TransferDetail({
       <div className={styles.timelineCard}>
         <div className={styles.timelineHead}>
           <p className={styles.timelineTitle}>Progress</p>
-          {item.statusLabel && <p className={styles.latest}>Latest: {item.statusLabel}</p>}
+          {item.statusLabel && !LIVE_PROGRESS_DETAIL.has(item.status) && <p className={styles.latest}>Latest: {item.statusLabel}</p>}
         </div>
         <Timeline steps={timelineFor(item.status)} />
       </div>

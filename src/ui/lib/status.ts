@@ -157,11 +157,11 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
     },
     finish: {
       label: "Finish delivery",
-      detail: status === "CLIENT_FUNDED" ? "Locking the USDC on Polygon. You'll tap Finish delivery next." : "Your tap is needed to release the funds.",
+      detail: status === "CLIENT_FUNDED" ? "Locking the USDC on Polygon first." : "Waiting for your tap.",
     },
     verify: {
       label: "Verifying on Polygon",
-      detail: ctx.awaitingFinality ? "Seen on Polygon. Waiting for confirmations — usually about 10 minutes." : "Usually about 10 minutes.",
+      detail: ctx.awaitingFinality ? "Waiting for confirmations." : "Usually about 10 minutes.",
     },
     delivered: { label: "Delivered", detail: "Confirmed on their network." },
   };

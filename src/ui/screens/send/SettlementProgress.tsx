@@ -27,6 +27,8 @@ export interface SettlementProgressProps {
   saveOffer: { address: string; routeId: RouteId } | null;
   /** Status, deadline and action only — for screens that already show the timeline and receipt (Activity). */
   compact?: boolean;
+  /** Nimiq Pay was already asked for this payment in this browser. */
+  handedOff?: boolean;
 }
 
 export interface PaymentProgressParts {
@@ -58,6 +60,7 @@ export function usePaymentProgress({
   asset,
   saveOffer,
   compact = false,
+  handedOff = false,
 }: SettlementProgressProps): PaymentProgressParts {
   const settlement = useSettlement();
   const [claiming, setClaiming] = useState(false);
@@ -85,6 +88,7 @@ export function usePaymentProgress({
         verifyVerdict: state.verifyVerdict,
         receiptReady: state.receipt !== null,
         message: state.message,
+        handedOff,
       })
     : null;
   const finishNeeded = view?.action === "finish" && !previewMode && Boolean(ownerUserId);
@@ -122,7 +126,7 @@ export function usePaymentProgress({
         </p>
       )}
 
-      {state.claimMessage && !claiming && view?.action !== "receipt" && (
+      {state.claimMessage && !claiming && view?.action !== "receipt" && !/^Delivery submitted/.test(state.claimMessage) && (
         <p className={styles.ctaNote} role="status" data-claim-result>
           {state.claimMessage}
         </p>

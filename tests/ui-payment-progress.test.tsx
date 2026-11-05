@@ -461,3 +461,99 @@ describe("approval sheet structure", () => {
     expect(document.querySelector("[data-progress-action]")?.getAttribute("data-progress-action")).toBe("finish");
   });
 });
+
+describe("a payment waiting for Finish delivery keeps its action", () => {
+  it("survives backgrounding, leaving the screen (Send → Activity) and a reload; nothing claims on its own", async () => {
+    vi.setSystemTime(new Date(FUNDED_SEEN));
+    api = installFakeApi({ [ID]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FUNDED_SEEN } });
+    const send = renderSend();
+    await advance(3_000);
+    expectOnlyHeadline(FINISH_HEADLINE);
+    expect(finishButtons()).toHaveLength(1);
+
+    // Backgrounded for 10 minutes (another app, locked phone).
+    await setVisible(false);
+    await advance(10 * 60_000);
+    await setVisible(true);
+    await advance(3_000);
+    expectOnlyHeadline(FINISH_HEADLINE);
+    expect(finishButtons()).toHaveLength(1);
+    expect(text()).toMatch(/Finish delivery before .* min left/);
+
+    // Navigate away (Done → Activity): the same action is offered there.
+    send.unmount();
+    resetPaymentTrackersForTests();
+    const activity = render(<Activity />);
+    await advance(0);
+    await advance(0);
+    const row = screen.getAllByRole("button").find((b) => /They/.test(b.textContent ?? ""));
+    fireEvent.click(row!);
+    await advance(3_000);
+    expect(screen.getAllByText(FINISH_HEADLINE)).toHaveLength(1);
+    expect(finishButtons()).toHaveLength(1);
+
+    // Reload: rebuilt from the server, still waiting for the owner's tap.
+    activity.unmount();
+    resetPaymentTrackersForTests();
+    renderSend();
+    await advance(3_000);
+    expectOnlyHeadline(FINISH_HEADLINE);
+    expect(finishButtons()).toHaveLength(1);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(api.count("POST", "/claim-intent")).toBe(0);
+  });
+
+  it("Delivered is never shown without the server's on-chain proof, whatever the provider or the chain verdict says", async () => {
+    vi.setSystemTime(new Date(FUNDED_SEEN));
+    // Provider already reports the claim settled and the verifier says VERIFIED,
+    // but the server has NOT written DELIVERED (no proof row yet).
+    api = installFakeApi({ [ID]: { status: "SERVER_FUNDED", providerStatus: "serverredeemed", observedAt: FUNDED_SEEN } });
+    api.settlementVerdict = "INSUFFICIENT_CONFIRMATIONS";
+    renderSend();
+    await advance(60_000);
+    expect(delivered()).toBe(false);
+    expect(screen.queryAllByText("Delivered").filter((el) => el.closest("[role=status]"))).toHaveLength(0);
+    // The receipt endpoint is only asked once the server status is DELIVERED.
+    expect(api.count("GET", "/receipt")).toBe(0);
+  });
+});
+
+describe("approval sheet right after Nimiq Pay returns (server not caught up yet)", () => {
+  it("never shows an empty sheet: says it is confirming the approval, not 'Approve in Nimiq Pay'", async () => {
+    vi.setSystemTime(new Date(APPROVED_AT));
+    api = installFakeApi({ [ID]: { status: "AWAITING_NIM_APPROVAL", providerStatus: "pending", observedAt: APPROVED_AT } });
+    const handoff = {
+      state: { phase: "checking" as const, transferId: ID, message: "Payment being checked. Do not resend." },
+      invoke: vi.fn(),
+      resume: vi.fn(),
+      reset: vi.fn(),
+    } as unknown as Parameters<typeof HandoffStep>[0]["handoff"];
+    render(
+      <HandoffStep
+        payeeName="They"
+        amount="0.3"
+        assetLabel="USDC"
+        routeId="usdc-polygon"
+        asset="USDC"
+        requestPublicId={null}
+        saveOffer={null}
+        preparation={{ phase: "ready", transferId: ID, sourceSats: "380", invoiceBolt11: "lnbc1test", statusLabel: "x" }}
+        handoff={handoff}
+        ownerUserId={OWNER_ID}
+        sessionValid
+        previewMode={false}
+        onRetry={vi.fn()}
+        onBack={vi.fn()}
+        onRequote={vi.fn()}
+        onAcceptReprice={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+    // Before the first server read lands: a visible checking state, not a blank sheet.
+    expect(screen.getAllByRole("status").length).toBeGreaterThan(0);
+    await advance(3_000);
+    expectOnlyHeadline("Confirming your approval");
+    expect(screen.queryByText("Approve in Nimiq Pay", { selector: "p" })).toBeTruthy(); // timeline step label only
+    expect(text()).toMatch(/To their wallet on Polygon/);
+  });
+});

@@ -191,8 +191,15 @@
 /* While typing on a touch device the navigation hides (shell.module.css), so
    the CTA sits directly above the keyboard. */
 @media (pointer: coarse) {
+  /* Return above the navigation only after the tap has finished (see the
+     matching delay on .navWrap), so the button never moves mid-tap. */
+  .stickyCta {
+    transition: bottom 0s linear 250ms;
+  }
+
   :root:has(input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus) .stickyCta {
     bottom: 0;
     padding-bottom: 12px;
+    transition: none;
   }
 }

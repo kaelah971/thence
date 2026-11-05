@@ -160,8 +160,16 @@
 /* Touch keyboards: hide the floating navigation while a field is being
    edited so the form's primary action stays visible above the keyboard. */
 @media (pointer: coarse) {
+  /* Hide at once when editing starts; reappear only after a short delay so a
+     tap on the form's button (which blurs the field on pointer-down) lands on
+     the button instead of the navigation moving under the finger. */
+  .navWrap {
+    transition: visibility 0s linear 250ms;
+  }
+
   :root:has(input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus) .navWrap {
-    display: none;
+    visibility: hidden;
+    transition: none;
   }
 }
 

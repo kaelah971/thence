@@ -1203,6 +1203,7 @@ export function HandoffStep({
     routeId,
     asset,
     saveOffer,
+    handedOff,
   });
   // ONE status source after approval: the live, server-driven progress. Before
   // approval the hero says everything; the progress appears as soon as the
@@ -1317,7 +1318,13 @@ export function HandoffStep({
           </Notice>
         )}
 
-        {showProgress && progress.content}
+        {showProgress &&
+          (progress.content ?? (
+            // Until the first server read lands: never an empty sheet after approval.
+            <p className={styles.quoteLine} role="status" aria-live="polite">
+              <span className={styles.quoteSpinner} aria-hidden="true" /> Checking your payment — don&apos;t pay again.
+            </p>
+          ))}
 
         {preparation.phase === "failed" && (
           <div className={styles.quoteBox}>

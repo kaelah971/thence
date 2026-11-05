@@ -77,7 +77,7 @@ export function ClaimDeadlineLine({ deadlineMs, className }: { deadlineMs: numbe
         Finish delivery before {formatClockTime(deadlineMs)} — <span className="tabular">{formatTimeLeft(deadlineMs - now)}</span> left
       </p>
       <p data-deadline-note>
-        After that, the funds go back to the provider and this payment can&apos;t be delivered. {NIM_TIMER_SEPARATE_NOTE}
+        After that it can&apos;t be delivered and the funds go back to the provider. It&apos;s separate from Nimiq Pay&apos;s own timer for returning NIM.
       </p>
     </div>
   );

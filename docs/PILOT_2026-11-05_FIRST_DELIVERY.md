@@ -63,12 +63,11 @@ balance from the first confirmation; Thence must not, and did not.
 
 1. **Nimiq Pay iOS dropped Thence's persistent session cookie** when the owner
    switched to OKX and back (server session 09:29:35Z was valid and not
-   revoked; cookie `Max-Age` = 30 days). If the webview can drop cookies it
-   may also drop IndexedDB, which holds the claim secret **until Finish
-   delivery is tapped**. This payment was already claimed, so nothing was at
-   risk; before more payments, treat "leave Nimiq Pay between funding and
-   Finish delivery" as unsafe and test the webview's storage persistence.
-   The UI now says "Only this device can do it" at the action.
+   revoked; cookie `Max-Age` = 30 days). This does **not** show whether
+   IndexedDB (claim secret, until Finish delivery) survives an app switch —
+   there is no evidence either way. Tracked separately as an unresolved
+   recovery risk with a no-money device check: `docs/RISK_IOS_WEBVIEW_STORAGE.md`.
+   Until checked: stay in Nimiq Pay between approval and Finish delivery.
 2. **Recipient amount was 300394, not exactly 300000.** Over-delivery to the
    recipient (+0.000394 USDC); the verifier accepts ≥ target by design.
    Worth confirming with Satora whether the lock amount is rounded up.
