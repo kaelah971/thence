@@ -25,6 +25,7 @@
 | Document | Covers |
 |---|---|
 | [`PUBLIC_PAYMENTS.md`](PUBLIC_PAYMENTS.md) | Payment mode (`off \| pilot \| public`) and the enablement runbook |
+| [`PAYMENT_ACTIVATION_VPS.md`](PAYMENT_ACTIVATION_VPS.md) | VPS payment readiness, reconciler move off Vercel, activation gates, controlled second-wallet test, judging setup |
 | [`PILOT_ACTIVATION.md`](PILOT_ACTIVATION.md) | Pilot activation |
 | [`PILOT_2026-11-05_FIRST_DELIVERY.md`](PILOT_2026-11-05_FIRST_DELIVERY.md) | The verified mainnet delivery |
 | [`OPERATIONS.md`](OPERATIONS.md) | Operations runbook |
