@@ -602,8 +602,8 @@ The winning Thence version is not the one with the most chains. It is the one wh
 
 ## Sources
 
-- Supplied source PDF: `/home/endy/.hermes/profiles/davinci/cache/documents/doc_d1e7b1e73459_NIM_Cross_Asset_Payments_Product_Idea.pdf`
-- Supplied source PDF: `/home/endy/.hermes/profiles/davinci/cache/documents/doc_834b644d283e_NIM_Cross_Asset_Payments_PRD_Build_Plan_Architecture.pdf`
+- Supplied source PDF: `[local source documents]/doc_d1e7b1e73459_NIM_Cross_Asset_Payments_Product_Idea.pdf`
+- Supplied source PDF: `[local source documents]/doc_834b644d283e_NIM_Cross_Asset_Payments_PRD_Build_Plan_Architecture.pdf`
 - Nimiq Mini Apps Competition — Cycle III: https://miniappscompetition.com/cycle3
 - Nimiq Mini Apps Competition — official rules: https://miniappscompetition.com/rules
 - Nimiq Developer Center — Mini Apps: https://nimiq.dev/mini-apps
