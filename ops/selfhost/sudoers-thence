@@ -1,0 +1,36 @@
+# Thence: lets the deploy account build and operate the Thence units only.
+# Installed by setup-root*.sh (validated with visudo -c). @DEPLOYER@ is substituted.
+# Every root command is listed with its exact arguments (no wildcards, no pagers).
+#
+# NOT granted (operator's own sudo password required): installing the
+# production env file or tunnel token, enabling/disabling/stopping production
+# units, and anything that could turn payments on.
+Cmnd_Alias THENCE_STAGING_UNITS = \
+  /usr/bin/systemctl start thence-web-staging.service, \
+  /usr/bin/systemctl restart thence-web-staging.service, \
+  /usr/bin/systemctl stop thence-web-staging.service, \
+  /usr/bin/systemctl enable thence-web-staging.service, \
+  /usr/bin/systemctl disable thence-web-staging.service, \
+  /usr/bin/systemctl start thence-tunnel-staging.service, \
+  /usr/bin/systemctl restart thence-tunnel-staging.service, \
+  /usr/bin/systemctl stop thence-tunnel-staging.service, \
+  /usr/bin/systemctl enable thence-tunnel-staging.service, \
+  /usr/bin/systemctl disable thence-tunnel-staging.service, \
+  /usr/bin/systemctl reset-failed thence-web-staging.service, \
+  /usr/bin/systemctl reset-failed thence-tunnel-staging.service, \
+  /usr/bin/journalctl --no-pager -n 200 -u thence-web-staging.service, \
+  /usr/bin/journalctl --no-pager -n 200 -u thence-tunnel-staging.service
+Cmnd_Alias THENCE_PRODUCTION_UNITS = \
+  /usr/bin/systemctl start thence-web-production.service, \
+  /usr/bin/systemctl restart thence-web-production.service, \
+  /usr/bin/systemctl start thence-tunnel-production.service, \
+  /usr/bin/systemctl restart thence-tunnel-production.service, \
+  /usr/bin/systemctl reset-failed thence-web-production.service, \
+  /usr/bin/systemctl reset-failed thence-tunnel-production.service, \
+  /usr/bin/journalctl --no-pager -n 200 -u thence-web-production.service, \
+  /usr/bin/journalctl --no-pager -n 200 -u thence-tunnel-production.service, \
+  /usr/bin/journalctl --no-pager -n 200 -u thence-health-production.service
+@DEPLOYER@ ALL=(root) NOPASSWD: THENCE_STAGING_UNITS, THENCE_PRODUCTION_UNITS
+@DEPLOYER@ ALL=(root) NOPASSWD: /opt/thence/bin/thence-env-install staging
+@DEPLOYER@ ALL=(thence) NOPASSWD: /opt/thence/bin/thence-deploy staging *
+@DEPLOYER@ ALL=(thence-prod) NOPASSWD: /opt/thence/bin/thence-deploy production *

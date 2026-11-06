@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Installs a Thence env file (or the production tunnel token) from stdin.
+#   sudo /opt/thence/bin/thence-env-install staging              < staging.env      (deploy account, NOPASSWD)
+#   sudo /opt/thence/bin/thence-env-install production           < production.env   (operator's own sudo only)
+#   sudo /opt/thence/bin/thence-env-install production --allow-payments < ...       (operator; payment activation)
+#   sudo /opt/thence/bin/thence-env-install tunnel-token-production < token.txt     (operator's own sudo only)
+# Never prints values.
+#
+# Env files are parsed strictly so what is validated here is exactly what
+# systemd (EnvironmentFile=) and Node (loadEnvFile) will load:
+# every non-blank, non-comment line must be KEY=value starting in column 1,
+# no `export`, no backslashes (no line continuations), no duplicate keys.
+set -euo pipefail
+umask 077
+PATH=/usr/bin:/bin
+refuse() { echo "refused: $*" >&2; exit 1; }
+
+TARGET="${1:-}"; FLAG="${2:-}"
+case "$TARGET" in
+  staging)    DIR=/etc/thence-web;      GROUP=thence;      DEST=$DIR/staging.env ;;
+  production) DIR=/etc/thence-web-prod; GROUP=thence-prod; DEST=$DIR/production.env ;;
+  tunnel-token-production) DIR=/etc/thence-web-prod; GROUP=root; DEST=$DIR/tunnel.token ;;
+  *) echo "usage: thence-env-install staging|production [--allow-payments]|tunnel-token-production < file" >&2; exit 2 ;;
+esac
+[ -z "$FLAG" ] || { [ "$TARGET" = production ] && [ "$FLAG" = --allow-payments ]; } || refuse "unknown option $FLAG"
+
+TMP="$(mktemp "$DIR/.incoming.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
+head -c 65536 > "$TMP"
+sed -i 's/\r$//' "$TMP"
+
+if [ "$TARGET" = tunnel-token-production ]; then
+  # a Cloudflare tunnel token is one base64 line; keep only that line
+  tok="$(grep -vE '^\s*$' "$TMP" | head -2)"
+  [ "$(printf '%s\n' "$tok" | wc -l)" = 1 ] || refuse "expected exactly one non-empty line"
+  [[ "$tok" =~ ^[A-Za-z0-9+/=_-]{100,4096}$ ]] || refuse "does not look like a tunnel token"
+  printf '%s\n' "$tok" > "$TMP"
+  chown root:root "$TMP"; chmod 0600 "$TMP"
+  mv -f "$TMP" "$DEST"; trap - EXIT
+  echo "installed $DEST (root-only; read by systemd LoadCredential)"
+  exit 0
+fi
+
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n + 1))
+  case "$line" in ''|'#'*) continue ;; esac
+  [[ "$line" =~ ^[A-Z][A-Z0-9_]*= ]] || refuse "line $n is not KEY=value (no indentation, export or lowercase keys)"
+  [[ "$line" != *\\* ]]                || refuse "line $n contains a backslash"
+done < "$TMP"
+dups="$(grep -E '^[A-Z]' "$TMP" | cut -d= -f1 | sort | uniq -d)"
+[ -z "$dups" ] || refuse "duplicate keys: $(echo "$dups" | tr '\n' ' ')"
+
+val() { grep -E "^$1=" "$TMP" | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/' ; }
+[ -n "$(val DATABASE_URL)" ] || refuse "DATABASE_URL missing"
+case "$(val THENCE_APP_ORIGIN)" in https://*) ;; *) refuse "THENCE_APP_ORIGIN must be https://" ;; esac
+for k in NODE_ENV NODE_OPTIONS PATH HOME LD_PRELOAD LD_LIBRARY_PATH; do
+  ! grep -qE "^$k=" "$TMP" || refuse "$k is set by the service unit, not the env file"
+done
+if [ "$FLAG" != --allow-payments ]; then
+  [ "$(val THENCE_PAYMENTS_MODE)" = off ] || refuse "$TARGET requires THENCE_PAYMENTS_MODE=off (payment activation needs --allow-payments)"
+  [ -z "$(val THENCE_PILOT_ENABLED)" ] || [ "$(val THENCE_PILOT_ENABLED)" = 0 ] || refuse "THENCE_PILOT_ENABLED must be unset or 0"
+fi
+if [ "$TARGET" = production ]; then
+  [ "$(val THENCE_APP_ORIGIN)" = https://paywiththence.cv ] || refuse "production THENCE_APP_ORIGIN must be https://paywiththence.cv"
+  [ -n "$(val CRON_SECRET)" ] || refuse "production requires CRON_SECRET (same value as Vercel/the reconciler)"
+fi
+
+chown root:"$GROUP" "$TMP"; chmod 0640 "$TMP"
+mv -f "$TMP" "$DEST"; trap - EXIT
+echo "installed $DEST ($(grep -cE '^[A-Z]' "$DEST") variables$([ "$FLAG" = --allow-payments ] && echo ', payments NOT forced off'))"

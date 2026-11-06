@@ -325,10 +325,17 @@ export function serializeClearedSessionCookie(): string {
 
 /**
  * Origin check for state-changing cookie-authenticated requests.
- * - Origin (or Referer fallback) present but not matching this host or the
+ * - Origin (or Referer fallback) present but matching none of: this host,
+ *   the configured canonical THENCE_APP_ORIGIN, or the exact
  *   THENCE_ALLOWED_ORIGINS allowlist → 403.
  * - Both absent → allowed (non-browser clients carry no Origin; endpoints are
  *   additionally rate-limited). Documented tradeoff, not silent.
+ *
+ * THENCE_APP_ORIGIN is trusted because self-hosted `next start` behind a
+ * reverse proxy/tunnel reports its own listen address (e.g. localhost:3100)
+ * in request.url, not the public host. The canonical origin is operator
+ * configuration (https-only in production), never a client-supplied header,
+ * so forwarded-host headers stay untrusted and no wildcard is introduced.
  */
 export function assertSafeOrigin(request: Request): void {
   const origin = request.headers.get("origin") ?? request.headers.get("referer");
@@ -339,9 +346,18 @@ export function assertSafeOrigin(request: Request): void {
   } catch {
     throw forbidden("BAD_ORIGIN", "Unparsable request origin.");
   }
+  const env = getEnv();
   const requestHost = new URL(request.url).host.toLowerCase();
   const allowed = new Set<string>([requestHost]);
-  for (const entry of (getEnv().THENCE_ALLOWED_ORIGINS ?? "").split(",")) {
+  const canonical = (env.THENCE_APP_ORIGIN ?? "").trim();
+  if (canonical) {
+    try {
+      allowed.add(new URL(canonical).host.toLowerCase());
+    } catch {
+      // invalid origins are rejected by env validation in production; ignore here
+    }
+  }
+  for (const entry of (env.THENCE_ALLOWED_ORIGINS ?? "").split(",")) {
     const clean = entry.trim().toLowerCase();
     if (!clean) continue;
     try {
