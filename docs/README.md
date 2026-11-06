@@ -51,7 +51,9 @@
 ## Hackathon (Nimiq Mini Apps Competition, Cycle III)
 
 - [`hackathon/SUBMISSION.md`](hackathon/SUBMISSION.md): rules check, description, answers, checklist
-- [`hackathon/DEMO_SCRIPT.md`](hackathon/DEMO_SCRIPT.md): video script, recording plan, shot list
+- [`hackathon/RECORDING_CHECKLIST.md`](hackathon/RECORDING_CHECKLIST.md): **final** recording plan (screens, actions, narration, proof, blur rules)
+- [`hackathon/SUBMISSION_FORM.md`](hackathon/SUBMISSION_FORM.md): form draft with owner placeholders
+- [`hackathon/DEMO_SCRIPT.md`](hackathon/DEMO_SCRIPT.md): original script draft
 - [`hackathon/EVIDENCE.md`](hackathon/EVIDENCE.md): verified vs. off vs. planned
 
 ## Legal (drafts, not reviewed by a lawyer)

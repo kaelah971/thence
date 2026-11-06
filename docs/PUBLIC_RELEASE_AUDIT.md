@@ -61,5 +61,8 @@ history would require a rewrite. That isn't recommended, because none of them gr
 4. [ ] Confirm that Vercel Deployment Protection covers preview URLs.
 5. [ ] Enable GitHub secret scanning and push protection. They're free for public repos.
 6. [ ] Add branch protection on `main`: PR plus green CI required.
-7. [ ] Optional: remove `docs/pr-assets/` (PR evidence) and the internal planning docs, or keep
+7. [ ] Decide whether the 2026-11-05 block numbers stay in `README.md`,
+       `docs/hackathon/EVIDENCE.md` and the pilot doc. With the USDC contract, they make the
+       owner's transaction, and therefore the owner's wallet, findable on an explorer.
+8. [ ] Optional: remove `docs/pr-assets/` (PR evidence) and the internal planning docs, or keep
        them as an honest engineering record.
