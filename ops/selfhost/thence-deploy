@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Builds a release as the target's service user (run via sudoers):
+#   sudo -u thence      /opt/thence/bin/thence-deploy staging    /tmp/thence-<sha>.tgz
+#   sudo -u thence-prod /opt/thence/bin/thence-deploy production /tmp/thence-<sha>.tgz
+# Extract -> npm ci -> next build (with the target's env) -> switch `current`.
+# Starting/restarting the service is a separate, explicit step.
+set -euo pipefail
+umask 027
+TARGET="${1:-}"
+case "$TARGET" in
+  staging)    USER_REQ=thence;      BASE=/srv/thence/staging;         ENVF=/etc/thence-web/staging.env ;;
+  production) USER_REQ=thence-prod; BASE=/srv/thence-prod/production; ENVF=/etc/thence-web-prod/production.env ;;
+  *) echo "usage: thence-deploy staging|production <tarball>" >&2; exit 2 ;;
+esac
+[ "$(id -un)" = "$USER_REQ" ] || { echo "run as: sudo -u $USER_REQ $0 $TARGET ..." >&2; exit 2; }
+
+# App-level rollback: point `current` at the newest release older than it (no rebuild).
+if [ "${2:-}" = rollback ]; then
+  CUR="$(readlink -f "$BASE/current")"
+  PREV=""; FOUND=0
+  for d in $(ls -1dt "$BASE"/releases/*/); do
+    d="$(readlink -f "$d")"
+    if [ "$FOUND" = 1 ] && [ -f "$d/.next/BUILD_ID" ]; then PREV="$d"; break; fi
+    [ "$d" = "$CUR" ] && FOUND=1
+  done
+  [ -n "$PREV" ] || { echo "no complete earlier release to roll back to" >&2; exit 1; }
+  ln -sfn "$PREV" "$BASE/current.new" && mv -Tf "$BASE/current.new" "$BASE/current"
+  echo "rolled back: $CUR -> $PREV"
+  echo "now run: sudo systemctl restart thence-web-$TARGET.service"
+  exit 0
+fi
+
+TARBALL="${2:?tarball path required}"
+[ -f "$TARBALL" ] && [ -r "$TARBALL" ] || { echo "cannot read $TARBALL" >&2; exit 1; }
+
+NODE=/opt/thence/node/bin
+export PATH="$NODE:/usr/bin:/bin" HOME="$(dirname "$BASE")" NEXT_TELEMETRY_DISABLED=1 npm_config_update_notifier=false
+[ -s "$ENVF" ] || { echo "refused: $ENVF is empty; install it first" >&2; exit 1; }
+
+# Refuse archives carrying env files or absolute/parent paths.
+# (awk reads all input, so no early-exit SIGPIPE can make a match look like a miss)
+LIST="$(tar tzf "$TARBALL")"
+if printf '%s\n' "$LIST" | awk '/(^|\/)\.env($|\.)/ && !/(^|\/)\.env\.example$/ {f=1} END {exit !f}'; then
+  echo "refused: tarball contains an .env file" >&2; exit 1
+fi
+if printf '%s\n' "$LIST" | awk '/^\// || /(^|\/)\.\.(\/|$)/ {f=1} END {exit !f}'; then
+  echo "refused: tarball contains absolute or parent paths" >&2; exit 1
+fi
+
+REL="$BASE/releases/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir "$REL"
+tar xzf "$TARBALL" -C "$REL" --no-same-owner --no-same-permissions
+cd "$REL"
+nice -n 10 npm ci --no-audit --no-fund --loglevel=error
+# Load the env file with Node's own parser into the process environment (never
+# shell-sourced), then run the build. `--env-file` cannot be used here: Next.js
+# forwards execArgv to build workers via NODE_OPTIONS, where Node rejects it.
+NODE_ENV=production NODE_OPTIONS=--max-old-space-size=2048 THENCE_ENV_FILE="$ENVF" \
+  nice -n 10 "$NODE/node" -e '
+    process.loadEnvFile(process.env.THENCE_ENV_FILE);
+    delete process.env.THENCE_ENV_FILE;
+    process.env.NODE_ENV = "production";
+    const r = require("node:child_process").spawnSync(process.execPath,
+      ["node_modules/next/dist/bin/next", "build"], { stdio: "inherit" });
+    process.exit(r.status === null ? 1 : r.status);'
+
+ln -sfn "$REL" "$BASE/current.new" && mv -Tf "$BASE/current.new" "$BASE/current"
+# keep the 3 newest releases; never remove the one `current` points to
+CUR="$(readlink -f "$BASE/current")"
+ls -1dt "$BASE"/releases/*/ | tail -n +4 | while read -r d; do
+  [ "$(readlink -f "$d")" = "$CUR" ] || rm -rf -- "$d"
+done
+echo "deployed: $REL"
+echo "now run: sudo systemctl restart thence-web-$TARGET.service"

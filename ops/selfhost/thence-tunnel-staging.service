@@ -1,0 +1,36 @@
+[Unit]
+Description=Thence STAGING HTTPS (Cloudflare quick tunnel -> 127.0.0.1:3100)
+After=network-online.target thence-web-staging.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=thence
+Group=thence
+Environment=HOME=/srv/thence
+# Quick tunnel: outbound-only, no account, no DNS, no open ports.
+# Its random https://*.trycloudflare.com hostname is read from the local
+# metrics endpoint: curl -s http://127.0.0.1:3190/quicktunnel
+ExecStart=/opt/thence/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:3190 --url http://127.0.0.1:3100
+Restart=on-failure
+RestartSec=10
+
+MemoryMax=256M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=-/srv/thence/staging -/etc/thence-web
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,46 @@
+[Unit]
+Description=Thence web app (STAGING, payments off)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=thence
+Group=thence
+WorkingDirectory=/srv/thence/staging/current
+# EnvironmentFile overrides Environment=; thence-env-install therefore refuses
+# NODE_ENV/NODE_OPTIONS/PATH/HOME/LD_* in the env file.
+EnvironmentFile=/etc/thence-web/staging.env
+Environment=NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOME=/srv/thence PATH=/opt/thence/node/bin:/usr/bin:/bin
+# Refuse to start unless DATABASE_URL is proven non-production (test anchor).
+ExecStartPre=/opt/thence/node/bin/node node_modules/tsx/dist/cli.mjs scripts/assert-nonprod-db.ts
+ExecStart=/opt/thence/node/bin/node node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3100
+Restart=on-failure
+RestartSec=5
+
+# resource bounds (shares the host with other services)
+MemoryHigh=1200M
+MemoryMax=1536M
+CPUQuota=200%
+Nice=5
+
+# isolation
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/thence/staging
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

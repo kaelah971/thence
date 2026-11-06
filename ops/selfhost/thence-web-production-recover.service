@@ -1,0 +1,9 @@
+[Unit]
+Description=Thence PRODUCTION recovery: restart the app after a failed health check
+
+[Service]
+Type=oneshot
+# Only a running-but-unresponsive app is restarted. A deliberately stopped app
+# (rollback, maintenance) is left alone; crashes are handled by Restart=always.
+ExecCondition=/usr/bin/systemctl is-active --quiet thence-web-production.service
+ExecStart=/usr/bin/systemctl restart thence-web-production.service

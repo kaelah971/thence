@@ -1,0 +1,44 @@
+[Unit]
+Description=Thence web app (PRODUCTION, behind the named Cloudflare tunnel)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=thence-prod
+Group=thence-prod
+WorkingDirectory=/srv/thence-prod/production/current
+# EnvironmentFile overrides Environment=; thence-env-install therefore refuses
+# NODE_ENV/NODE_OPTIONS/PATH/HOME/LD_* in the env file.
+EnvironmentFile=/etc/thence-web-prod/production.env
+Environment=NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOME=/srv/thence-prod PATH=/opt/thence/node/bin:/usr/bin:/bin
+ExecStart=/opt/thence/node/bin/node node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3200
+Restart=always
+RestartSec=3
+
+# resource bounds (shares the host with other services)
+MemoryHigh=1200M
+MemoryMax=1536M
+CPUQuota=200%
+
+# isolation (cannot read staging: /srv/thence and /etc/thence-web are thence-only)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/thence-prod/production
+InaccessiblePaths=-/srv/thence -/etc/thence-web -/etc/thence
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
