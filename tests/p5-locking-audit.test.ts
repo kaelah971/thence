@@ -13,7 +13,7 @@
  */
 import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import fixture from "./fixtures/incidents-2026-11-02.json";
 import { getDb } from "@/lib/db";
 import { reconciliationObservations, transferTransitions, transfers, users } from "@/db/schema";
@@ -203,7 +203,9 @@ async function authorizedPayment(tag: string): Promise<Prepared> {
 }
 
 const statusOf = async (id: string) => (await getDb().select({ s: transfers.status }).from(transfers).where(eq(transfers.id, id)))[0]?.s;
-const transitionsOf = (id: string) => getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, id));
+// Deterministic audit order: without ORDER BY, Postgres may return rows in any order (CI flake 2026-11-06).
+const transitionsOf = (id: string) =>
+  getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, id)).orderBy(asc(transferTransitions.createdAt), asc(transferTransitions.id));
 const reasonsOf = async (id: string) => (await transitionsOf(id)).map((t) => t.reasonCode);
 const observationsOf = (id: string) => getDb().select().from(reconciliationObservations).where(eq(reconciliationObservations.transferId, id));
 const ageObservations = (id: string, minutes: number) =>
