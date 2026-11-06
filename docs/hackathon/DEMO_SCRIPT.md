@@ -48,7 +48,7 @@ status, and only after the payment has been verified.
 | `shot-05-request-link.png` | Payment request share sheet and `/r/:id` page | To capture |
 | `shot-06-delivered-receipt.png` | Delivered receipt for `2c2432af` (Activity) | To capture (from the existing account) |
 | `shot-07-polygonscan.png` | Block 96777101 USDC transfer (address blurred) | To capture |
-| simulated set | Approve → funding → Finish delivery → finality → Delivered | **Available**: `docs/pr-assets/ux-mobile-payment-progress/390-*.jpg` (label "simulated") |
+| simulated set | Approve → funding → Finish delivery → finality → Delivered | **Available**: `docs/pr-assets/ux-mobile-payment-progress/390-*.jpg`, and a fresh set in each CI run's `ux-screens` artifact (label "simulated") |
 
 Store final assets in `docs/hackathon/assets/`, after checking every frame for addresses, names
 and balances.

@@ -122,8 +122,9 @@ npm run db:migrate          # refuses production database URLs (scripts/assert-n
 npm run dev                 # http://localhost:3000 — GET /api/health
 ```
 
-- **Without Nimiq Pay:** open `/app/preview` for a clearly labelled fictional walkthrough. It
-  never signs in and never calls authenticated APIs.
+- **Without Nimiq Pay:** with `npm run dev`, open `/app/preview` for a clearly labelled
+  fictional walkthrough. It never signs in and never calls authenticated APIs. It returns 404 in
+  production builds.
 - **Inside Nimiq Pay:** expose your dev server over HTTPS (for example a tunnel), set
   `THENCE_APP_ORIGIN` and `THENCE_ALLOWED_ORIGINS`, and open the URL as a Mini App.
 - **Quotes locally:** set `THENCE_ENABLED_ROUTES=usdc-polygon` and
