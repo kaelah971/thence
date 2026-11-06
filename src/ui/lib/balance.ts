@@ -106,17 +106,16 @@ async function readFromHost(getProvider: () => Promise<HostProvider>, address: s
  *
  * F8.8 HOST-ZERO CONFIRMATION (proven failure it fixes): the lazy rule
  * above treated a host zero as final, skipping the vault-aware chain read
- * — but a host zero may be a basic-only view of vault-held funds. A
- * nonzero host balance still stands on its own (fast path); a host zero
- * always falls through to the vault-aware chain read, and only a
- * chain-confirmed zero renders as "no NIM yet".
+ * — but a host zero may be a basic-only view of vault-held funds. A host
+ * zero always falls through to the vault-aware chain read, and only a
+ * chain-confirmed zero renders as "no NIM yet". F8.9 extends the same
+ * confirmation to nonzero host answers (see reconcileNonzeroHost).
  */
 export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProvider>), address: string): Promise<BalanceState> {
   const { getProvider, readChain, hostNetwork } = typeof deps === "function" ? { getProvider: deps } as BalanceDeps : deps;
   const host = await readFromHost(getProvider, address);
-  // Fast path: a nonzero host balance stands on its own (F8.4 saving).
-  if (host.ok && host.luna > 0n)
-    return { status: "loaded", luna: host.luna, basicLuna: host.luna, vaultLuna: null, vaultUnknown: false, source: "host", network: hostNetwork?.() ?? null };
+  // F8.9: a nonzero host answer is cross-checked too (see reconcileNonzeroHost).
+  if (host.ok && host.luna > 0n) return reconcileNonzeroHost(host.luna, readChain, hostNetwork);
   // F8.8: host failure OR host zero falls through to the vault-aware chain
   // read. A host zero is never final on its own: the host may only see the
   // basic account while funds sit in Nimiq Pay-managed vaults, so a zero
@@ -186,6 +185,62 @@ export async function readNimBalance(deps: BalanceDeps | (() => Promise<HostProv
   // Chain read failed (network or failed error): retryable error with Try
   // again. A host zero behind it is never presented as a confirmed zero.
   return { status: "error", reason: chain.reason === "network" ? "network" : "failed" };
+}
+
+/**
+ * F8.9 HOST-DUST CONFIRMATION (proven failure it fixes): F8.8 only sent a
+ * host ZERO to the vault-aware chain read. A small nonzero host answer
+ * (e.g. 0.01 NIM landing on the basic account) still took the fast path,
+ * so Home showed the basic dust while thousands of NIM sat in Nimiq
+ * Pay-managed vaults. Any nonzero host answer is now cross-checked
+ * against the vault-aware chain total and the LARGER of the two readings
+ * of the same wallet is shown. Taking the maximum (never a sum) means a
+ * host that already aggregates vaults is never double-counted, and a
+ * host that counts a just-received amount the node hasn't confirmed yet
+ * is never undercut. If the chain can't answer, the host figure still
+ * shows (it is a real reading, never replaced by an error) but is flagged
+ * as possibly incomplete. This supersedes the F8.4 "nonzero host never
+ * touches the chain" saving; the server keeps its 60 s per-address cache.
+ */
+async function reconcileNonzeroHost(
+  hostLuna: bigint,
+  readChain: BalanceDeps["readChain"],
+  hostNetwork: BalanceDeps["hostNetwork"],
+): Promise<BalanceState> {
+  const reported = hostNetwork?.() ?? null;
+  const hostOnly = (vaultUnknown: boolean): BalanceState => ({
+    status: "loaded",
+    luna: hostLuna,
+    basicLuna: hostLuna,
+    vaultLuna: null,
+    vaultUnknown,
+    source: "host",
+    network: reported,
+  });
+  if (!readChain) return hostOnly(false);
+  let chain: ChainOutcome;
+  try {
+    chain = await readChain();
+  } catch {
+    chain = { ok: false, reason: "failed" };
+  }
+  // No usable chain reading (unconfigured, failed, or another network):
+  // keep the host figure, but never present it as a complete total.
+  if (!chain.ok || (reported && reported !== chain.network)) return hostOnly(true);
+  const vaultsUnknown = chain.vaultsUnknown ?? chain.vaults === undefined;
+  if (chain.luna > hostLuna) {
+    const vaults = chain.vaults ?? null;
+    return {
+      status: "loaded",
+      luna: chain.luna,
+      basicLuna: chain.basicLuna ?? chain.luna,
+      vaultLuna: vaults ? vaults.totalLuna : null,
+      vaultUnknown: vaultsUnknown,
+      source: "chain",
+      network: chain.network,
+    };
+  }
+  return hostOnly(vaultsUnknown);
 }
 
 /** Browser read of GET /api/me/balance. */

@@ -101,7 +101,7 @@ describe("client balance: host first, then trusted node", () => {
     expect(state).toEqual({ status: "unavailable", reason: "network-mismatch" });
   });
 
-  it("F8.4: never consults the chain when the host answers (lazy fallback)", async () => {
+  it("F8.9: a host answer larger than the chain total stands, after exactly one chain read", async () => {
     let chainCalls = 0;
     const countingChain = async (): Promise<ChainOutcome> => {
       chainCalls += 1;
@@ -112,7 +112,7 @@ describe("client balance: host first, then trusted node", () => {
       ADDRESS,
     );
     expect(state).toEqual({ status: "loaded", luna: 35_260_449n, basicLuna: 35_260_449n, vaultLuna: null, vaultUnknown: false, source: "host", network: null });
-    expect(chainCalls).toBe(0);
+    expect(chainCalls).toBe(1);
   });
 
   it("F8.4: consults the chain exactly once after a host failure", async () => {
@@ -472,7 +472,7 @@ describe("F8.8 host-zero confirmation (mocked host + chain, no network)", () => 
     expect(await readNimBalance({ getProvider: hostZero, readChain: throws }, ADDRESS)).toEqual({ status: "error", reason: "failed" });
   });
 
-  it("keeps the fast path: nonzero host answers never touch the chain", async () => {
+  it("keeps the host figure when it equals the chain total (no double count)", async () => {
     let chainCalls = 0;
     const countingChain = async (): Promise<ChainOutcome> => {
       chainCalls += 1;
@@ -488,7 +488,88 @@ describe("F8.8 host-zero confirmation (mocked host + chain, no network)", () => 
       source: "host",
       network: null,
     });
-    expect(chainCalls).toBe(0);
+    expect(chainCalls).toBe(1);
+  });
+});
+
+describe("F8.9 host-dust confirmation (mocked host + chain, no network)", () => {
+  // Real-device report (2026-11-06): Nimiq Pay showed ~8,852 NIM plus a
+  // 0.010 NIM pending receipt; Thence showed 0.01 NIM. The host's
+  // getBalance is a basic-account view; 0.01 NIM (1,000 Luna) on the basic
+  // account took the old nonzero fast path and hid the vault-held funds.
+  const DUST = 1_000; // 0.01 NIM
+  const VAULTS = 885_200_000n; // 8,852 NIM in Nimiq Pay-managed vaults
+  const hostDust = async (): Promise<HostProvider> => ({ sign, getBalance: async () => DUST });
+
+  it("shows the vault-aware chain total, not the basic-account dust (the reported bug)", async () => {
+    const state = await readNimBalance(
+      {
+        getProvider: hostDust,
+        readChain: chainOk(VAULTS + 1_000n, "mainnet", { basicLuna: 1_000n, vaults: { totalLuna: VAULTS, contracts: 2 }, vaultsUnknown: false }),
+        hostNetwork: () => "mainnet",
+      },
+      ADDRESS,
+    );
+    expect(state).toEqual({
+      status: "loaded",
+      luna: VAULTS + 1_000n,
+      basicLuna: 1_000n,
+      vaultLuna: VAULTS,
+      vaultUnknown: false,
+      source: "chain",
+      network: "mainnet",
+    });
+  });
+
+  it("covers a pending basic receipt the node hasn't confirmed yet (basic 0 on chain)", async () => {
+    const state = await readNimBalance(
+      { getProvider: hostDust, readChain: chainOk(VAULTS, "mainnet", { basicLuna: 0n, vaults: { totalLuna: VAULTS, contracts: 1 } }) },
+      ADDRESS,
+    );
+    expect(state).toMatchObject({ status: "loaded", luna: VAULTS, basicLuna: 0n, vaultLuna: VAULTS, source: "chain" });
+  });
+
+  it("never sums the two sources: a host that already aggregates vaults is not double-counted", async () => {
+    const state = await readNimBalance(
+      {
+        getProvider: async () => ({ sign, getBalance: async () => Number(VAULTS) }),
+        readChain: chainOk(VAULTS, "mainnet", { basicLuna: 0n, vaults: { totalLuna: VAULTS, contracts: 1 } }),
+      },
+      ADDRESS,
+    );
+    expect(state).toMatchObject({ status: "loaded", luna: VAULTS, source: "host" });
+  });
+
+  it("keeps the host figure, flagged incomplete, when the chain read fails", async () => {
+    const expected = { status: "loaded", luna: 1_000n, basicLuna: 1_000n, vaultLuna: null, vaultUnknown: true, source: "host", network: null };
+    const down = async (): Promise<ChainOutcome> => ({ ok: false, reason: "network" });
+    expect(await readNimBalance({ getProvider: hostDust, readChain: down }, ADDRESS)).toEqual(expected);
+    const throws = async (): Promise<ChainOutcome> => {
+      throw new Error("boom");
+    };
+    expect(await readNimBalance({ getProvider: hostDust, readChain: throws }, ADDRESS)).toEqual(expected);
+    expect(await readNimBalance({ getProvider: hostDust, readChain: chainOff }, ADDRESS)).toEqual(expected);
+  });
+
+  it("ignores a chain reading from another network and flags the host figure incomplete", async () => {
+    const state = await readNimBalance(
+      { getProvider: hostDust, readChain: chainOk(VAULTS, "testnet"), hostNetwork: () => "mainnet" },
+      ADDRESS,
+    );
+    expect(state).toEqual({ status: "loaded", luna: 1_000n, basicLuna: 1_000n, vaultLuna: null, vaultUnknown: true, source: "host", network: "mainnet" });
+  });
+
+  it("carries the chain's vault-coverage flag when the chain total wins", async () => {
+    const state = await readNimBalance(
+      { getProvider: hostDust, readChain: chainOk(VAULTS, "mainnet", { basicLuna: 0n, vaults: { totalLuna: VAULTS, contracts: 1 }, vaultsUnknown: true }) },
+      ADDRESS,
+    );
+    expect(state).toMatchObject({ luna: VAULTS, vaultUnknown: true, source: "chain" });
+  });
+
+  it("without a chain dependency, a nonzero host answer still loads as before", async () => {
+    const state = await readNimBalance({ getProvider: hostDust }, ADDRESS);
+    expect(state).toEqual({ status: "loaded", luna: 1_000n, basicLuna: 1_000n, vaultLuna: null, vaultUnknown: false, source: "host", network: null });
   });
 });
 
