@@ -14,7 +14,7 @@ no published length limit. Every claim maps to [`EVIDENCE.md`](EVIDENCE.md).
 |---|---|
 | Device | Phone with Nimiq Pay (Android preferred: no iOS cookie-loss risk mid-take) |
 | Capture | Native screen recording at 1080×2340 or similar, portrait; no notifications (Do Not Disturb) |
-| Desktop | 1920×1080 browser capture for Polygonscan and the code segments |
+| Desktop | 1920×1080 browser capture for the README, architecture and CI segments (no explorer pages) |
 | Audio | Voiceover recorded separately (quiet room, USB or phone mic), then synced in editing |
 | Edit | Phone footage centred on a dark 16:9 canvas; captions burned in; numbers on screen as lower-thirds |
 | Privacy | Blur the full wallet addresses, the NIM balance (if wanted) and any personal names. Use a demo recipient named "Ana (demo)" |
