@@ -4,6 +4,11 @@ Status (2026-11-05): **implemented, not enabled.** Production has no
 `THENCE_PAYMENTS_MODE`, which resolves to `off`, and the database emergency
 switch is DISABLED.
 
+> **2026-11-06: production moved to the Hermes VPS.** The "Vercel Production
+> env" steps below are superseded. To activate, follow
+> [`PAYMENT_ACTIVATION_VPS.md`](PAYMENT_ACTIVATION_VPS.md). The modes,
+> safeguards and the emergency switch described here are unchanged.
+
 ## What public mode is
 
 `THENCE_PAYMENTS_MODE=public` (`src/lib/pilot.ts`): any authenticated Nimiq Pay
