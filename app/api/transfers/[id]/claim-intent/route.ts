@@ -37,7 +37,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   } catch (err) {
     if (err instanceof AuthError) {
       console.warn(`thence claim-intent: ${err.code}`);
-      return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
+      return NextResponse.json({ error: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) }, { status: err.status });
     }
     console.warn("thence claim-intent: CLAIM_INTENT_FAILED");
     return NextResponse.json({ error: "CLAIM_INTENT_FAILED", message: "Couldn't check this payment. Try again shortly." }, { status: 500 });

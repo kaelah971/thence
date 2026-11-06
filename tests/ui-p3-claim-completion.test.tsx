@@ -449,6 +449,104 @@ describe("P3: every safety gate blocks before anything is revealed", () => {
   });
 });
 
+describe("F9.1: one tap waits for the Polygon funding confirmations (first live public payment, 2026-11-06)", () => {
+  const notConfirmed = (confirmations: number) => ({
+    kind: "refused" as const,
+    status: 409,
+    error: "FUNDING_NOT_CONFIRMED",
+    message: "The Polygon funding needs a few more confirmations. Try again in a minute.",
+    details: { confirmations: String(confirmations), required: "32" },
+  });
+
+  function fundedEarly(): void {
+    vi.setSystemTime(new Date(FUNDED_SEEN));
+    api = installFakeApi({ [ID]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FUNDED_SEEN } });
+    claimSpy.claimStoredSwap.mockResolvedValue({ success: true, txHash: `0x${"5c".repeat(32)}`, message: "ok" });
+  }
+
+  it("a single early tap shows confirmation progress and finishes delivery on its own once funding is confirmed", async () => {
+    fundedEarly();
+    api.claimIntentOutcome = notConfirmed(9);
+    renderSend();
+    await advance(3_000);
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    expect(api.count("POST", "/claim-intent")).toBe(1);
+    expect(text()).toContain("Securing the payment on Polygon (9 of 32 confirmations)");
+    expect(text()).not.toContain("Try again in a minute");
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+
+    api.claimIntentOutcome = notConfirmed(26);
+    await advance(8_000);
+    expect(api.count("POST", "/claim-intent")).toBe(2);
+    expect(text()).toContain("(26 of 32 confirmations)");
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+
+    api.claimIntentOutcome = { kind: "server" };
+    await advance(8_000);
+    await advance(0);
+    expect(api.count("POST", "/claim-intent")).toBe(3);
+    // Exactly one claim, only after the server authorized it — no second tap.
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
+    expect(api.state[ID]!.status).toBe("CLAIMING");
+    expect(screen.getAllByText("Delivery submitted — verifying on Polygon").length).toBeGreaterThan(0);
+  });
+
+  it("does not ask the server while the app is in the background, and resumes when it returns", async () => {
+    fundedEarly();
+    api.claimIntentOutcome = notConfirmed(5);
+    renderSend();
+    await advance(3_000);
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    expect(api.count("POST", "/claim-intent")).toBe(1);
+    await setVisible(false);
+    api.claimIntentOutcome = { kind: "server" };
+    await advance(60_000);
+    expect(api.count("POST", "/claim-intent")).toBe(1);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    await setVisible(true);
+    await advance(1_000);
+    await advance(0);
+    expect(api.count("POST", "/claim-intent")).toBe(2);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops at the retry budget with the server's reason, never claims, and a new tap can start again", async () => {
+    fundedEarly();
+    api.claimIntentOutcome = notConfirmed(0);
+    renderSend();
+    await advance(3_000);
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    for (let i = 0; i < 40; i++) await advance(8_000);
+    const calls = api.count("POST", "/claim-intent");
+    expect(calls).toBeGreaterThan(20);
+    expect(calls).toBeLessThanOrEqual(31); // 4-minute budget at 8 s
+    await advance(60_000);
+    expect(api.count("POST", "/claim-intent")).toBe(calls);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(text()).toContain("Try again in a minute");
+    expect(finishButtons()).toHaveLength(1);
+  });
+
+  it("any other refusal is never retried (network/provider/chain), exactly as before", async () => {
+    fundedEarly();
+    api.claimIntentOutcome = { kind: "refused", status: 503, error: "CHAIN_UNAVAILABLE", message: "Polygon can't be checked right now. Try again shortly." };
+    renderSend();
+    await advance(3_000);
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    await advance(60_000);
+    expect(api.count("POST", "/claim-intent")).toBe(1);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(text()).toContain("Polygon can't be checked right now");
+  });
+});
+
 describe("P3: terminal outcomes never offer a claim", () => {
   it("refunded (077770a1's real end state): no action, Polygon-only refund copy", async () => {
     vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));

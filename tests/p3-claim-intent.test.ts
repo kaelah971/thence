@@ -371,6 +371,10 @@ describe.skipIf(!LIVE)("P3 claim authorization (isolated test database)", () => 
     fundReceipts.set(p.fundTx, p.lock);
     latestBlock = FUND_BLOCK + BigInt(CLAIM_FUNDING_MIN_CONFIRMATIONS - 5);
     await expectRefused(409, "FUNDING_NOT_CONFIRMED");
+    // F9.1: the refusal carries public progress figures for the one-tap wait.
+    const early = await errorOf(await claim(p));
+    expect((early as { details?: Record<string, string> }).details?.["required"]).toBe(String(CLAIM_FUNDING_MIN_CONFIRMATIONS));
+    expect(Number((early as { details?: Record<string, string> }).details?.["confirmations"])).toBeLessThan(CLAIM_FUNDING_MIN_CONFIRMATIONS);
     latestBlock = FUND_BLOCK + 1_000n;
     chainDown = true;
     await expectRefused(503, "CHAIN_UNAVAILABLE");
