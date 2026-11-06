@@ -27,6 +27,7 @@ export const SHARDS: Record<string, string[]> = {
     "f811-*",
     "copy-guard",
     "auth-errors",
+    "proxy-origin",
     "activity-archive",
     "provider-evidence-ui",
     "money",
