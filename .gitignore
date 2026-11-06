@@ -14,3 +14,19 @@ tsconfig.tsbuildinfo
 e2e/.run/
 test-results/
 playwright-report/
+
+# Public-release hardening (2026-11-06): never commit environment files,
+# keys, certificates or tunnel credentials.
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+.cloudflared/
+cert.pem
+.npmrc
+.claude/
+repro-tmp/
+.fast-build/

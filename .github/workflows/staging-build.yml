@@ -1,5 +1,8 @@
 name: staging-build
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
