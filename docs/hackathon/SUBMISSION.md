@@ -117,13 +117,19 @@ Fix the final status sentence on the day of submission: if public payments are o
 - [ ] Owner submits through the Submit page (opens the PR to the competition repo)
 - [ ] Builder promotion checklist items done (5 pts; see `/scoring`)
 
-## Decisions only the owner can make
+## Owner decisions (recorded 2026-11-06)
 
-1. **Repo visibility.** It must be public to be eligible. The audit found no live secrets.
-2. **Payments for judging.** The rules ask for "fully functional on the first try". Options:
-   - (a) Enable `public` mode, with caps and monitoring, from about Nov 10 through judging.
-   - (b) Use `pilot` mode with judges' wallets allowlisted. This needs their addresses.
-   - (c) Keep payments off and rely on the video and the mainnet evidence. This is the highest
-     scoring risk.
-3. **Polygonscan link** for the 2026-11-05 claim tx. It reveals the owner's wallet.
-4. **Legal:** publish the drafts as "draft" pages, or get counsel review first.
+1. **Repo visibility:** stays **PRIVATE**. The owner decides after the VPS cutover. (It must be
+   public to be eligible.)
+2. **Payments for judging:** production payments stay **disabled** for now. The goal is for
+   judges to test the real payment flow after the VPS migration and the final payment
+   verification.
+3. **Polygonscan link:** **not published.** The verified evidence is kept for the demo, with
+   wallet details masked.
+4. **Legal:** the Privacy Policy and Terms stay **drafts** for owner review, unpublished.
+5. **Form:** prepared with placeholders in [`SUBMISSION_FORM.md`](SUBMISSION_FORM.md).
+   Personal details and the payout address go into the form only.
+6. **Recording:** follow [`RECORDING_CHECKLIST.md`](RECORDING_CHECKLIST.md).
+
+Still open: whether to enable payments (`public`, or `pilot` with judges allowlisted) before
+judging, and the exact date.

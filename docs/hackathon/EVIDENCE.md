@@ -49,8 +49,11 @@ The 7-step audit trail and the full analysis are in
 
 **Masking.** The full transaction hashes and the recipient wallet are kept in operator records,
 not in the repository. Publishing the claim transaction hash would reveal the owner's wallet.
-**The owner decides** whether to include a Polygonscan link in the submission. With the block
-number and the USDC contract, the transaction can be found anyway.
+**Owner decision (2026-11-06):** no Polygonscan link or explorer page is published, and none
+appears in the video. Full hashes stay in operator records and can be shown privately to judges
+if they ask. Note: with the block numbers in this file and in the README, plus the USDC
+contract, the transaction can still be found. Before the repository goes public, the owner
+decides whether to keep the block numbers (see `../PUBLIC_RELEASE_AUDIT.md`).
 
 ## Honest wording to use
 
