@@ -468,6 +468,57 @@ describe.skipIf(!LIVE)(
     }
   });
 
+  it("F9.2: Polygon finalized-mode override is fail-closed on stale/inconsistent RPCs and rolls back to 256 confirmations", async () => {
+    const prevRoutes = setEnv("THENCE_ENABLED_ROUTES", ROUTES);
+    const prevRpcs = setEnv("THENCE_EVM_RPCS_JSON", RPCS);
+    const prevFinality = setEnv("THENCE_SETTLEMENT_FINALITY_JSON", JSON.stringify({ "137": { mode: "finalized", confirmations: 1 } }));
+    const verdictWith = async (cookie: string, id: string, tx: string, script: ChainScript) => {
+      mockSwap(fixtureSwap({ status: "clientredeemed", evm_claim_txid: tx }));
+      setSettlementChainForTests(mockChain(script));
+      try {
+        const res = await verify(cookie, "settle-fin", id);
+        return { status: res.status, body: (await res.json()) as { settlement?: { verdict: string; status: string; proof: Record<string, unknown> | null } } };
+      } finally {
+        setSatoraFetchersForTests(null);
+        setSettlementChainForTests(null);
+      }
+    };
+    try {
+      const { cookie } = await login("settle-fin");
+      const tx = claimTxFor("fin");
+      const id = await claimingTransfer(cookie, "settle-fin", "f1", `swap-b44-fin-${RUN}`, "5000000", tx);
+      // RPC can't provide finality evidence: undecided, never delivered.
+      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: null })).body.settlement?.verdict).toBe("INCONCLUSIVE");
+      // Stale/lagging finality (claim block not yet finalized): not yet.
+      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM - 1n })).body.settlement?.verdict).toBe("INSUFFICIENT_CONFIRMATIONS");
+      // Inconsistent RPC: finalized above its own head → refused as evidence.
+      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM + 50n })).body.settlement?.verdict).toBe("INCONCLUSIVE");
+      // Reorg: the block at the claim height changed, even though "finalized" covers it.
+      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM + 2n, headerHash: `0x${"ee".repeat(32)}` })).body.settlement?.verdict).toBe("INCONCLUSIVE");
+      // RPC outage: 503, nothing written.
+      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), fail: "all" })).status).toBe(503);
+      expect((await getDb().select().from(transfers).where(eq(transfers.id, id)))[0]?.status).toBe("CLAIMING");
+
+      // Rollback: remove the override → the 256-confirmation default applies again
+      // to the same evidence (claim only 5 blocks deep) → not yet delivered.
+      restoreEnv("THENCE_SETTLEMENT_FINALITY_JSON", prevFinality);
+      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM + 2n })).body.settlement?.verdict).toBe("INSUFFICIENT_CONFIRMATIONS");
+      setEnv("THENCE_SETTLEMENT_FINALITY_JSON", JSON.stringify({ "137": { mode: "finalized", confirmations: 1 } }));
+
+      // Finalized covers the claim block (~2-3 blocks behind head, as observed on
+      // mainnet): delivered seconds after the claim, proof says "finalized".
+      const ok = await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM + 2n });
+      expect(ok.body.settlement?.verdict).toBe("VERIFIED");
+      expect(ok.body.settlement?.status).toBe("DELIVERED");
+      const rows = await getDb().select().from(transferProofs).where(eq(transferProofs.transferId, id));
+      expect(rows.find((r) => r.verifiedAt !== null)?.finalityLevel).toBe("finalized");
+    } finally {
+      restoreEnv("THENCE_ENABLED_ROUTES", prevRoutes);
+      restoreEnv("THENCE_EVM_RPCS_JSON", prevRpcs);
+      restoreEnv("THENCE_SETTLEMENT_FINALITY_JSON", prevFinality);
+    }
+  });
+
   it("serializes concurrent verification into one proof and blocks double attribution", async () => {
     const prevRoutes = setEnv("THENCE_ENABLED_ROUTES", ROUTES);
     const prevRpcs = setEnv("THENCE_EVM_RPCS_JSON", RPCS);

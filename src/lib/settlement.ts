@@ -55,9 +55,12 @@ export type SettlementChainId = keyof typeof SETTLEMENT_CHAINS;
 export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "confirmations"; confirmations: number }> = {
   // Ethereum: only L1-finalized blocks count. Confirmation counts are not finality.
   1: { mode: "finalized", confirmations: 1 },
-  // Polygon (Bor): no trustworthy `finalized` tag; checkpoints to Ethereum
-  // land roughly every 30 minutes. 256 confirmations (~9 min at 2s/block)
-  // is evidence of inclusion, documented as NOT equivalent to finality.
+  // Polygon (Bor): 256 confirmations (~9 min at 2s/block) stays the code
+  // default. F9.2 (2026-11-06): since Polygon's milestone finality the Bor
+  // `finalized` tag trails the head by ~1-3 blocks on both production RPCs
+  // (docs/POLYGON_FINALITY.md); production may opt in per chain with
+  // THENCE_SETTLEMENT_FINALITY_JSON={"137":{"mode":"finalized","confirmations":1}}
+  // and roll back by removing the key. Fail-closed either way.
   137: { mode: "confirmations", confirmations: 256 },
   // Arbitrum Nitro honours the `finalized` tag as L1-finalized batches:
   // sequencer confirmations alone are soft and never sufficient here.
@@ -588,6 +591,8 @@ export async function verifyEvmRefundEvidence(input: {
       const finalized = await chain.getFinalizedBlockNumber(input.chainId);
       if (finalized === null) return { verdict: "INCONCLUSIVE", reason: "RPC cannot provide finalized-block evidence; refusing to decide.", confirmations: null };
       const latest = await chain.getLatestBlockNumber(input.chainId);
+      // F9.2: finalized above the node's own head is inconsistent evidence.
+      if (finalized > latest) return { verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.", confirmations: null };
       const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
       if (receipt.blockNumber > finalized) {
         return { verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Refund is confirmed but not yet covered by finalized ancestry.", confirmations };
@@ -1227,7 +1232,22 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
           confirmations: null,
         };
       }
-      confirmations = receipt.blockNumber <= finalized ? Number(await chain.getLatestBlockNumber(chainId)) - Number(receipt.blockNumber) + 1 : 0;
+      // F9.2: a finalized height above the node's own head is inconsistent
+      // (stale or broken RPC) and is never taken as finality evidence.
+      const latestForFinality = await chain.getLatestBlockNumber(chainId);
+      if (finalized > latestForFinality) {
+        return {
+          verdict: "INCONCLUSIVE",
+          reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.",
+          transferId,
+          status: current,
+          providerStatus: facts.status,
+          claimTxHash: claimTx,
+          proof: null,
+          confirmations: null,
+        };
+      }
+      confirmations = receipt.blockNumber <= finalized ? Number(latestForFinality) - Number(receipt.blockNumber) + 1 : 0;
       if (receipt.blockNumber > finalized) {
         return {
           verdict: "INSUFFICIENT_CONFIRMATIONS",
