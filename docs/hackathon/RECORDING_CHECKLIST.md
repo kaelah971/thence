@@ -1,13 +1,13 @@
 # Final demo recording checklist
 
-**Status:** prepared 2026-11-06 for owner review. Nothing here enables payments or changes
-production. This checklist supersedes the shot list in [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md)
+**Status:** updated 2026-11-07. **Payments are live** (public mode, Hermes VPS; Polygon
+finalized-tag settlement). A real payment takes about 2 minutes, so it can be filmed in full. This checklist supersedes the shot list in [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md)
 wherever they differ.
 
-## Owner decisions this plan follows (2026-11-06)
+## Owner decisions this plan follows (2026-11-06, updated 2026-11-07)
 
-- Production payments **stay disabled** until the VPS migration and the final payment
-  verification are done. Judges should then test the real payment flow.
+- Production payments are **live** for any Nimiq Pay wallet. The owner films one real payment
+  (Track B). No one pays on the owner's behalf.
 - **No Polygonscan link or explorer page** appears publicly, and none appears in the video.
 - The Privacy Policy and Terms remain unpublished drafts.
 - The repository stays **private** until the owner approves otherwise after cutover.
@@ -16,11 +16,11 @@ wherever they differ.
 
 | Track | When | What it proves | Payment needed? |
 |---|---|---|---|
-| **A: product walkthrough** | Now (payments disabled) | Sign-in, Home, recipients, the live quote, payment requests, Activity, and the **existing** Delivered receipt from 2026-11-05 | No |
-| **B: live payment** | Only after the VPS cutover **and** the owner's final payment verification, **and** only with explicit owner approval to run a supervised payment | One real approve → Nimiq Pay → Finish delivery → Delivered, filmed end to end | Yes, under the pilot runbook (`docs/PUBLIC_PAYMENTS.md`), by the owner |
+| **A: product walkthrough** | Any time | Sign-in, Home, recipients, the live quote, payment requests, Activity, receipts | No |
+| **B: live payment** | Any time (payments live) | One real approve → Nimiq Pay → one-tap Finish delivery → Delivered, filmed end to end (about 2 min) | Yes: about 0.30 USDC (about 1,000 NIM), paid by the owner |
 
-The **final video = Track A + Track B segment 5**. If Track B isn't possible before the deadline,
-use **Track A + the 2026-11-05 evidence** (segment 5-ALT) and say so on screen.
+The **final video = Track A + Track B segment 5**. Use segment 5-ALT (an existing Delivered
+receipt) only if a live take fails. No pause caption is needed any more.
 
 ## Pre-flight (tick all before pressing record)
 
@@ -48,10 +48,10 @@ use **Track A + the 2026-11-05 evidence** (segment 5-ALT) and say so on screen.
 - [ ] Open the production URL inside Nimiq Pay. After the cutover, confirm it is served from the
       VPS.
 - [ ] `GET /api/health` returns ok. `GET /api/routes/public` lists `usdc-polygon` as available.
-- [ ] Track A: check the payment status on the device. You should see "Payments temporarily
-      unavailable" at approval; the video must not hide it.
-- [ ] Track B only: the owner has enabled payments under the runbook, has confirmed the
-      emergency switch works, and is ready to disable it right after the take.
+- [ ] Payments live: Review → Swipe reaches the Nimiq Pay approval (no "Payments temporarily
+      unavailable").
+- [ ] The paying wallet holds about 1,500 NIM or more (0.30 USDC costs about 1,000 NIM plus
+      Lightning fees).
 
 ### Desktop
 
@@ -113,11 +113,15 @@ Only record this when the owner has approved the supervised payment.
 - **Screen:** the review → **Swipe to continue to approval** → **Approve in Nimiq Pay** → the
   Nimiq Pay confirm sheet (NIM amount visible) → back in Thence ("Waiting for confirmations.")
   → **Finish delivery** → **Delivered** with the receipt.
-- **Action:** keep the app in the foreground the whole time. Don't switch apps. **Cut** the wait
-  for 256 confirmations (about 6–8 minutes) with a "≈ 7 minutes later" card.
+- **Action:** keep the app in the foreground the whole time. Don't switch apps.
+  - **Tap Finish delivery once.** It shows "Securing the payment on Polygon (N of 32
+    confirmations)" and continues by itself, after about 70 s.
+  - **Delivered** follows within seconds, at Polygon finality.
+  - Optionally cut the 70 s wait with a "≈ 1 minute later" card.
 - **Voiceover:** "One swipe, one confirmation in Nimiq Pay. The NIM pays a Lightning invoice;
-  Satora's atomic swap locks USDC on Polygon; Finish delivery releases it to Ana. Thence only says
-  Delivered after it verifies the token transfer on-chain, with 256 confirmations."
+  Satora's atomic swap locks USDC on Polygon; one tap on Finish delivery releases it to Ana. Thence
+  only says Delivered after it verifies the token transfer on-chain at Polygon finality — about
+  two minutes from approval."
 - **Caption:** *Real mainnet payment · verified on-chain*
 - **Blur:** the recipient address, the full transaction hashes on the receipt, and the NIM
   balance.
@@ -131,8 +135,7 @@ Only record this when the owner has approved the supervised payment.
   Polygon, paid with NIM from Nimiq Pay. Thence marked it Delivered only after verifying the
   transfer on-chain with 256 confirmations."
 - **Caption:** *Mainnet · 2026-11-05 · 0.30 USDC delivered · 256 confirmations*
-- **Required honesty caption, at least 4 s on screen:** *"Payments are paused while we finish our
-  server migration. This payment was a supervised mainnet run."*
+- (Fallback only. Payments are live, so no pause caption is needed.)
 - **Blur:** the recipient address and all full hashes on the receipt.
 - **Proof:** `docs/PILOT_2026-11-05_FIRST_DELIVERY.md` and `docs/hackathon/EVIDENCE.md`.
 
@@ -166,9 +169,9 @@ Only record this when the owner has approved the supervised payment.
 
 - [ ] Step through every frame at 0.25× and confirm each blur holds, including in transitions and
       the keyboard.
-- [ ] Captions are burned in. Numbers match EVIDENCE.md exactly: 0.30 USDC, 256 confirmations,
-      2026-11-05.
-- [ ] If segment 5-ALT is used, the honesty caption is present.
+- [ ] Captions are burned in. Numbers match the take (amount, about 2 minutes) and, for 5-ALT,
+      EVIDENCE.md exactly.
+- [ ] Segment 5 shows a real, current payment; 5-ALT is used only if a live take failed.
 - [ ] The length is at most 3:00. Export at 1080p, H.264, with audio normalised to about -14
       LUFS.
 - [ ] Upload as **Unlisted** (YouTube or Loom) until the owner approves the submission.

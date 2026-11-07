@@ -1,7 +1,9 @@
 # Polygon settlement finality: `finalized` tag instead of 256 confirmations
 
-- **Status (2026-11-07):** code verified and merged (F9.2). The production switch is a
-  **separate, owner-run config step**, and production still uses 256 confirmations.
+- **Status (2026-11-07):** **active in production since 08:39Z.** It was enabled with the
+  reviewed installer plus an activation script that checks the running process, and the
+  17/17 read-only checks and the reconciler passed afterwards.
+- **Rollback file on the VPS:** `production.env.pre-finality-2026-11-07`.
 - **Default unchanged:** 256 confirmations (`DEFAULT_FINALITY_POLICY[137]`).
 - **Claim gate unchanged:** the 32-confirmation gate before Finish delivery
   (`CLAIM_FUNDING_MIN_CONFIRMATIONS`) is not touched here. Its replacement needs its own

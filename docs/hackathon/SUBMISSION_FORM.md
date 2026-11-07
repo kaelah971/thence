@@ -24,7 +24,7 @@ details and the payout address go **only** into the competition form, entered by
 | Mini App name | Thence |
 | Category | **Pay** |
 | Tagline | Pay in NIM. They receive USDC. |
-| Live URL (opens in Nimiq Pay) | `[OWNER: production URL after VPS cutover]` |
+| Live URL (opens in Nimiq Pay) | `https://paywiththence.cv` (served from the Hermes VPS since 2026-11-06) |
 | GitHub repository (must be public, MIT) | `https://github.com/kaelah971/thence`. **Private today.** Make it public only with owner approval after the cutover |
 | License | MIT |
 | Demo video | `[OWNER: unlisted video link after the final-cut approval]` |
@@ -32,7 +32,9 @@ details and the payout address go **only** into the competition form, entered by
 | How it uses Nimiq Pay | SDK `init`, `listAccounts`, `sign` (wallet sign-in), `getBalance`, `payLightningInvoice` (pays with NIM). See the README § "Nimiq Pay integration" |
 | Supports NIM / USDT | NIM: the sender pays in NIM. The recipient receives USDC on Polygon |
 
-## Status sentence to use (pick one on submission day)
+## Status sentence to use
+
+**Use "Payments live".** Public payments have been live since 2026-11-06.
 
 - **Payments live:** "Payments are live: judges can send a real NIM → USDC payment on Polygon
   from Nimiq Pay." Use this only after the owner's final payment verification on the VPS.
@@ -42,8 +44,8 @@ details and the payout address go **only** into the competition form, entered by
 
 ## Gate before pressing submit (owner)
 
-- [ ] VPS cutover done, and the live URL works inside Nimiq Pay on Android and iOS.
-- [ ] Owner decision on payments for judging (the rules: "fully functional … on the first try").
+- [x] VPS cutover done (2026-11-06). The live URL works inside Nimiq Pay (iOS verified by the owner; Android: check once).
+- [x] Payments live for judging (public mode, 2026-11-06; real public payment delivered).
 - [ ] Repository made public, with explicit owner approval. Pre-public checklist done
       (`docs/PUBLIC_RELEASE_AUDIT.md`).
 - [ ] Demo final cut approved, and the video link works when signed out.

@@ -32,8 +32,9 @@ capability matrix, separating what is verified, implemented-but-off and planned,
 [`docs/hackathon/EVIDENCE.md`](docs/hackathon/EVIDENCE.md).
 
 > **Payment status.** Funded payments are controlled by an explicit payment mode
-> (`off | pilot | public`) **and** a database emergency switch. Public payments are implemented
-> and tested, but **not enabled** in production yet. Only the `usdc-polygon` route is enabled.
+> (`off | pilot | public`) **and** a database emergency switch. **Public payments are live** in
+> production (since 2026-11-06): any Nimiq Pay wallet can pay, and a payment takes about two
+> minutes from approval to Delivered. Only the `usdc-polygon` route is enabled.
 
 ## How a payment works
 
@@ -53,7 +54,7 @@ sequenceDiagram
   S->>S: Nimiq Pay pays the Lightning invoice with NIM
   SA->>P: Lock USDC in HTLC for the recipient
   S->>P: Finish delivery (claim) — USDC goes to recipient
-  T->>P: Verify ERC-20 Transfer + 256 confirmations
+  T->>P: Verify ERC-20 Transfer at Polygon finality
   T-->>S: Delivered, with on-chain proof and receipt
 ```
 
