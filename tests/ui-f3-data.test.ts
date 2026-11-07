@@ -140,7 +140,7 @@ describe("route availability comes only from the server", () => {
   it("marks only live, quoteable, enabled routes as available", () => {
     expect(availabilityFor("usdc-polygon", catalogue).availability).toBe("available");
     expect(availabilityFor("usdt-polygon", catalogue)).toEqual({ availability: "unavailable", note: "Not available right now" });
-    expect(availabilityFor("usdc-base", catalogue).availability).toBe("unavailable");
+    expect(availabilityFor("usdc-base", catalogue)).toEqual({ availability: "unavailable", note: "Coming soon" });
     expect(availabilityFor("btc-lightning", catalogue).availability).toBe("host-dependent");
     expect(availabilityFor("usdc-arbitrum", catalogue).availability).toBe("unknown");
   });

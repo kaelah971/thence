@@ -53,9 +53,13 @@ export function DestinationPicker({ label, value, onChange, hint, mode = "pay", 
           const shownNote =
             state.status === "loading"
               ? "Checking availability…"
-              : mode === "save" && availability === "unavailable"
-                ? "Can't be paid right now"
-                : note;
+              : availability === "available" && !note
+                ? "Available"
+                : note === "Coming soon"
+                  ? "Coming soon"
+                  : mode === "save" && availability === "unavailable"
+                    ? "Can't be paid right now"
+                    : note;
           return (
             <label key={routeId} className={styles.option} data-unavailable={disabled}>
               <input

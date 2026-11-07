@@ -74,6 +74,9 @@ export function availabilityFor(routeId: RouteId, catalogue: RouteCatalogue | nu
     return { availability: "available", note: catalogue.providerFresh ? null : "Availability may be out of date" };
   }
   if (route.status === "unknown") return { availability: "unknown", note: "Availability can't be checked right now" };
+  // Planned route: supported in the registry but not enabled in this deployment.
+  // Display only; it stays unavailable and is never quoted or paid.
+  if (route.status === "disabled") return { availability: "unavailable", note: "Coming soon" };
   return { availability: "unavailable", note: "Not available right now" };
 }
 

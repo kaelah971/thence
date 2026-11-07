@@ -100,12 +100,12 @@ function NameForm({ initial, submitLabel, onSubmit }: NameFormProps): React.JSX.
     <form className={styles.setupForm} onSubmit={(event) => void submit(event)} noValidate>
       <div className={styles.setupIntro}>
         <h1 className={styles.setupTitle}>What should we call you?</h1>
-        <p className={styles.setupBody}>Let&apos;s make Thence feel a little more personal.</p>
+        <p className={styles.setupBody}>Pick any name you&apos;d like to use in Thence. It doesn&apos;t have to be your real name.</p>
       </div>
 
       <div className={styles.nameField}>
         <label htmlFor="setup-name" className={styles.nameLabel}>
-          Your name
+          Nickname
         </label>
         <input
           id="setup-name"
@@ -125,7 +125,7 @@ function NameForm({ initial, submitLabel, onSubmit }: NameFormProps): React.JSX.
           autoFocus
         />
         <p id="setup-name-hint" className={error ? styles.nameError : styles.nameHint} role={error ? "alert" : undefined}>
-          {error ?? (valid ? "A first name or nickname is perfect." : "Enter a name or nickname to continue.")}
+          {error ?? "Just for personalizing your Thence experience."}
         </p>
       </div>
 
