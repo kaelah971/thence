@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party software and artwork are NOT covered by this license. This
-repository contains only Thence's original code and documentation; third-party
-dependencies (see package.json, governed by their own licenses), design
-references, and platform artwork remain the property of their respective
-owners and are used under their own terms.
