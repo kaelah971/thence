@@ -25,7 +25,7 @@ Status as of 2026-11-06. Every claim made in the demo or submission must map to 
 | Server reconciler (Hermes, every 2 min) | VERIFIED-MAINNET | Wrote `DELIVERED` at 09:38:51Z on 2026-11-05 |
 | Refund / expiry recovery path | VERIFIED-MAINNET (incident) + TEST | 2026-11-02 incident fixture `tests/fixtures/incidents-2026-11-02.json` |
 | Full approve → fund → Finish delivery → Delivered UI | VERIFIED-TEST (E2E, WebKit + Chromium) | `e2e/payment.e2e.ts`, screenshots in `docs/pr-assets/ux-mobile-payment-progress/` (simulated data) |
-| Public payment mode (any wallet, any provider-allowed amount) | **IMPLEMENTED-OFF** | `docs/PUBLIC_PAYMENTS.md`, `tests/public-payments-mode.test.ts`. Production mode is `off`. |
+| Public payment mode (any wallet, any provider-allowed amount) | **VERIFIED-MAINNET** (live since 2026-11-06 21:23Z; first public payment `1dfd7782…` delivered) | `docs/PUBLIC_PAYMENTS.md`, `tests/public-payments-mode.test.ts`. Production mode is `off`. |
 | Emergency switch | VERIFIED-MAINNET | Switch ENABLED 09:26:48Z → DISABLED 09:30:58Z on 2026-11-05 |
 | USDT routes; Arbitrum / Ethereum / Base routes | IMPLEMENTED-OFF | In `src/domain/routes.ts`, not enabled or token-verified in production |
 | Thence service fee | NOT BUILT | None is charged |
@@ -55,12 +55,31 @@ if they ask. Note: with the block numbers in this file and in the README, plus t
 contract, the transaction can still be found. Before the repository goes public, the owner
 decides whether to keep the block numbers (see `../PUBLIC_RELEASE_AUDIT.md`).
 
+## First public-mode payment (2026-11-06, transfer `1dfd7782…`, served from the Hermes VPS)
+
+| Fact | Value |
+|---|---|
+| Mode | `public` (no allowlist, no pilot caps), emergency switch ENABLED |
+| Quote | 0.30 USDC on Polygon for 402 sats |
+| Timeline (UTC) | quote 21:28:20 → Nimiq Pay approval 21:28:47 → provider funded 21:29:12 → claim authorized 21:30:34 → **Delivered 21:38:22** (reconciler on the VPS) |
+| Received | **300065 atomic** (0.300065 USDC) vs target 300000, native USDC, chain 137 |
+| Proof | `evm_erc20_transfer`, `confirmations-256` (before the finality change) |
+
+Block numbers and hashes are deliberately omitted (operator records only).
+
+**Changes since this payment** (2026-11-07, verified before activation):
+- **One-tap Finish delivery** (PR #46): the tap waits automatically for the 32 funding
+  confirmations, showing "N of 32".
+- **Polygon finalized-tag settlement** (PR #47, active 08:39Z): Delivered is written seconds after
+  the claim instead of about 8 minutes later. The evidence is in `docs/POLYGON_FINALITY.md`.
+- **Expected end-to-end time:** about 2 minutes from approval to Delivered.
+
 ## Honest wording to use
 
 - ✅ "Delivered a real NIM → USDC payment on Polygon mainnet, verified on-chain with 256
   confirmations."
-- ✅ "Public payments are implemented and tested, and are switched off in production while we
-  finish the hosting migration and the safety reviews."
+- ✅ "Payments are live for any Nimiq Pay wallet; a payment completes in about two minutes."
+- ✅ "Delivered only after the USDC transfer is verified on-chain at Polygon finality."
 - ❌ Don't say "live for everyone", "supports USDT", "supports Base/Arbitrum", "instant", or
   "zero fees".
 - ❌ Don't present the simulated E2E screenshots as a real payment. Label them "simulated test

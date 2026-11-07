@@ -14,7 +14,7 @@ Sources: miniappscompetition.com `/rules`, `/cycle3`, `/scoring`, `/faq` and `/p
 | **Public GitHub repo under the MIT license** | ⚠️ MIT ✅, but the repo is **PRIVATE**. It must be public before submitting (owner decision, after the VPS migration) |
 | No hard-coded private keys or secrets | ✅ History audited: [`../PUBLIC_RELEASE_AUDIT.md`](../PUBLIC_RELEASE_AUDIT.md) |
 | Original code, or properly attributed | ✅ Dependencies under their own licenses (README) |
-| "Fully functional and usable on the first try. No prototypes or mockups." | ⚠️ **Payments are OFF in production.** Judges can sign in, add recipients, quote and create requests, but **can't pay**. Owner decision needed (see below) |
+| "Fully functional and usable on the first try. No prototypes or mockups." | ✅ **Public payments are LIVE** (since 2026-11-06 21:23Z, served from the Hermes VPS). Any authenticated Nimiq Pay wallet can pay. The first public payment was delivered on 2026-11-06 |
 | Written description, **max 250 words** | ✅ Below (word count checked) |
 | Category | **Pay** |
 | Team lead: name or pseudonym, GitHub link, **Nimiq wallet address for payout** | ⚠️ Owner to supply |
@@ -57,9 +57,9 @@ months.
 >
 > It's for freelancers, families and small merchants who hold NIM but owe someone dollars.
 >
-> Verified: on November 5, 2026 we delivered a real NIM → USDC payment on Polygon mainnet,
-> confirmed on-chain. Public payments are implemented and tested, and are switched off in
-> production while we finish our hosting migration.
+> Live: payments are open to any Nimiq Pay wallet. Real NIM → USDC payments on Polygon
+> mainnet have been delivered and verified on-chain, and a payment completes in about two
+> minutes.
 >
 > Open source (MIT), Next.js and PostgreSQL, with integration and browser end-to-end tests in CI.
 
@@ -76,8 +76,9 @@ Fix the final status sentence on the day of submission: if public payments are o
    terms (amount, destination, token, chain) before authorizing the handoff. One authorization
    per transfer, and a claim lease.
 4. **Proof:** the settlement verifier reads the ERC-20 `Transfer` log via viem, requires the
-   amount to be ≥ target and waits for 256 confirmations. The proof is stored on an immutable
-   receipt.
+   amount to be ≥ target and waits for Polygon finality (the `finalized` block tag; the original
+   rule was 256 confirmations, which is still the code default). The proof is stored on an
+   immutable receipt.
 5. **Recovery:** an on-device vault with readback; a server reconciler every 2 minutes that
    reads and verifies but never pays; refund detection; and a mode plus emergency switch that
    pause new payments without blocking recovery.
@@ -88,7 +89,7 @@ Fix the final status sentence on the day of submission: if public payments are o
 
 - Recipient-first: say what they get, not what you spend.
 - One Nimiq Pay approval: NIM in, USDC out on Polygon.
-- Delivered = proven on-chain (256 confirmations), with a receipt.
+- Delivered = proven on-chain (Polygon finality), with a receipt.
 - Non-custodial: secrets stay on the device.
 - Payment requests with shareable links.
 - Refund-safe by design; every state change audited.
@@ -101,7 +102,8 @@ Fix the final status sentence on the day of submission: if public payments are o
 | What does the sender pay? | Nimiq Pay shows the NIM debit at confirmation. Thence shows the Lightning sats, with fees included, and does not invent a NIM rate. |
 | What if I close the app mid-payment? | Before delivery, the swap refunds after its deadline. Recovery material stays on the device, and the reconciler tracks the outcome. |
 | Mainnet? | Yes. One supervised mainnet delivery on 2026-11-05 (blocks 96777064 and 96777101). |
-| Why is paying switched off? | It's a safety gate during the hosting migration. The mode switch and emergency switch are part of the design. |
+| How long does a payment take? | About 2 minutes from approval in Nimiq Pay: about 70 s until **Finish delivery** completes (one tap; it waits for 32 Polygon confirmations of the provider's funding), then **Delivered** seconds after the claim reaches Polygon finality. |
+| Can payments be stopped? | Yes. A database emergency switch pauses new payments instantly without a redeploy; recovery, claims and refunds keep working. |
 
 ## Submission checklist
 
@@ -121,9 +123,9 @@ Fix the final status sentence on the day of submission: if public payments are o
 
 1. **Repo visibility:** stays **PRIVATE**. The owner decides after the VPS cutover. (It must be
    public to be eligible.)
-2. **Payments for judging:** production payments stay **disabled** for now. The goal is for
-   judges to test the real payment flow after the VPS migration and the final payment
-   verification.
+2. **Payments for judging:** **LIVE** in public mode since 2026-11-06 21:23Z, after the VPS
+   migration (see `docs/PAYMENT_ACTIVATION_VPS.md`). Polygon finalized-tag settlement has been
+   active since 2026-11-07 08:39Z (`docs/POLYGON_FINALITY.md`).
 3. **Polygonscan link:** **not published.** The verified evidence is kept for the demo, with
    wallet details masked.
 4. **Legal:** the Privacy Policy and Terms stay **drafts** for owner review, unpublished.
@@ -131,5 +133,5 @@ Fix the final status sentence on the day of submission: if public payments are o
    Personal details and the payout address go into the form only.
 6. **Recording:** follow [`RECORDING_CHECKLIST.md`](RECORDING_CHECKLIST.md).
 
-Still open: whether to enable payments (`public`, or `pilot` with judges allowlisted) before
-judging, and the exact date.
+Still open: making the repository public (owner, after the pre-public checklist), the demo
+video, and submitting the form.
