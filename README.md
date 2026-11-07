@@ -182,5 +182,5 @@ have **not been reviewed by a lawyer**.
 
 ## License
 
-[MIT](LICENSE) for Thence's original code. Third-party dependencies (`package.json`) remain
-under their own licenses.
+[MIT](LICENSE) for Thence's original code. Third-party dependencies (`package.json`), design
+references and platform artwork remain under their own terms; see [`NOTICE.md`](NOTICE.md).
