@@ -82,6 +82,67 @@ const MAX_VERIFY_ROUNDS = 4;
 /** P3: wait this long after an unknown claim outcome before the verification round. */
 export const UNKNOWN_CLAIM_VERIFY_DELAY_MS = 20_000;
 
+/**
+ * F9.1 — one tap is enough. The server refuses a claim with
+ * FUNDING_NOT_CONFIRMED until the provider's Polygon funding has
+ * CLAIM_FUNDING_MIN_CONFIRMATIONS (32, ~70 s). The Finish delivery control
+ * appears as soon as the provider reports the funding, so an early tap used to
+ * end in "try again in a minute" and repeated manual taps (first live public
+ * payment, 2026-11-06: four refusals in 30 s). The same explicit tap now keeps
+ * re-asking the server, ONLY for that code, on this cadence and within this
+ * budget. A refused intent reveals nothing; every claim gate, the deadline
+ * window and the server claim lease still apply on each attempt.
+ */
+export const FUNDING_RETRY_INTERVAL_MS = 8_000;
+export const FUNDING_RETRY_BUDGET_MS = 4 * 60_000;
+export const FUNDING_NOT_CONFIRMED = "FUNDING_NOT_CONFIRMED";
+
+export type FundingRetryDecision = { retry: true; delayMs: number } | { retry: false };
+
+/**
+ * Pure retry rule. Retry only the funding-confirmation refusal, only within
+ * the budget measured from the user's tap, and never after the screen stopped
+ * tracking. Every other outcome (network failure, rate limit, deadline,
+ * mismatch, success) ends the attempt exactly as before.
+ */
+export function nextFundingRetry(input: { code: string | null | undefined; startedAtMs: number; nowMs: number; active: boolean }): FundingRetryDecision {
+  if (!input.active || input.code !== FUNDING_NOT_CONFIRMED) return { retry: false };
+  if (input.nowMs + FUNDING_RETRY_INTERVAL_MS - input.startedAtMs > FUNDING_RETRY_BUDGET_MS) return { retry: false };
+  return { retry: true, delayMs: FUNDING_RETRY_INTERVAL_MS };
+}
+
+/** Progress copy while the tap waits for the funding confirmations. */
+export function fundingWaitMessage(confirmations: number | null, required: number | null): string {
+  const progress =
+    typeof confirmations === "number" && typeof required === "number" && required > 0
+      ? ` (${Math.min(confirmations, required)} of ${required} confirmations)`
+      : "";
+  return `Securing the payment on Polygon${progress}. Thence finishes delivery automatically — keep this screen open.`;
+}
+
+/**
+ * Wait `ms`, then keep waiting while the page is hidden (no claim attempt from
+ * a backgrounded webview), until it is visible again, the screen stops
+ * tracking, or the retry budget ends.
+ */
+export async function waitVisible(
+  ms: number,
+  active: () => boolean,
+  deadlineMs: number,
+  deps: { sleep?: (ms: number) => Promise<void>; hidden?: () => boolean; now?: () => number } = {},
+): Promise<void> {
+  const sleep = deps.sleep ?? ((t: number) => new Promise<void>((resolve) => setTimeout(resolve, t)));
+  const hidden = deps.hidden ?? (() => typeof document !== "undefined" && document.hidden === true);
+  const now = deps.now ?? Date.now;
+  await sleep(ms);
+  while (active() && hidden() && now() < deadlineMs) await sleep(1_000);
+}
+
+function confirmationsFrom(details: Record<string, string> | null | undefined): { confirmations: number | null; required: number | null } {
+  const n = (v: string | undefined) => (v !== undefined && /^\d{1,6}$/.test(v) ? Number(v) : null);
+  return { confirmations: n(details?.["confirmations"]), required: n(details?.["required"]) };
+}
+
 interface ClaimRecord {
   transferId: string;
   ownerUserId: string;
@@ -344,7 +405,7 @@ export function useSettlement(): {
   );
 
   const attemptClaimOnce = useCallback(
-    async (input: SettlementInput): Promise<{ ok: boolean; reason: string }> => {
+    async (input: SettlementInput): Promise<{ ok: boolean; reason: string; code?: string | null; details?: Record<string, string> | null }> => {
       if (claimsInFlight.has(input.transferId)) return { ok: false, reason: "A delivery attempt is already in progress. Check payment status — do not try again." };
       claimsInFlight.add(input.transferId);
       try {
@@ -412,7 +473,7 @@ export function useSettlement(): {
             ? "Too many tries at once. Wait a moment — do not resend."
             : "We couldn't confirm it's safe to finish right now. Check again shortly — don't resend.";
         kickPaymentTracker(input.transferId);
-        return { ok: false, reason };
+        return { ok: false, reason, code: intent.code, details: intent.details ?? null };
       }
       const authorized = intent.data.claim;
       // The server's answer must describe exactly the swap this browser holds
@@ -465,7 +526,20 @@ export function useSettlement(): {
   const attemptClaim = useCallback(
     async (input: SettlementInput): Promise<{ ok: boolean; reason: string }> => {
       setClaimMessage(null);
-      const result = await attemptClaimOnce(input);
+      // F9.1: the one explicit tap keeps waiting for the funding confirmations
+      // (only FUNDING_NOT_CONFIRMED is retried; see nextFundingRetry).
+      const id = runId.current;
+      const startedAtMs = Date.now();
+      let result = await attemptClaimOnce(input);
+      for (;;) {
+        const decision = nextFundingRetry({ code: result.code, startedAtMs, nowMs: Date.now(), active: runId.current === id });
+        if (!decision.retry) break;
+        const { confirmations, required } = confirmationsFrom(result.details);
+        setClaimMessage(fundingWaitMessage(confirmations, required));
+        await waitVisible(decision.delayMs, () => runId.current === id, startedAtMs + FUNDING_RETRY_BUDGET_MS);
+        if (runId.current !== id) break;
+        result = await attemptClaimOnce(input);
+      }
       setClaimMessage(result.reason);
       const record = loadClaimRecord(input.transferId, input.ownerUserId);
       setState((st) => ({ ...st, claimPending: claimPendingFor(record, st.claimReady) }));
