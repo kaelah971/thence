@@ -12,8 +12,8 @@
 ## Why
 
 **The cost today.** On the first live public payment (2026-11-06, `1dfd7782…`):
-- the claim was authorized at 21:30:34Z;
-- Delivered was written at 21:38:22Z;
+- the claim was authorized about 2 min 14 s after the quote;
+- Delivered was written about 7 min 48 s after that;
 - the gap, about 7.8 minutes, was spent waiting for 256 Polygon confirmations.
 
 **Why 256 was chosen.** The code comment assumed Polygon had "no trustworthy `finalized` tag".

@@ -1,8 +1,8 @@
 # Public release audit: repository secrets and sensitive data
 
-- **Date:** 2026-11-06
-- **Scope:** every commit reachable from every branch (142 commits) of `kaelah971/thence`,
-  plus the working tree at `main` (`14be41d`).
+- **Date:** 2026-11-06; **final review 2026-11-07**
+- **Scope:** every commit reachable from every branch (161 commits at the final review) of
+  `kaelah971/thence`, plus the tracked working tree.
 - **Repository visibility:** **PRIVATE**. Don't change it without explicit owner approval.
 
 ## Method
@@ -52,16 +52,62 @@ history would require a rewrite. That isn't recommended, because none of them gr
 - CI workflow: `permissions: contents: read`, so jobs run with a least-privilege
   `GITHUB_TOKEN`.
 
+## Final review, 2026-11-07 (Gitleaks 8.30.1, official release, checksum verified)
+
+**Gitleaks runs:**
+- `gitleaks git . --log-opts="--all" --redact`: 34 findings in history.
+- `gitleaks dir .`: 32 findings in tracked files.
+
+**Every finding was triaged as a false positive** of the heuristic `generic-api-key` rule:
+- public token contracts (native USDC `0x3c49…3359` and USDT `0xc213…8e8f` on Polygon);
+- browser storage key names (`thence.f4.*`);
+- Satora's public token catalogue fixture;
+- test idempotency keys;
+- a comment in `ops/selfhost/sudoers-thence`.
+
+**No credential, key or token exists in any commit.** Findings in untracked build output
+(`.next*`) and local env files are not published; `.env*` is ignored, except `.env.example`.
+
+**Privacy sweep (beyond Gitleaks):**
+- **No full personal wallet address appears anywhere.** The full addresses that appear are
+  public contracts, provider addresses or test fixtures.
+- The 2026-11-02 incident fixture keeps public on-chain data. Its swap-client addresses are
+  per-swap keys, and that swap was refunded, so it never touched the owner's wallet.
+- Removed from the docs, the test comments and the `HEAD` of the README:
+  - the 2026-11-05 block numbers;
+  - the masked transaction hashes;
+  - the masked owner wallet;
+  - exact on-chain amounts;
+  - the exact NIM debit;
+  - second-level timestamps for the 2026-11-05 and 2026-11-06 payments.
+
+  The evidence for judges is kept as relative timings, ≥ target amounts and verification
+  method.
+
+**Residual, accepted, and not fixable without a history rewrite:**
+1. Commits before 2026-11-07 still contain the block numbers, masked hashes and exact amounts
+   of the 2026-11-05 payment. Anyone reading the history can find that transaction and the
+   recipient wallet.
+2. Even with `HEAD` cleaned, the date, an approximate amount and the public Satora HTLC
+   contract narrow the search on an explorer. Satora's volume is low.
+
+3. The VPS deploy account's username is the default in `ops/selfhost/setup-root*.sh` (low
+   severity: not a credential, SSH is key-based, and it's already in history).
+
+**Mitigation, if wallet privacy matters:** use a fresh recipient wallet for demos and future
+tests, and treat the 2026-11-05/06 recipient wallet as public. A history rewrite (or publishing
+a fresh-history copy) is possible, but it's destructive and is the owner's call.
+
 ## Before making the repository public (owner checklist)
 
-1. [ ] VPS migration finished. The owner explicitly approves the visibility change.
-2. [ ] Run `gitleaks detect --log-opts="--all"` and get a clean result.
-3. [ ] Recommended: credential rotation plan Phase 3 (delete or protect the historical Vercel
+1. [ ] VPS migration finished ✅ (2026-11-06). **Pending:** the owner explicitly approves the visibility change.
+2. [x] Gitleaks run on the full history (2026-11-07): no secrets (false positives triaged above).
+3. [~] Kept by owner decision (rollback). Mitigated: the old deployments require Vercel login (item 4), and the credentials they bundled are rotated. Was: credential rotation plan Phase 3 (delete or protect the historical Vercel
        deployments that bundled the dead `.env`).
-4. [ ] Confirm that Vercel Deployment Protection covers preview URLs.
+4. [x] Vercel Authentication covers all deployments except custom domains (`ssoProtection: all_except_custom_domains`, read 2026-11-07).
 5. [ ] Enable GitHub secret scanning and push protection. They're free for public repos.
-6. [ ] Add branch protection on `main`: PR plus green CI required.
-7. [ ] Decide whether the 2026-11-05 block numbers stay in `README.md`,
+6. [ ] Add branch protection on `main` (PR required). Don't require CI checks while GitHub Actions is blocked by billing, or merges will be impossible.
+7. [x] Block numbers removed from `HEAD` (2026-11-07). History keeps them (see residual). Was: decide whether the 2026-11-05 block numbers stay in `README.md`,
        `docs/hackathon/EVIDENCE.md` and the pilot doc. With the USDC contract, they make the
        owner's transaction, and therefore the owner's wallet, findable on an explorer.
 8. [ ] Optional: remove `docs/pr-assets/` (PR evidence) and the internal planning docs, or keep
