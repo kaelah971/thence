@@ -1,7 +1,7 @@
 # Polygon settlement finality: `finalized` tag instead of 256 confirmations
 
-- **Status (2026-11-06):** code ready (F9.2). The production switch is a **separate, owner-run
-  config step**.
+- **Status (2026-11-07):** code verified and merged (F9.2). The production switch is a
+  **separate, owner-run config step**, and production still uses 256 confirmations.
 - **Default unchanged:** 256 confirmations (`DEFAULT_FINALITY_POLICY[137]`).
 - **Claim gate unchanged:** the 32-confirmation gate before Finish delivery
   (`CLAIM_FUNDING_MIN_CONFIRMATIONS`) is not touched here. Its replacement needs its own
@@ -27,18 +27,33 @@ latest milestone, a few seconds behind the head, and finalized blocks cannot be 
 - **Each sample:** `eth_blockNumber` and `eth_getBlockByNumber("finalized")`, batched. The
   finalized hash is then compared with the **other** provider's block at the same height.
 
-| Metric (first 13 min, 104 samples) | PublicNode | Tenderly |
+| Metric (full 3 h, 2026-11-06 22:14Z to 2026-11-07 01:14Z; 699 samples each) | PublicNode (production RPC) | Tenderly |
 |---|---|---|
 | Errors | 0 | 0 |
-| Finalized lag behind head, min / avg / max | 1 / 2.04 / 3 blocks | 1 / 2.02 / 3 blocks |
+| Finalized lag behind head, min / avg / max | 1 / 1.89 / 4 blocks | 0 / 1.78 / 4 blocks |
+| Lag distribution (blocks: samples) | 1: 163, 2: 450, 3: 83, 4: 3 | 0: 10, 1: 213, 2: 398, 3: 76, 4: 2 |
 | Finalized hash ≠ other provider's hash at that height | 0 | 0 |
 | Finalized height went backwards | 0 | 0 |
-| Latency (batched) | ~109 ms | ~91 ms |
-
-The full 3-hour results are added to the PR before activation.
+| Latency (batched) | ~105 ms | ~90 ms |
 
 **Expected effect:** Delivered about **5 to 10 s** after the claim is mined (2 to 3 blocks,
 plus one verify round), instead of about 8 minutes.
+
+## Verification (2026-11-07, local; GitHub Actions blocked by billing)
+
+PR #47 merged with `main` (`6ec1f2a`) and run on the isolated test database only:
+
+- **Integration shards:** S1 515, S2 78 (includes F9.2), S3 145 and S4 216, all passing.
+- **F9.2 integration test:** runs the real route handler against the real test database with the
+  override set. It verifies a delivery only **5 blocks** deep with `finality_level = finalized`,
+  which is impossible under 256 confirmations. With the override removed, the same evidence is
+  `INSUFFICIENT_CONFIRMATIONS`, so the rollback is verified.
+- **Guard regression:** the finalized-above-head case returns `VERIFIED` on the old code and
+  `INCONCLUSIVE` with the guard.
+- **E2E on the production build, with the override on:** 21 passed and 0 failed (Chromium
+  desktop 13, Chromium mobile 2, WebKit iPhone 6; the rest are skipped by design per device). The
+  simulator's `finalized` tag trails the head by 300 blocks, so these runs prove the configured
+  build works end to end. The integration test is what proves which finality mode is used.
 
 ## Safety (what the code does in `finalized` mode, all fail-closed)
 
