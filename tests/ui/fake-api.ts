@@ -64,7 +64,7 @@ export interface FakeApi {
    * one live lease per transfer, SERVER_FUNDED → CLAIMING); a refusal returns
    * the given plain-language body unchanged.
    */
-  claimIntentOutcome: { kind: "server" } | { kind: "refused"; status: number; error: string; message: string };
+  claimIntentOutcome: { kind: "server" } | { kind: "refused"; status: number; error: string; message: string; details?: Record<string, string> };
   /** P3: what POST /verify-settlement finds on chain next ("VERIFIED" moves the transfer to DELIVERED). */
   settlementVerdict: "VERIFIED" | "PENDING" | "INSUFFICIENT_CONFIRMATIONS" | "INVALID" | "UNAVAILABLE";
   /** P3: server claim lease expiry (ms epoch) per transfer. */
@@ -264,7 +264,7 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
     }
     if (sub === "claim-intent" && method === "POST") {
       const outcome = api.claimIntentOutcome;
-      if (outcome.kind === "refused") return json(outcome.status, { error: outcome.error, message: outcome.message });
+      if (outcome.kind === "refused") return json(outcome.status, { error: outcome.error, message: outcome.message, ...(outcome.details ? { details: outcome.details } : {}) });
       if (s.status !== "SERVER_FUNDED" && s.status !== "CLAIMING") return json(409, { error: "NOT_CLAIMABLE", message: "This payment isn't funded and waiting to be finished." });
       if (s.providerStatus !== "serverfunded") return json(409, { error: "CLAIM_ALREADY_SUBMITTED", message: "A delivery attempt is already on record. Wait while Thence confirms it — don't try again." });
       const deadline = claimDeadline(c, s);

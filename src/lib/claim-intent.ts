@@ -28,7 +28,7 @@ import { transition, type TransferStatus } from "@/domain/transfers";
 import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
 import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
-import { verifyHtlcFunding, verifyHtlcUnspent, type HtlcFundingResult, type HtlcSpendVerdict } from "@/lib/settlement";
+import { CLAIM_FUNDING_MIN_CONFIRMATIONS, verifyHtlcFunding, verifyHtlcUnspent, type HtlcFundingResult, type HtlcSpendVerdict } from "@/lib/settlement";
 import { recordTransition } from "@/lib/transitions";
 
 /**
@@ -140,7 +140,15 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
   }
   if (ev.facts.status !== "serverfunded") refuse(409, "NOT_CLAIMABLE", "The provider no longer reports this payment as funded and waiting.");
   if (ev.funding.verdict === "INVALID") refuse(409, "FUNDING_INVALID", `${ev.funding.reason} Do not continue.`);
-  if (ev.funding.verdict === "PENDING") refuse(409, "FUNDING_NOT_CONFIRMED", "The Polygon funding needs a few more confirmations. Try again in a minute.");
+  if (ev.funding.verdict === "PENDING") {
+    // F9.1: progress figures (public chain counts only) let the app show
+    // "N of 32" while one tap waits for the funding to settle.
+    const seen = ev.funding.confirmations;
+    throw new AuthError(409, "FUNDING_NOT_CONFIRMED", "The Polygon funding needs a few more confirmations. Try again in a minute.", {
+      ...(typeof seen === "number" && Number.isSafeInteger(seen) && seen >= 0 ? { confirmations: String(seen) } : {}),
+      required: String(CLAIM_FUNDING_MIN_CONFIRMATIONS),
+    });
+  }
   if (ev.funding.verdict !== "VERIFIED") refuse(503, "CHAIN_UNAVAILABLE", "Polygon can't be checked right now. Try again shortly.");
   if (pre.status === "CLAIMING") {
     if (ev.spend === "SPENT") refuse(409, "CLAIM_ALREADY_SUBMITTED", "The earlier delivery attempt reached Polygon. Wait while Thence confirms it — don't try again.");

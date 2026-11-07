@@ -126,6 +126,12 @@ export function usePaymentProgress({
         </p>
       )}
 
+      {claiming && state.claimMessage?.startsWith("Securing the payment on Polygon") && (
+        <p className={styles.ctaNote} role="status" aria-live="polite" data-claim-waiting>
+          <span className={styles.quoteSpinner} aria-hidden="true" /> {state.claimMessage}
+        </p>
+      )}
+
       {state.claimMessage && !claiming && view?.action !== "receipt" && !/^Delivery submitted/.test(state.claimMessage) && (
         <p className={styles.ctaNote} role="status" data-claim-result>
           {state.claimMessage}
