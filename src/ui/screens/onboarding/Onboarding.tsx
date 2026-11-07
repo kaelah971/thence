@@ -12,14 +12,14 @@ const SLIDES = [
   {
     id: "money",
     title: "Your NIM can go further.",
-    body: "Use NIM, Nimiq's cryptocurrency, to pay someone in digital dollars. Starting with USDC on Polygon.",
+    body: "Pay with NIM, Nimiq's cryptocurrency, and send value across blockchains. Start with USDC (digital dollars) on Polygon. More networks are coming soon.",
     note: null,
     Art: MoneyArt,
   },
   {
     id: "people",
     title: "They don't need NIM to get paid.",
-    body: "Add their receiving wallet, choose how much they'll get, and see exactly what you'll pay before approving.",
+    body: "Add their receiving wallet, choose what they'll receive, and see exactly what you'll pay before approving.",
     note: "Your NIM → Their USDC",
     Art: PeopleArt,
   },
