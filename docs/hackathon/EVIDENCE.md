@@ -22,11 +22,11 @@ Status as of 2026-11-06. Every claim made in the demo or submission must map to 
 | Payment request links `/r/:id` | VERIFIED-TEST | `tests/requests.test.ts`, `tests/f32-requests-quotes.test.ts` |
 | NIM → Lightning → Satora → **USDC on Polygon**, delivered | **VERIFIED-MAINNET** (1 supervised payment) | See below |
 | 256-confirmation settlement proof + receipt | VERIFIED-MAINNET | Proof `evm_erc20_transfer`, `confirmations-256` |
-| Server reconciler (Hermes, every 2 min) | VERIFIED-MAINNET | Wrote `DELIVERED` at 09:38:51Z on 2026-11-05 |
+| Server reconciler (Hermes, every 2 min) | VERIFIED-MAINNET | Wrote `DELIVERED` for the 2026-11-05 payment; reconciles every live payment since |
 | Refund / expiry recovery path | VERIFIED-MAINNET (incident) + TEST | 2026-11-02 incident fixture `tests/fixtures/incidents-2026-11-02.json` |
 | Full approve → fund → Finish delivery → Delivered UI | VERIFIED-TEST (E2E, WebKit + Chromium) | `e2e/payment.e2e.ts`, screenshots in `docs/pr-assets/ux-mobile-payment-progress/` (simulated data) |
 | Public payment mode (any wallet, any provider-allowed amount) | **VERIFIED-MAINNET** (live since 2026-11-06 21:23Z; first public payment `1dfd7782…` delivered) | `docs/PUBLIC_PAYMENTS.md`, `tests/public-payments-mode.test.ts`. Production mode is `off`. |
-| Emergency switch | VERIFIED-MAINNET | Switch ENABLED 09:26:48Z → DISABLED 09:30:58Z on 2026-11-05 |
+| Emergency switch | VERIFIED-MAINNET | Switched on and off around the 2026-11-05 payment; ENABLED for public payments since 2026-11-06 |
 | USDT routes; Arbitrum / Ethereum / Base routes | IMPLEMENTED-OFF | In `src/domain/routes.ts`, not enabled or token-verified in production |
 | Thence service fee | NOT BUILT | None is charged |
 | Push notifications, multi-device recovery | NOT BUILT | — |
@@ -35,25 +35,23 @@ Status as of 2026-11-06. Every claim made in the demo or submission must map to 
 
 | Fact | Value |
 |---|---|
-| Paid | ≈ 985.45 NIM from Nimiq Pay (owner's screen) |
+| Paid | about 1,000 NIM from Nimiq Pay (owner's screen) |
 | Swap | Lightning → Polygon, 380 sats |
-| Funding tx | block **96777064**, 09:30:52Z, status 1 |
-| Claim (delivery) tx | block **96777101**, 09:31:48Z, status 1 |
+| Funding tx | mined about 41 s after the quote, status 1 |
+| Claim (delivery) tx | mined about 97 s after the quote, status 1 |
 | Token | native USDC on Polygon `0x3c499c542cef5e3811e1192ce70d8cc03d5c3359` |
-| Received | **300394 atomic** (0.300394 USDC) vs target 300000 |
-| Finality | 256 confirmations at block 96777357 (09:38:12Z) |
-| Independent cross-check | Tenderly and PublicNode agree: a single incoming transfer, balance 0 → 300394 |
+| Received | ≥ the 300000 target (0.30 USDC); the recipient received slightly more, under 0.001 USDC |
+| Finality | 256 confirmations, the policy then (about 8 minutes) |
+| Independent cross-check | Two RPC providers agree: a single incoming transfer |
 
 The 7-step audit trail and the full analysis are in
 [`../PILOT_2026-11-05_FIRST_DELIVERY.md`](../PILOT_2026-11-05_FIRST_DELIVERY.md).
 
-**Masking.** The full transaction hashes and the recipient wallet are kept in operator records,
-not in the repository. Publishing the claim transaction hash would reveal the owner's wallet.
-**Owner decision (2026-11-06):** no Polygonscan link or explorer page is published, and none
-appears in the video. Full hashes stay in operator records and can be shown privately to judges
-if they ask. Note: with the block numbers in this file and in the README, plus the USDC
-contract, the transaction can still be found. Before the repository goes public, the owner
-decides whether to keep the block numbers (see `../PUBLIC_RELEASE_AUDIT.md`).
+**Privacy.** Wallets, transaction hashes, block numbers, exact on-chain amounts and absolute
+timestamps are deliberately omitted (owner decision; removed for the public release on
+2026-11-07). Any of them would let an explorer identify the owner's wallet. The full evidence is
+in operator records and can be shown privately to judges on request. No Polygonscan link or
+explorer page is published, and none appears in the video.
 
 ## First public-mode payment (2026-11-06, transfer `1dfd7782…`, served from the Hermes VPS)
 
@@ -61,11 +59,11 @@ decides whether to keep the block numbers (see `../PUBLIC_RELEASE_AUDIT.md`).
 |---|---|
 | Mode | `public` (no allowlist, no pilot caps), emergency switch ENABLED |
 | Quote | 0.30 USDC on Polygon for 402 sats |
-| Timeline (UTC) | quote 21:28:20 → Nimiq Pay approval 21:28:47 → provider funded 21:29:12 → claim authorized 21:30:34 → **Delivered 21:38:22** (reconciler on the VPS) |
-| Received | **300065 atomic** (0.300065 USDC) vs target 300000, native USDC, chain 137 |
+| Timeline (relative to the quote) | Nimiq Pay approval +27 s → provider funded +52 s → claim authorized +2 min 14 s → **Delivered +10 min 02 s** (reconciler on the VPS) |
+| Received | ≥ the 300000 target, native USDC, chain 137 (slightly more than the target) |
 | Proof | `evm_erc20_transfer`, `confirmations-256` (before the finality change) |
 
-Block numbers and hashes are deliberately omitted (operator records only).
+Wallets, hashes, block numbers, exact amounts and absolute times are deliberately omitted (operator records only).
 
 **Changes since this payment** (2026-11-07, verified before activation):
 - **One-tap Finish delivery** (PR #46): the tap waits automatically for the 32 funding

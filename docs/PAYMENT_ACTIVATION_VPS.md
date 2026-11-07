@@ -14,7 +14,7 @@
 |---|---|
 | Client payment and claim flags | `NEXT_PUBLIC_THENCE_ENABLE_PAYMENT` and `_CLAIM` are inlined as `"1"` in the bundle the VPS serves. **No rebuild is needed to activate.** |
 | Server payment mode | Runtime env (`THENCE_PAYMENTS_MODE`). Changing it needs an env edit and an app restart, not a rebuild. The env installer refuses anything but `off` unless the owner passes `--allow-payments` (owner sudo only; the deploy account cannot). |
-| Emergency switch | `pilot_controls`: **DISABLED** since 2026-11-05 09:30:58Z (`scripts/pilot-switch.ts status --production`). Takes effect on the next request, with no restart. |
+| Emergency switch | `pilot_controls`: **DISABLED** since 2026-11-05 (`scripts/pilot-switch.ts status --production`). Takes effect on the next request, with no restart. |
 | Owner-only restrictions in `public` mode | None. Public mode ignores the allowlist, the per-payment and total caps and the single-route rule (`src/lib/pilot.ts`). Recipient wallets don't need verification to be paid. |
 | Route and amounts | Only `usdc-polygon` is enabled. Provider limits: **356 to 20,000,000 sats** per payment. No Thence cap in public mode. |
 | Satora (`api.satora.io`) from the VPS | `/health` 200 in about 0.46 s. |

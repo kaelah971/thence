@@ -16,18 +16,20 @@ The sender pays with **NIM** from Nimiq Pay. The recipient receives an **exact**
 ## Verified on mainnet
 
 On **2026-11-05**, a supervised mainnet payment delivered **0.30 USDC on Polygon** paid
-with **≈ 985 NIM** from Nimiq Pay. It took one approval, one claim and one on-chain transfer.
+with about **1,000 NIM** from Nimiq Pay. It took one approval, one claim and one on-chain transfer.
 Thence recorded seven audited state transitions and stored a 256-confirmation settlement proof.
 
 | Fact | Value |
 |---|---|
 | Route | `usdc-polygon`, target `300000` atomic (0.30 USDC) |
-| Funding (provider HTLC) | Polygon block **96777064** |
-| Delivery (claim) | Polygon block **96777101** — recipient received **300394** atomic USDC |
-| Finality | 256 confirmations at block 96777357; proof stored as `evm_erc20_transfer` |
+| Funding (provider HTLC) | Mined about 41 s after the quote |
+| Delivery (claim) | Mined about 97 s after the quote; the recipient received ≥ the target |
+| Finality | 256 confirmations (the policy then); proof stored as `evm_erc20_transfer` |
+| Since then | Public payments live (2026-11-06); Delivered at Polygon finality, about 2 minutes end to end (2026-11-07) |
 
 The full postmortem is in [`docs/PILOT_2026-11-05_FIRST_DELIVERY.md`](docs/PILOT_2026-11-05_FIRST_DELIVERY.md).
-Transaction hashes and wallets are masked there, and block numbers are kept for audit. A
+Wallets, transaction hashes, block numbers and exact on-chain amounts are deliberately omitted
+for privacy. A
 capability matrix, separating what is verified, implemented-but-off and planned, is in
 [`docs/hackathon/EVIDENCE.md`](docs/hackathon/EVIDENCE.md).
 

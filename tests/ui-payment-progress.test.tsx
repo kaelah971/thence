@@ -3,9 +3,9 @@
  * Mobile payment UX (2026-11-05 live payment follow-up) — ONE status, ONE
  * timeline, ONE next action, rendered (jsdom + Testing Library).
  *
- * Live evidence: 2c2432af was claimed at 09:31:48Z and reached 256
- * confirmations at 09:38:12Z; the server marked it DELIVERED at 09:38:51Z.
- * At 09:34Z the screen said "Finishing delivery" next to "Action needed —
+ * Live evidence: 2c2432af reached 256 confirmations about 6.5 minutes after
+ * its claim was mined, and the server marked it DELIVERED 39 s later. About
+ * 2 minutes after the claim the screen said "Finishing delivery" next to "Action needed —
  * Finish delivery", "On its way", a stale "Payment being checked" notice and a
  * static "Approve the NIM payment" timeline. These tests pin the replacement:
  *
@@ -565,8 +565,8 @@ describe("amount display consistency (0.3 vs 0.30) — display only", () => {
     expect(padAmountDecimals("5", "USDC")).toBe("5.00");
     expect(padAmountDecimals("25.5", "USDT")).toBe("25.50");
     expect(padAmountDecimals("0.30", "USDC")).toBe("0.30");
-    // A proven on-chain amount with more digits is shown exactly (2c2432af: 300394 atomic).
-    expect(padAmountDecimals("0.300394", "USDC")).toBe("0.300394");
+    // A proven on-chain amount with more digits is shown exactly (illustrative value).
+    expect(padAmountDecimals("0.300417", "USDC")).toBe("0.300417");
     // BTC keeps its own precision (same rule as Activity rows); non-decimal input is untouched.
     expect(padAmountDecimals("0.00001", "BTC")).toBe("0.00001");
     expect(padAmountDecimals("1", "BTC")).toBe("1.00");

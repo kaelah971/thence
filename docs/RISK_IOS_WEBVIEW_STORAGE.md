@@ -9,15 +9,15 @@ payments.
 
 ## What was observed (evidence)
 
-- 09:29:35Z the owner signed in inside Nimiq Pay on iOS; the server session
+- About 1 minute before the quote, the owner signed in inside Nimiq Pay on iOS; the server session
   (`sessions` row) was created with a 30-day expiry and was **never revoked**.
 - The session cookie is persistent: `thence_session`, `HttpOnly`,
   `SameSite=Lax`, `Secure`, `Max-Age` = session TTL, `Expires` set
   (`serializeSessionCookie`, `src/lib/auth.ts`).
 - After the claim, the owner switched to the OKX app to check the balance and
-  came back. At 10:34:02 (Lagos) the page reloaded and the request log shows
+  came back. About 2.5 minutes after the claim the page reloaded and the request log shows
   `GET /api/me` → `/app/reconnect` → `POST /api/session/challenge` →
-  `POST /api/session/verify` → a **second** server session at 09:34:07Z.
+  `POST /api/session/verify` → a **second** server session seconds later.
 
 Conclusion: the webview **reloaded the page and did not send the persistent
 session cookie** after the app switch. The server did not end the session.
@@ -30,7 +30,7 @@ localStorage) in different stores with different lifecycles; a host app can
 also use a non-persistent data store, clear cookies only, or lose a cookie
 that was set while the webview process was being torn down. None of these is
 distinguishable from the evidence above. No claim was attempted after the
-reload (the claim had already been submitted at 09:31:43Z), so there is **no
+reload (the claim had already been submitted about 2.5 minutes earlier), so there is **no
 evidence either way** about client claim storage surviving the switch.
 
 ## Why it matters: what lives on the device until Finish delivery
@@ -175,7 +175,7 @@ Next no-money diagnostic. Items 1–3 are implemented as diagnostic v2
 3. **Real vault presence, metadata only:** list IndexedDB database names
    (`indexedDB.databases()`) and record whether `lendaswap-v3` and
    `thence-recovery` exist, without opening, reading, writing or deleting
-   them. The 2c2432af payment (09:29Z) created both on this device; their
+   them. The 2c2432af payment created both on this device; their
    presence after today's relaunches would be direct evidence that the real
    databases survive. If approved, a record **count** (no values) is the next
    step.

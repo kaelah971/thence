@@ -101,7 +101,7 @@ Fix the final status sentence on the day of submission: if public payments are o
 | Why Lightning? | Nimiq Pay can pay Lightning invoices natively, and Satora swaps Lightning into EVM stablecoins atomically. That gives a NIM → USDC path with no custodian. |
 | What does the sender pay? | Nimiq Pay shows the NIM debit at confirmation. Thence shows the Lightning sats, with fees included, and does not invent a NIM rate. |
 | What if I close the app mid-payment? | Before delivery, the swap refunds after its deadline. Recovery material stays on the device, and the reconciler tracks the outcome. |
-| Mainnet? | Yes. One supervised mainnet delivery on 2026-11-05 (blocks 96777064 and 96777101). |
+| Mainnet? | Yes. A supervised delivery on 2026-11-05, then public payments live since 2026-11-06; each verified on-chain. Transaction details can be shown privately on request. |
 | How long does a payment take? | About 2 minutes from approval in Nimiq Pay: about 70 s until **Finish delivery** completes (one tap; it waits for 32 Polygon confirmations of the provider's funding), then **Delivered** seconds after the claim reaches Polygon finality. |
 | Can payments be stopped? | Yes. A database emergency switch pauses new payments instantly without a redeploy; recovery, claims and refunds keep working. |
 
