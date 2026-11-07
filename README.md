@@ -5,6 +5,7 @@
   <p><strong>Cross-chain payments, powered by Nimiq.</strong></p>
   <p>Pay with NIM. Your recipient gets paid in a supported asset on another blockchain.</p>
   <p>
+    <!-- Add "Watch the demo" here once the published Thence YouTube URL exists. Do not use a placeholder link. -->
     <a href="https://paywiththence.cv"><strong>Try Thence</strong></a> ·
     <a href="https://x.com/usethence">Project updates</a> ·
     <a href="docs/hackathon/EVIDENCE.md">Payment evidence</a> ·
@@ -42,7 +43,7 @@ Thence is a **recipient-first payment mini app inside Nimiq Pay**. Instead of ma
   </tr>
 </table>
 
-<p align="center"><em>Real Thence screenshots from mobile testing. Wallet details in the second image are blurred for privacy. Payment history includes both delivered and cancelled attempts; it is not a fabricated success screen. The USDT card in the app art is a planned asset, not a live route: today the recipient receives <strong>USDC on Polygon</strong>.</em></p>
+<p align="center"><em>Real Thence screenshots from mobile testing. Wallet details in the second image are blurred for privacy. Payment history includes both delivered and cancelled attempts; it is not a fabricated success screen. The NIM and USDT cards show the asset types a Nimiq Pay wallet holds; they don't mean Thence delivers USDT. The only live delivery route is <strong>USDC on Polygon</strong>.</em></p>
 
 <details>
 <summary><strong>More product UI: recipient-first payment experience</strong></summary>
@@ -179,7 +180,7 @@ Automated E2E tests use **simulated providers**, while the mainnet deliveries de
 
 - **Supported route:** only `usdc-polygon` is live. Other network selectors are labeled **Coming soon**.
 - **Payment approval:** Nimiq Pay asks the sender to authorize the NIM-funded invoice; Thence never silently initiates a payment.
-- **Time-sensitive handoff:** the sender needs to finish the delivery claim before its deadline (roughly an hour in the current flow). Refund paths and monitoring exist, but provider/network failures may delay resolution.
+- **Time-sensitive handoff:** the sender needs to tap Finish delivery before the Polygon claim deadline. That deadline is set by the swap provider when the swap is created (Satora's `evm_refund_locktime`), not by Thence, and time spent before funding reduces it. The app shows the deadline and time left, warns in the last 15 minutes and offers no claim in the last 5 minutes ([`src/domain/claim-deadline.ts`](src/domain/claim-deadline.ts)). Refund paths and monitoring exist, but provider/network failures may delay resolution.
 - **Finality:** since 2026-11-07, production verifies Polygon `finalized` blocks (the Nov 5 and Nov 6 payments used 256 confirmations); the separate 32-confirmation funding gate before Finish delivery is unchanged. Inconsistent or unavailable RPC data does **not** become a false Delivered state. The old 256-confirmation rule remains the default fallback without the production override.
 - **Privacy:** avoid posting recipient addresses, secrets, invoice details or full transaction logs publicly. App screenshots above redact private balance/account details.
 - **Legal:** [Privacy Policy](docs/legal/PRIVACY_POLICY.md) and [Terms](docs/legal/TERMS_OF_USE.md) are drafts, not legal advice or finalized legal review.
