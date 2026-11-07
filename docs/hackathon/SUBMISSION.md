@@ -11,7 +11,7 @@ Sources: miniappscompetition.com `/rules`, `/cycle3`, `/scoring`, `/faq` and `/p
 |---|---|
 | Deadline: **Wed Nov 11, 2026** (no time or timezone published; check the Registration Dashboard) | ⚠️ 5 days left. Submit by Nov 10 to be safe |
 | Built on the Nimiq Pay Mini Apps Framework, integrated with Nimiq Pay, supports **NIM or USDT** | ✅ `@nimiq/mini-app-sdk`; pays with NIM |
-| **Public GitHub repo under the MIT license** | ⚠️ MIT ✅, but the repo is **PRIVATE**. It must be public before submitting (owner decision, after the VPS migration) |
+| **Public GitHub repo under the MIT license** | ✅ Public since 2026-11-07: https://github.com/kaelah971/thence, MIT (detected by GitHub), secret scanning and push protection on |
 | No hard-coded private keys or secrets | ✅ History audited: [`../PUBLIC_RELEASE_AUDIT.md`](../PUBLIC_RELEASE_AUDIT.md) |
 | Original code, or properly attributed | ✅ Dependencies under their own licenses (README) |
 | "Fully functional and usable on the first try. No prototypes or mockups." | ✅ **Public payments are LIVE** (since 2026-11-06 21:23Z, served from the Hermes VPS). Any authenticated Nimiq Pay wallet can pay. The first public payment was delivered on 2026-11-06 |
@@ -108,7 +108,7 @@ Fix the final status sentence on the day of submission: if public payments are o
 ## Submission checklist
 
 - [ ] VPS migration complete and production healthy (owner)
-- [ ] **Owner approves making the repo public** → Settings → visibility → Public
+- [x] Repo made public (2026-11-07, owner approved); secret scanning and push protection enabled
 - [ ] Owner decides on the payment mode for judging (see "Decisions")
 - [ ] Demo video recorded, uploaded and linked
 - [ ] Screenshots captured and checked for addresses and names
@@ -121,8 +121,7 @@ Fix the final status sentence on the day of submission: if public payments are o
 
 ## Owner decisions (recorded 2026-11-06)
 
-1. **Repo visibility:** stays **PRIVATE**. The owner decides after the VPS cutover. (It must be
-   public to be eligible.)
+1. **Repo visibility:** **public** since 2026-11-07, approved by the owner after the security review (`docs/PUBLIC_RELEASE_AUDIT.md`).
 2. **Payments for judging:** **LIVE** in public mode since 2026-11-06 21:23Z, after the VPS
    migration (see `docs/PAYMENT_ACTIVATION_VPS.md`). Polygon finalized-tag settlement has been
    active since 2026-11-07 08:39Z (`docs/POLYGON_FINALITY.md`).

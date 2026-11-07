@@ -3,7 +3,7 @@
 - **Date:** 2026-11-06; **final review 2026-11-07**
 - **Scope:** every commit reachable from every branch (161 commits at the final review) of
   `kaelah971/thence`, plus the tracked working tree.
-- **Repository visibility:** **PRIVATE**. Don't change it without explicit owner approval.
+- **Repository visibility:** **PUBLIC** since 2026-11-07 (owner approved after this review).
 
 ## Method
 
@@ -100,12 +100,12 @@ a fresh-history copy) is possible, but it's destructive and is the owner's call.
 
 ## Before making the repository public (owner checklist)
 
-1. [ ] VPS migration finished ✅ (2026-11-06). **Pending:** the owner explicitly approves the visibility change.
+1. [x] VPS migration finished (2026-11-06); the owner approved the visibility change (2026-11-07).
 2. [x] Gitleaks run on the full history (2026-11-07): no secrets (false positives triaged above).
 3. [~] Kept by owner decision (rollback). Mitigated: the old deployments require Vercel login (item 4), and the credentials they bundled are rotated. Was: credential rotation plan Phase 3 (delete or protect the historical Vercel
        deployments that bundled the dead `.env`).
 4. [x] Vercel Authentication covers all deployments except custom domains (`ssoProtection: all_except_custom_domains`, read 2026-11-07).
-5. [ ] Enable GitHub secret scanning and push protection. They're free for public repos.
+5. [x] GitHub secret scanning and push protection enabled (2026-11-07).
 6. [ ] Add branch protection on `main` (PR required). Don't require CI checks while GitHub Actions is blocked by billing, or merges will be impossible.
 7. [x] Block numbers removed from `HEAD` (2026-11-07). History keeps them (see residual). Was: decide whether the 2026-11-05 block numbers stay in `README.md`,
        `docs/hackathon/EVIDENCE.md` and the pilot doc. With the USDC contract, they make the

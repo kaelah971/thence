@@ -25,7 +25,7 @@ details and the payout address go **only** into the competition form, entered by
 | Category | **Pay** |
 | Tagline | Pay in NIM. They receive USDC. |
 | Live URL (opens in Nimiq Pay) | `https://paywiththence.cv` (served from the Hermes VPS since 2026-11-06) |
-| GitHub repository (must be public, MIT) | `https://github.com/kaelah971/thence`. **Private today.** Make it public only with owner approval after the cutover |
+| GitHub repository (must be public, MIT) | `https://github.com/kaelah971/thence` (public, MIT) |
 | License | MIT |
 | Demo video | `[OWNER: unlisted video link after the final-cut approval]` |
 | Description (≤ 250 words) | Paste from [`SUBMISSION.md`](SUBMISSION.md) § "Project description". Update its last sentence to the true payment status on the day of submission |
