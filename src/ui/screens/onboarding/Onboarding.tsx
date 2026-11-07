@@ -11,20 +11,23 @@ import styles from "./onboarding.module.css";
 const SLIDES = [
   {
     id: "money",
-    title: "Pay with NIM. They get what they want.",
-    body: "Use your NIM to pay someone in the currency they prefer.",
+    title: "Your NIM can go further.",
+    body: "Use NIM, Nimiq's cryptocurrency, to pay someone in digital dollars. Starting with USDC on Polygon.",
+    note: null,
     Art: MoneyArt,
   },
   {
     id: "people",
-    title: "Send to people, not complicated addresses.",
-    body: "Pick who you're paying and choose what they should receive.",
+    title: "They don't need NIM to get paid.",
+    body: "Add their receiving wallet, choose how much they'll get, and see exactly what you'll pay before approving.",
+    note: "Your NIM → Their USDC",
     Art: PeopleArt,
   },
   {
     id: "trust",
     title: "Know when it arrives.",
     body: "Follow your payment every step of the way. See a receipt once it's delivered.",
+    note: null,
     Art: TrustArt,
   },
 ] as const;
@@ -172,6 +175,7 @@ export function Onboarding(): React.JSX.Element {
                 <div key={slide.id} className={styles.copySlide} data-active={i === index} aria-hidden={i !== index}>
                   <h1 className={styles.headline}>{slide.title}</h1>
                   <p className={styles.body}>{slide.body}</p>
+                  {slide.note ? <p className={styles.note}>{slide.note}</p> : null}
                 </div>
               ))}
             </div>
