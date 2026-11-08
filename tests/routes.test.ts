@@ -66,6 +66,9 @@ describe("canonical route registry (B0)", () => {
     expect(validateRouteForQuote(null)).toEqual({ ok: false, issue: "UNKNOWN_ROUTE" });
     const disabled = getRoute(routes, "usdt-polygon");
     expect(validateRouteForQuote(disabled)).toEqual({ ok: false, issue: "ROUTE_DISABLED" });
+    const disabledArbitrum = getRoute(routes, "usdc-arbitrum");
+    expect(disabledArbitrum?.enabled).toBe(false);
+    expect(validateRouteForQuote(disabledArbitrum)).toEqual({ ok: false, issue: "ROUTE_DISABLED" });
   });
 
   it("suspended routes cannot continue to quote", () => {
