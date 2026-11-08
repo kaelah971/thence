@@ -32,8 +32,19 @@ const REFERENCE_TTL_MS = 60_000;
 /** Canonical EVM chain ids (public protocol constants, also the SDK `Chain` type). */
 const CHAIN_IDS: Record<string, Chain> = { Ethereum: "1", Polygon: "137", Arbitrum: "42161", Base: "8453" };
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-/** A native-USDC route must never silently fall back to a same-symbol token. */
-const REQUIRED_TOKEN_DECIMALS: Partial<Record<RouteId, number>> = { "usdc-arbitrum": 6 };
+interface TrustedRouteTokenIdentity {
+  address: string;
+  chainId: Chain;
+  decimals: number;
+}
+/** Independent trust anchor for Circle native USDC on Arbitrum One. */
+const TRUSTED_ROUTE_TOKEN_IDENTITIES: Partial<Record<RouteId, TrustedRouteTokenIdentity>> = {
+  "usdc-arbitrum": {
+    address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    chainId: "42161",
+    decimals: 6,
+  },
+};
 
 export class SatoraError extends Error {
   readonly code: string;
@@ -221,6 +232,10 @@ export interface ResolvedRoute {
 export interface RouteResolutionOptions {
   /** Exact token contract approved for this route, when configured. */
   approvedTokenAddress?: string;
+  /** Independent canonical contract identity for a trusted route token. */
+  canonicalTokenAddress?: string;
+  /** Independent canonical chain identity for a trusted route token. */
+  canonicalChainId?: Chain;
   /** Arbitrum native USDC requires an approved address; legacy routes may omit it. */
   requireApprovedToken?: boolean;
   /** Route-specific provider precision, when the token identity requires it. */
@@ -238,9 +253,19 @@ export function resolveRouteWith(
   if (!chainId) throw new SatoraError("UNSUPPORTED_ROUTE", `Network ${network} has no EVM chain mapping.`);
 
   const configuredAddress = options.approvedTokenAddress?.trim();
-  const mustMatchConfigured = options.requireApprovedToken === true || configuredAddress !== undefined;
+  const canonicalAddress = options.canonicalTokenAddress?.trim();
+  if (canonicalAddress !== undefined && !EVM_ADDRESS_RE.test(canonicalAddress)) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The trusted token identity for ${asset} on ${network} is malformed.`);
+  }
+  if (options.canonicalChainId !== undefined && chainId !== options.canonicalChainId) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The route chain does not match the trusted token identity for ${asset}.`);
+  }
+  const mustMatchConfigured = options.requireApprovedToken === true || configuredAddress !== undefined || canonicalAddress !== undefined;
   if (mustMatchConfigured && (!configuredAddress || !EVM_ADDRESS_RE.test(configuredAddress))) {
     throw new SatoraError("ROUTE_NOT_QUOTEABLE", `No approved token is configured for ${asset} on ${network}.`);
+  }
+  if (canonicalAddress !== undefined && configuredAddress!.toLowerCase() !== canonicalAddress.toLowerCase()) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The configured token does not match the trusted native token identity for ${asset} on ${network}.`);
   }
 
   const candidates = tokens.filter((t) => t.symbol === asset && t.chain === chainId);
@@ -290,6 +315,7 @@ export async function resolveRoute(asset: string, network: string): Promise<Reso
   const routeId = routeIdForPair(asset, network);
   const env = getEnv();
   const approvedTokenAddress = routeId === null ? undefined : env.THENCE_ROUTE_TOKENS_JSON[routeId];
+  const trustedIdentity = routeId === null ? undefined : TRUSTED_ROUTE_TOKEN_IDENTITIES[routeId];
   const options: RouteResolutionOptions = {
     // A1 is deliberately strict for the future Arbitrum route. Existing
     // Polygon deployments remain compatible when their private token map is
@@ -297,8 +323,11 @@ export async function resolveRoute(asset: string, network: string): Promise<Reso
     requireApprovedToken: routeId === "usdc-arbitrum",
   };
   if (approvedTokenAddress !== undefined) options.approvedTokenAddress = approvedTokenAddress;
-  const expectedTokenDecimals = routeId === "usdc-arbitrum" ? REQUIRED_TOKEN_DECIMALS[routeId] : undefined;
-  if (expectedTokenDecimals !== undefined) options.expectedTokenDecimals = expectedTokenDecimals;
+  if (trustedIdentity !== undefined) {
+    options.canonicalTokenAddress = trustedIdentity.address;
+    options.canonicalChainId = trustedIdentity.chainId;
+    options.expectedTokenDecimals = trustedIdentity.decimals;
+  }
   return resolveRouteWith(tokens, pairs, asset, network, options);
 }
 

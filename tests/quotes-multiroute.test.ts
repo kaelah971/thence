@@ -56,6 +56,8 @@ const ARBITRUM_USDC_E = "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8";
 const ARBITRUM_PAIRS: SwapPair[] = [{ source: "Lightning", target: "42161", min_sats: 356, max_sats: 20000000 }];
 const ARBITRUM_TOKEN_POLICY = {
   approvedTokenAddress: ARBITRUM_NATIVE_USDC,
+  canonicalTokenAddress: ARBITRUM_NATIVE_USDC,
+  canonicalChainId: "42161" as const,
   requireApprovedToken: true,
   expectedTokenDecimals: 6,
 } as const;
@@ -134,10 +136,17 @@ describe("native USDC/Arbitrum token identity", () => {
       "Arbitrum",
       ARBITRUM_TOKEN_POLICY,
     )).toThrowError(/configured.*not offered/i);
+    expect(() => resolveRouteWith(
+      [{ ...ARBITRUM_TOKENS[0]! }],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      { ...ARBITRUM_TOKEN_POLICY, approvedTokenAddress: ARBITRUM_USDC_E },
+    )).toThrowError(/trusted native token identity/i);
     expect(() => resolveRouteWith(ARBITRUM_TOKENS, ARBITRUM_PAIRS, "USDC", "Arbitrum", {
       ...ARBITRUM_TOKEN_POLICY,
       approvedTokenAddress: "0x0000000000000000000000000000000000000001",
-    })).toThrowError(/configured.*not offered/i);
+    })).toThrowError(/trusted native token identity/i);
   });
 
   it("fails closed for missing config, wrong chain, wrong decimals, and disappearance", () => {
@@ -166,6 +175,13 @@ describe("native USDC/Arbitrum token identity", () => {
       "Arbitrum",
       ARBITRUM_TOKEN_POLICY,
     )).toThrowError(/configured.*not offered/i);
+    expect(() => resolveRouteWith(
+      ARBITRUM_TOKENS,
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      { ...ARBITRUM_TOKEN_POLICY, canonicalChainId: "137" },
+    )).toThrowError(/route chain does not match/i);
   });
 
   it("rejects duplicate provider entries for the approved identity", () => {
@@ -201,6 +217,8 @@ describe("native USDC/Arbitrum token identity", () => {
         tokenAddress: ARBITRUM_NATIVE_USDC,
         tokenDecimals: 6,
       });
+      process.env.THENCE_ROUTE_TOKENS_JSON = JSON.stringify({ "usdc-arbitrum": ARBITRUM_USDC_E });
+      await expect(resolveRoute("USDC", "Arbitrum")).rejects.toThrowError(/trusted native token identity/i);
       delete process.env.THENCE_ROUTE_TOKENS_JSON;
       await expect(resolveRoute("USDC", "Arbitrum")).rejects.toThrowError(/approved token is configured/i);
     } finally {
