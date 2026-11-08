@@ -47,7 +47,9 @@ jobs:
       # Dummy: the setup installer replaces it with the verified test URL.
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/thence
       THENCE_ENABLED_ROUTES: usdc-polygon
-      THENCE_ROUTE_TOKENS_JSON: '{"usdc-polygon":"0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"}'
+      # Integration tests temporarily enable additional read-only quote routes;
+      # keep every approved test token explicit and preserve Polygon.
+      THENCE_ROUTE_TOKENS_JSON: '{"usdc-polygon":"0x3c499c542cef5e3811e1192ce70d8cc03d5c3359","usdc-arbitrum":"0xaf88d065e77c8cc2239327c5edb3a432268e5831"}'
       THENCE_QUOTE_TTL_SECONDS: 300
       THENCE_NIMIQ_RPC_URL: https://rpc.nimiqwatch.com
       THENCE_NIMIQ_NETWORK: mainnet
