@@ -32,6 +32,11 @@ type RawReceipt = (typeof INC.polygon.receipts)[keyof typeof INC.polygon.receipt
 const receipts = INC.polygon.receipts as Record<string, RawReceipt>;
 const blocks = INC.polygon.blocks as Record<string, { hash: string }>;
 const fundBlock = BigInt(receipts[FUND_TX]!.blockNumber);
+const ARBITRUM_HTLC = "0x6c38bf44a327bf36bfbeFcedc514c0fb3fec6748";
+const ARBITRUM_FUND_TX = `0x${"ab".repeat(32)}`;
+const ARBITRUM_BLOCK = 90_000_000n;
+const ARBITRUM_BLOCK_HASH = `0x${"a1".repeat(32)}`;
+const ARBITRUM_FUND_DATA = `0x${"0".repeat(24)}af88d065e77c8cc2239327c5edb3a432268e5831${receipts[FUND_TX]!.logs.find((l) => l.topics[0] === SWAP_FUNDED_EVENT_TOPIC)!.data.slice(66)}`;
 
 function chain(over: Partial<ChainReads> = {}): ChainReads {
   return {
@@ -56,6 +61,25 @@ function chain(over: Partial<ChainReads> = {}): ChainReads {
 }
 
 const input = (over: Partial<Parameters<typeof verifyHtlcFunding>[0]> = {}) => ({ chainId: 137, htlcAddress: HTLC, hashLock: LOCK, fundTxHash: FUND_TX as string | null, expectedLocktimeSec: LOCKTIME, ...over });
+const arbitrumInput = (over: Partial<Parameters<typeof verifyHtlcFunding>[0]> = {}) => ({ chainId: 42161, htlcAddress: ARBITRUM_HTLC, hashLock: LOCK, fundTxHash: ARBITRUM_FUND_TX, expectedLocktimeSec: LOCKTIME, ...over });
+
+function arbitrumChain(over: Partial<ChainReads> = {}): ChainReads {
+  return chain({
+    getReceipt: async (_chainId, hash) =>
+      hash.toLowerCase() === ARBITRUM_FUND_TX
+        ? {
+            status: "success" as const,
+            blockNumber: ARBITRUM_BLOCK,
+            blockHash: ARBITRUM_BLOCK_HASH,
+            logs: [{ address: ARBITRUM_HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`], data: ARBITRUM_FUND_DATA, logIndex: 1 }],
+          }
+        : null,
+    getLatestBlockNumber: async () => ARBITRUM_BLOCK,
+    getFinalizedBlockNumber: async () => ARBITRUM_BLOCK,
+    getBlockHash: async (_chainId, blockNumber) => (blockNumber === ARBITRUM_BLOCK ? ARBITRUM_BLOCK_HASH : null),
+    ...over,
+  });
+}
 
 beforeEach(() => {
   vi.stubEnv("DATABASE_URL", "postgresql://fixture:fixture@fixture.invalid:5432/none");
@@ -91,6 +115,8 @@ describe("P3 on-chain HTLC funding verification (real 077770a1 fund receipt)", (
     expect((await verifyHtlcFunding(input())).verdict).toBe("PENDING");
     setSettlementChainForTests(chain({ getLatestBlockNumber: async () => fundBlock + BigInt(CLAIM_FUNDING_MIN_CONFIRMATIONS - 2) }));
     expect((await verifyHtlcFunding(input())).verdict).toBe("PENDING");
+    setSettlementChainForTests(chain({ getLatestBlockNumber: async () => fundBlock + BigInt(CLAIM_FUNDING_MIN_CONFIRMATIONS - 1) }));
+    expect((await verifyHtlcFunding(input())).verdict).toBe("VERIFIED");
     setSettlementChainForTests(chain({ getBlockHash: async () => `0x${"99".repeat(32)}` }));
     expect((await verifyHtlcFunding(input())).verdict).toBe("INCONCLUSIVE");
   });
@@ -103,6 +129,43 @@ describe("P3 on-chain HTLC funding verification (real 077770a1 fund receipt)", (
     const pending = verifyHtlcFunding(input());
     await vi.advanceTimersByTimeAsync(CHAIN_READ_TIMEOUT_MS);
     await expect(pending).resolves.toMatchObject({ verdict: "UNAVAILABLE" });
+  });
+});
+
+describe("A2a Arbitrum One HTLC funding finality", () => {
+  beforeEach(() => {
+    vi.stubEnv("THENCE_EVM_RPCS_JSON", JSON.stringify({ "137": "https://fixture.invalid", "42161": "https://fixture.invalid" }));
+    setSettlementChainForTests(arbitrumChain());
+  });
+
+  it("verifies the independently pinned v7 HTLC only after the block is finalized", async () => {
+    const result = await verifyHtlcFunding(arbitrumInput());
+    expect(result).toMatchObject({ verdict: "VERIFIED", confirmations: 1 });
+  });
+
+  it("does not copy Polygon's 32-confirmation rule onto Arbitrum", async () => {
+    setSettlementChainForTests(arbitrumChain({ getLatestBlockNumber: async () => ARBITRUM_BLOCK, getFinalizedBlockNumber: async () => ARBITRUM_BLOCK }));
+    expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("VERIFIED");
+  });
+
+  it("fails closed when finalized ancestry is unavailable, stale, or inconsistent", async () => {
+    setSettlementChainForTests(arbitrumChain({ getFinalizedBlockNumber: async () => null }));
+    expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("INCONCLUSIVE");
+
+    setSettlementChainForTests(arbitrumChain({ getLatestBlockNumber: async () => ARBITRUM_BLOCK + 10n, getFinalizedBlockNumber: async () => ARBITRUM_BLOCK - 1n }));
+    expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("PENDING");
+
+    setSettlementChainForTests(arbitrumChain({ getFinalizedBlockNumber: async () => ARBITRUM_BLOCK + 1n }));
+    expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("INCONCLUSIVE");
+  });
+
+  it("does not allow a confirmation-only override or an RPC failure to authorize a claim", async () => {
+    vi.stubEnv("THENCE_SETTLEMENT_FINALITY_JSON", JSON.stringify({ "42161": { mode: "confirmations", confirmations: 1 } }));
+    setSettlementChainForTests(arbitrumChain({ getFinalizedBlockNumber: async () => null }));
+    expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("INCONCLUSIVE");
+
+    setSettlementChainForTests(arbitrumChain({ getFinalizedBlockNumber: async () => { throw new Error("finality rpc 502"); } }));
+    expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("UNAVAILABLE");
   });
 });
 

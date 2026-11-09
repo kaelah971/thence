@@ -68,13 +68,15 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
 };
 
 /**
- * HTLC contracts the pilot trusts per chain (Satora HTLCErc20 v6). Provider-
- * named addresses outside this set are refused for both P4 no-activity proofs
- * and P5 refund attribution: a provider pointer to another contract is never
- * evidence about this swap.
+ * HTLC contracts the verifier trusts per chain. Polygon keeps the deployed v6
+ * address used by the pilot; Arbitrum uses the independently verified current
+ * v7 deployment. Provider-named addresses outside this set are refused for
+ * both P4 no-activity proofs and P5 refund attribution: a provider pointer to
+ * another contract is never evidence about this swap.
  */
 export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
   137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
+  42161: ["0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748"],
 };
 
 export function isTrustedHtlc(chainId: number, address: string | null | undefined): boolean {
@@ -610,7 +612,7 @@ export async function verifyEvmRefundEvidence(input: {
   }
 }
 
-/** HTLCErc20 v6 fund event topic (verified against the real 2026-11-02 fund receipt). */
+/** HTLCErc20 SwapCreated fund event topic (verified against the deployed ABI and the real 2026-11-02 fund receipt). */
 export const SWAP_FUNDED_EVENT_TOPIC =
   "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f" as const;
 /**
@@ -633,10 +635,11 @@ export interface HtlcFundingResult {
  * P3 — the pinned HTLC really holds THIS swap's lock with THIS deadline.
  *
  * Read-only. Requires the provider-named fund transaction to be mined,
- * successful, reorg-consistent and sufficiently confirmed, and to contain
+ * successful, reorg-consistent and final enough for its chain, and to contain
  * the pinned HTLC's fund event with topic[1] = hash lock and the timelock
- * (data word 2) equal to the deadline Thence stored at bind time. Anything
- * else is not VERIFIED, and a claim is not authorized.
+ * (data word 2) equal to the deadline Thence stored at bind time. Polygon
+ * keeps its exact 32-confirmation policy; Arbitrum requires finalized ancestry.
+ * Anything else is not VERIFIED, and a claim is not authorized.
  */
 export async function verifyHtlcFunding(input: {
   chainId: number;
@@ -645,7 +648,9 @@ export async function verifyHtlcFunding(input: {
   fundTxHash: string | null;
   expectedLocktimeSec: number;
 }): Promise<HtlcFundingResult> {
-  if (input.chainId !== 137) return { verdict: "INCONCLUSIVE", reason: "Funding verification is enabled only for Polygon in this pilot.", confirmations: null };
+  if (input.chainId !== 137 && input.chainId !== 42161) {
+    return { verdict: "INCONCLUSIVE", reason: "Funding verification is enabled only for Polygon and Arbitrum in this pilot.", confirmations: null };
+  }
   if (!isTrustedHtlc(input.chainId, input.htlcAddress)) return { verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
   if (!HASH_LOCK_RE.test(input.hashLock)) return { verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
   if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "PENDING", reason: "The provider has not reported a funding transaction yet.", confirmations: null };
@@ -671,6 +676,23 @@ export async function verifyHtlcFunding(input: {
     if (atHeight.toLowerCase() !== receipt.blockHash.toLowerCase()) return { verdict: "INCONCLUSIVE", reason: "Block hash changed at the funding height; possible reorg.", confirmations: null };
     const latest = await chain.getLatestBlockNumber(input.chainId);
     const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
+    if (input.chainId === 42161) {
+      // Arbitrum sequencer confirmations are soft finality. Do not let a
+      // confirmation-count override weaken this funding gate: only the RPC's
+      // L1-anchored `finalized` block is sufficient to authorize a claim.
+      const finalized = await chain.getFinalizedBlockNumber(input.chainId);
+      if (finalized === null) {
+        return { verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide.", confirmations: null };
+      }
+      if (finalized > latest) {
+        return { verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.", confirmations: null };
+      }
+      if (receipt.blockNumber > finalized) {
+        return { verdict: "PENDING", reason: "Arbitrum funding is confirmed but not yet covered by finalized ancestry.", confirmations };
+      }
+      return { verdict: "VERIFIED", reason: "The pinned Arbitrum HTLC holds this swap's lock with the bound deadline in finalized ancestry.", confirmations };
+    }
+    // Preserve Polygon's existing exact 32-confirmation policy.
     if (confirmations < CLAIM_FUNDING_MIN_CONFIRMATIONS) {
       return { verdict: "PENDING", reason: `Funding has ${confirmations} confirmations; ${CLAIM_FUNDING_MIN_CONFIRMATIONS} are required before finishing.`, confirmations };
     }
