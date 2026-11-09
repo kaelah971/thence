@@ -8,6 +8,7 @@
  * deviation must stop a claim before the preimage could be revealed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { keccak256 } from "viem";
 import fixture from "./fixtures/incidents-2026-11-02.json";
 import {
   CHAIN_READ_TIMEOUT_MS,
@@ -33,10 +34,27 @@ const receipts = INC.polygon.receipts as Record<string, RawReceipt>;
 const blocks = INC.polygon.blocks as Record<string, { hash: string }>;
 const fundBlock = BigInt(receipts[FUND_TX]!.blockNumber);
 const ARBITRUM_HTLC = "0x6c38bf44a327bf36bfbeFcedc514c0fb3fec6748";
+const HTLC_TOKEN = INC.satora.getSwap.wbtc_address;
+const HTLC_AMOUNT = INC.satora.getSwap.evm_expected_sats;
+const HTLC_REFUND_ADDRESS = INC.satora.getSwap.server_evm_address;
+const HTLC_CLAIM_ADDRESS = INC.satora.getSwap.client_evm_address;
 const ARBITRUM_FUND_TX = `0x${"ab".repeat(32)}`;
 const ARBITRUM_BLOCK = 90_000_000n;
 const ARBITRUM_BLOCK_HASH = `0x${"a1".repeat(32)}`;
-const ARBITRUM_FUND_DATA = `0x${"0".repeat(24)}af88d065e77c8cc2239327c5edb3a432268e5831${receipts[FUND_TX]!.logs.find((l) => l.topics[0] === SWAP_FUNDED_EVENT_TOPIC)!.data.slice(66)}`;
+const hexWord = (value: bigint | number | string) => BigInt(value).toString(16).padStart(64, "0");
+const addressWord = (value: string) => value.slice(2).toLowerCase().padStart(64, "0");
+const addressTopic = (value: string) => `0x${addressWord(value)}`;
+const swapKey = (hashLock: string, amount: bigint | number | string, token: string, refundAddress: string, claimAddress: string, timelock: bigint | number | string) =>
+  keccak256(`0x${[hashLock.slice(2), hexWord(amount), addressWord(token), addressWord(refundAddress), addressWord(claimAddress), hexWord(timelock)].join("")}` as `0x${string}`);
+const swapCreatedData = (over: { token?: string; amount?: bigint | number | string; refundAddress?: string; claimAddress?: string; timelock?: bigint | number | string } = {}) => {
+  const token = over.token ?? HTLC_TOKEN;
+  const amount = over.amount ?? HTLC_AMOUNT;
+  const refundAddress = over.refundAddress ?? HTLC_REFUND_ADDRESS;
+  const claimAddress = over.claimAddress ?? HTLC_CLAIM_ADDRESS;
+  const timelock = over.timelock ?? LOCKTIME;
+  return `0x${addressWord(token)}${hexWord(amount)}${hexWord(timelock)}${swapKey(LOCK, amount, token, refundAddress, claimAddress, timelock).slice(2)}`;
+};
+const ARBITRUM_FUND_DATA = swapCreatedData();
 
 function chain(over: Partial<ChainReads> = {}): ChainReads {
   return {
@@ -60,10 +78,35 @@ function chain(over: Partial<ChainReads> = {}): ChainReads {
   };
 }
 
-const input = (over: Partial<Parameters<typeof verifyHtlcFunding>[0]> = {}) => ({ chainId: 137, htlcAddress: HTLC, hashLock: LOCK, fundTxHash: FUND_TX as string | null, expectedLocktimeSec: LOCKTIME, ...over });
-const arbitrumInput = (over: Partial<Parameters<typeof verifyHtlcFunding>[0]> = {}) => ({ chainId: 42161, htlcAddress: ARBITRUM_HTLC, hashLock: LOCK, fundTxHash: ARBITRUM_FUND_TX, expectedLocktimeSec: LOCKTIME, ...over });
+const input = (over: Partial<Parameters<typeof verifyHtlcFunding>[0]> = {}) => ({
+  chainId: 137,
+  htlcAddress: HTLC,
+  hashLock: LOCK,
+  fundTxHash: FUND_TX as string | null,
+  expectedLocktimeSec: LOCKTIME,
+  expectedTokenAddress: HTLC_TOKEN,
+  expectedAmountAtomic: HTLC_AMOUNT,
+  expectedRefundAddress: HTLC_REFUND_ADDRESS,
+  expectedClaimAddress: HTLC_CLAIM_ADDRESS,
+  ...over,
+});
+const arbitrumInput = (over: Partial<Parameters<typeof verifyHtlcFunding>[0]> = {}) => ({
+  chainId: 42161,
+  htlcAddress: ARBITRUM_HTLC,
+  hashLock: LOCK,
+  fundTxHash: ARBITRUM_FUND_TX,
+  expectedLocktimeSec: LOCKTIME,
+  expectedTokenAddress: HTLC_TOKEN,
+  expectedAmountAtomic: HTLC_AMOUNT,
+  expectedRefundAddress: HTLC_REFUND_ADDRESS,
+  expectedClaimAddress: HTLC_CLAIM_ADDRESS,
+  ...over,
+});
 
-function arbitrumChain(over: Partial<ChainReads> = {}): ChainReads {
+function arbitrumChain(
+  over: Partial<ChainReads> = {},
+  event: { data: string; refundAddress: string; claimAddress: string } = { data: ARBITRUM_FUND_DATA, refundAddress: HTLC_REFUND_ADDRESS, claimAddress: HTLC_CLAIM_ADDRESS },
+): ChainReads {
   return chain({
     getReceipt: async (_chainId, hash) =>
       hash.toLowerCase() === ARBITRUM_FUND_TX
@@ -71,7 +114,7 @@ function arbitrumChain(over: Partial<ChainReads> = {}): ChainReads {
             status: "success" as const,
             blockNumber: ARBITRUM_BLOCK,
             blockHash: ARBITRUM_BLOCK_HASH,
-            logs: [{ address: ARBITRUM_HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`], data: ARBITRUM_FUND_DATA, logIndex: 1 }],
+            logs: [{ address: ARBITRUM_HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK, addressTopic(event.refundAddress), addressTopic(event.claimAddress)], data: event.data, logIndex: 1 }],
           }
         : null,
     getLatestBlockNumber: async () => ARBITRUM_BLOCK,
@@ -146,6 +189,32 @@ describe("A2a Arbitrum One HTLC funding finality", () => {
   it("does not copy Polygon's 32-confirmation rule onto Arbitrum", async () => {
     setSettlementChainForTests(arbitrumChain({ getLatestBlockNumber: async () => ARBITRUM_BLOCK, getFinalizedBlockNumber: async () => ARBITRUM_BLOCK }));
     expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("VERIFIED");
+  });
+
+  it("rejects a finalized same-hash event with unrelated HTLC terms", async () => {
+    const cases: Array<{ token?: string; amount?: bigint | number | string; refundAddress?: string; claimAddress?: string }> = [
+      { token: "0xaf88d065e77c8cc2239327c5edb3a432268e5831" },
+      { amount: BigInt(HTLC_AMOUNT) + 1n },
+      { claimAddress: "0x0000000000000000000000000000000000000bad" },
+    ];
+    for (const terms of cases) {
+      const event = {
+        data: swapCreatedData(terms),
+        refundAddress: terms.refundAddress ?? HTLC_REFUND_ADDRESS,
+        claimAddress: terms.claimAddress ?? HTLC_CLAIM_ADDRESS,
+      };
+      setSettlementChainForTests(arbitrumChain({}, event));
+      expect(await verifyHtlcFunding(arbitrumInput())).toMatchObject({ verdict: "INVALID" });
+    }
+  });
+
+  it("uses the locked WBTC terms, not the final native-USDC route terms", async () => {
+    expect(HTLC_TOKEN.toLowerCase()).not.toBe("0xaf88d065e77c8cc2239327c5edb3a432268e5831");
+    expect(await verifyHtlcFunding(arbitrumInput())).toMatchObject({ verdict: "VERIFIED" });
+  });
+
+  it("does not guess when the provider omits HTLC identity terms", async () => {
+    expect(await verifyHtlcFunding(arbitrumInput({ expectedTokenAddress: null, expectedAmountAtomic: null, expectedRefundAddress: null, expectedClaimAddress: null }))).toMatchObject({ verdict: "INCONCLUSIVE" });
   });
 
   it("fails closed when finalized ancestry is unavailable, stale, or inconsistent", async () => {

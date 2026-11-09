@@ -87,7 +87,17 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
   const funding: HtlcFundingResult =
     locktimeSec === null
       ? { verdict: "INCONCLUSIVE", reason: "The claim deadline is not known.", confirmations: null }
-      : await verifyHtlcFunding({ chainId: facts.evmChainId, htlcAddress: facts.evmHtlcAddress, hashLock: attachment.paymentHash, fundTxHash: facts.evmFundTxid, expectedLocktimeSec: locktimeSec });
+      : await verifyHtlcFunding({
+          chainId: facts.evmChainId,
+          htlcAddress: facts.evmHtlcAddress,
+          hashLock: attachment.paymentHash,
+          fundTxHash: facts.evmFundTxid,
+          expectedLocktimeSec: locktimeSec,
+          expectedTokenAddress: facts.evmHtlcTokenAddress,
+          expectedAmountAtomic: facts.evmHtlcAmountAtomic,
+          expectedRefundAddress: facts.evmHtlcRefundAddress,
+          expectedClaimAddress: facts.evmHtlcClaimAddress,
+        });
   // P7: a re-authorization (earlier attempt's outcome unknown) needs the
   // chain's own word that nothing redeemed or refunded this lock.
   const spend = transfer.status === "CLAIMING"

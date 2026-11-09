@@ -445,6 +445,14 @@ export interface VerifiedSwapFacts {
   evmFundTxid: string | null;
   evmClaimTxid: string | null;
   /**
+   * The actual HTLC terms echoed by Satora. The lock token is usually WBTC,
+   * not the final route token (for example native USDC after redeemAndExecute).
+   */
+  evmHtlcTokenAddress?: string | null;
+  evmHtlcAmountAtomic?: string | null;
+  evmHtlcRefundAddress?: string | null;
+  evmHtlcClaimAddress?: string | null;
+  /**
    * P2: Satora `evm_refund_locktime` (unix seconds) — the Polygon claim
    * deadline, fixed at swap CREATION. Null when the provider omits it or it
    * is not a positive safe integer. Plausibility is checked by callers
@@ -502,6 +510,10 @@ export async function getProviderSwap(swapId: string): Promise<VerifiedSwapFacts
   }
   const readTxid = (value: unknown): string | null =>
     typeof value === "string" && value.length > 0 && value.length <= 200 ? value : null;
+  const readAddress = (value: unknown): string | null =>
+    typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value) ? value : null;
+  const readAtomic = (value: unknown): string | null =>
+    typeof value === "string" && /^[0-9]+$/.test(value) ? value : null;
   return {
     satoraSwapId: s["id"] as string,
     direction: typeof s["direction"] === "string" ? (s["direction"] as string) : "",
@@ -516,9 +528,13 @@ export async function getProviderSwap(swapId: string): Promise<VerifiedSwapFacts
     status: typeof s["status"] === "string" ? (s["status"] as string) : "",
     invoiceExpiresAt,
     feeSats: typeof s["fee_sats"] === "number" && Number.isFinite(s["fee_sats"]) ? (s["fee_sats"] as number) : 0,
-    evmHtlcAddress: readTxid(s["evm_htlc_address"] ?? s["evmHtlcAddress"]),
+    evmHtlcAddress: readAddress(s["evm_htlc_address"] ?? s["evmHtlcAddress"]),
     evmFundTxid: readTxid(s["evm_fund_txid"] ?? s["evmFundTxid"]),
     evmClaimTxid: readTxid(s["evm_claim_txid"] ?? s["evmClaimTxid"]),
+    evmHtlcTokenAddress: readAddress(s["wbtc_address"]),
+    evmHtlcAmountAtomic: readAtomic(s["evm_expected_sats"]),
+    evmHtlcRefundAddress: readAddress(s["server_evm_address"]),
+    evmHtlcClaimAddress: readAddress(s["client_evm_address"]),
     evmRefundLocktime: (() => {
       const raw = s["evm_refund_locktime"];
       return typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 ? raw : null;
