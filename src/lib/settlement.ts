@@ -20,7 +20,7 @@
  *   unrelated token movements are ignored, never counted.
  */
 import { and, eq } from "drizzle-orm";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, http, keccak256 } from "viem";
 import { arbitrum, mainnet, polygon } from "viem/chains";
 import type { Hex, PublicClient } from "viem";
 import { getDb } from "@/lib/db";
@@ -68,13 +68,15 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
 };
 
 /**
- * HTLC contracts the pilot trusts per chain (Satora HTLCErc20 v6). Provider-
- * named addresses outside this set are refused for both P4 no-activity proofs
- * and P5 refund attribution: a provider pointer to another contract is never
- * evidence about this swap.
+ * HTLC contracts the verifier trusts per chain. Polygon keeps the deployed v6
+ * address used by the pilot; Arbitrum uses the independently verified current
+ * v7 deployment. Provider-named addresses outside this set are refused for
+ * both P4 no-activity proofs and P5 refund attribution: a provider pointer to
+ * another contract is never evidence about this swap.
  */
 export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
   137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
+  42161: ["0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748"],
 };
 
 export function isTrustedHtlc(chainId: number, address: string | null | undefined): boolean {
@@ -528,6 +530,29 @@ export interface RefundVerificationResult {
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const HASH_LOCK_RE = /^0x[0-9a-fA-F]{64}$/;
+const U256_WORD_RE = /^[0-9a-fA-F]{64}$/;
+
+function abiWord(value: string): string {
+  return value.replace(/^0x/, "").padStart(64, "0");
+}
+
+function computeHtlcSwapKey(input: {
+  hashLock: string;
+  amount: bigint;
+  token: string;
+  refundAddress: string;
+  claimAddress: string;
+  timelock: bigint;
+}): string {
+  return keccak256(`0x${[
+    abiWord(input.hashLock),
+    input.amount.toString(16).padStart(64, "0"),
+    abiWord(input.token),
+    abiWord(input.refundAddress),
+    abiWord(input.claimAddress),
+    input.timelock.toString(16).padStart(64, "0"),
+  ].join("")}` as `0x${string}`);
+}
 
 /**
  * Independently verify a provider-reported EVM refund. This is read-only and
@@ -610,7 +635,7 @@ export async function verifyEvmRefundEvidence(input: {
   }
 }
 
-/** HTLCErc20 v6 fund event topic (verified against the real 2026-11-02 fund receipt). */
+/** HTLCErc20 SwapCreated fund event topic (verified against the deployed ABI and the real 2026-11-02 fund receipt). */
 export const SWAP_FUNDED_EVENT_TOPIC =
   "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f" as const;
 /**
@@ -633,10 +658,13 @@ export interface HtlcFundingResult {
  * P3 — the pinned HTLC really holds THIS swap's lock with THIS deadline.
  *
  * Read-only. Requires the provider-named fund transaction to be mined,
- * successful, reorg-consistent and sufficiently confirmed, and to contain
- * the pinned HTLC's fund event with topic[1] = hash lock and the timelock
- * (data word 2) equal to the deadline Thence stored at bind time. Anything
- * else is not VERIFIED, and a claim is not authorized.
+ * successful, reorg-consistent and final enough for its chain, and to contain
+ * the pinned HTLC's fund event with the complete bound SwapKey identity:
+ * hash lock, refund address, claim address, locked token, amount and timelock.
+ * The target route token/amount are deliberately not used here: Satora's
+ * Lightning→EVM flow locks WBTC and redeemAndExecute swaps it to the target.
+ * Polygon keeps its exact 32-confirmation policy; Arbitrum requires finalized
+ * ancestry. Anything else is not VERIFIED, and a claim is not authorized.
  */
 export async function verifyHtlcFunding(input: {
   chainId: number;
@@ -644,11 +672,33 @@ export async function verifyHtlcFunding(input: {
   hashLock: string;
   fundTxHash: string | null;
   expectedLocktimeSec: number;
+  /** Actual token locked in the HTLC, not the final route token. */
+  expectedTokenAddress: string | null | undefined;
+  expectedAmountAtomic: string | null | undefined;
+  expectedRefundAddress: string | null | undefined;
+  expectedClaimAddress: string | null | undefined;
 }): Promise<HtlcFundingResult> {
-  if (input.chainId !== 137) return { verdict: "INCONCLUSIVE", reason: "Funding verification is enabled only for Polygon in this pilot.", confirmations: null };
+  if (input.chainId !== 137 && input.chainId !== 42161) {
+    return { verdict: "INCONCLUSIVE", reason: "Funding verification is enabled only for Polygon and Arbitrum in this pilot.", confirmations: null };
+  }
   if (!isTrustedHtlc(input.chainId, input.htlcAddress)) return { verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
   if (!HASH_LOCK_RE.test(input.hashLock)) return { verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
   if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "PENDING", reason: "The provider has not reported a funding transaction yet.", confirmations: null };
+  if (
+    !input.expectedTokenAddress || !EVM_ADDRESS_RE.test(input.expectedTokenAddress) ||
+    !input.expectedAmountAtomic || !/^[0-9]+$/.test(input.expectedAmountAtomic) ||
+    !input.expectedRefundAddress || !EVM_ADDRESS_RE.test(input.expectedRefundAddress) ||
+    !input.expectedClaimAddress || !EVM_ADDRESS_RE.test(input.expectedClaimAddress)
+  ) {
+    return { verdict: "INCONCLUSIVE", reason: "Expected HTLC identity terms are unavailable; refusing to guess.", confirmations: null };
+  }
+  let expectedAmount: bigint;
+  try {
+    expectedAmount = BigInt(input.expectedAmountAtomic);
+  } catch {
+    return { verdict: "INCONCLUSIVE", reason: "Expected HTLC amount is malformed; refusing to guess.", confirmations: null };
+  }
+  if (expectedAmount <= 0n) return { verdict: "INCONCLUSIVE", reason: "Expected HTLC amount is invalid; refusing to guess.", confirmations: null };
   const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
   if (!rpcs[String(input.chainId)]) return { verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain; refusing to guess.", confirmations: null };
   const chain = reads();
@@ -662,15 +712,62 @@ export async function verifyHtlcFunding(input: {
     );
     if (!fund) return { verdict: "INVALID", reason: "Funding receipt has no fund event for this hash lock on the pinned HTLC.", confirmations: null };
     const words = fund.data.startsWith("0x") ? fund.data.slice(2) : fund.data;
+    if (words.length !== 256 || !/^[0-9a-fA-F]+$/.test(words) || fund.topics.length < 4 || !fund.topics[2] || !fund.topics[3] || !U256_WORD_RE.test(fund.topics[2].replace(/^0x/, "")) || !U256_WORD_RE.test(fund.topics[3].replace(/^0x/, ""))) {
+      return { verdict: "INVALID", reason: "Funding receipt has a malformed SwapCreated identity.", confirmations: null };
+    }
+    const tokenWord = words.slice(0, 64);
+    const amountWord = words.slice(64, 128);
     const lockWord = words.slice(128, 192);
-    if (!/^[0-9a-fA-F]{64}$/.test(lockWord) || BigInt("0x" + lockWord) !== BigInt(input.expectedLocktimeSec)) {
+    const keyWord = words.slice(192, 256);
+    const token = `0x${tokenWord.slice(24)}`;
+    const refundAddress = `0x${fund.topics[2].replace(/^0x/, "").slice(-40)}`;
+    const claimAddress = `0x${fund.topics[3].replace(/^0x/, "").slice(-40)}`;
+    const amount = BigInt(`0x${amountWord}`);
+    const timelock = BigInt(`0x${lockWord}`);
+    if (timelock !== BigInt(input.expectedLocktimeSec)) {
       return { verdict: "INVALID", reason: "On-chain HTLC deadline differs from the bound claim deadline.", confirmations: null };
+    }
+    if (
+      token.toLowerCase() !== input.expectedTokenAddress.toLowerCase() ||
+      amount !== expectedAmount ||
+      refundAddress.toLowerCase() !== input.expectedRefundAddress.toLowerCase() ||
+      claimAddress.toLowerCase() !== input.expectedClaimAddress.toLowerCase()
+    ) {
+      return { verdict: "INVALID", reason: "On-chain SwapCreated terms do not match the bound HTLC identity.", confirmations: null };
+    }
+    const expectedKey = computeHtlcSwapKey({
+      hashLock: input.hashLock,
+      amount: expectedAmount,
+      token: input.expectedTokenAddress,
+      refundAddress: input.expectedRefundAddress,
+      claimAddress: input.expectedClaimAddress,
+      timelock,
+    });
+    if (`0x${keyWord}`.toLowerCase() !== expectedKey.toLowerCase()) {
+      return { verdict: "INVALID", reason: "On-chain SwapCreated key does not match the bound HTLC terms.", confirmations: null };
     }
     const atHeight = await chain.getBlockHash(input.chainId, receipt.blockNumber);
     if (!atHeight) return { verdict: "INCONCLUSIVE", reason: "Chain header evidence is unavailable; refusing to decide.", confirmations: null };
     if (atHeight.toLowerCase() !== receipt.blockHash.toLowerCase()) return { verdict: "INCONCLUSIVE", reason: "Block hash changed at the funding height; possible reorg.", confirmations: null };
     const latest = await chain.getLatestBlockNumber(input.chainId);
     const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
+    if (input.chainId === 42161) {
+      // Arbitrum sequencer confirmations are soft finality. Do not let a
+      // confirmation-count override weaken this funding gate: only the RPC's
+      // L1-anchored `finalized` block is sufficient to authorize a claim.
+      const finalized = await chain.getFinalizedBlockNumber(input.chainId);
+      if (finalized === null) {
+        return { verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide.", confirmations: null };
+      }
+      if (finalized > latest) {
+        return { verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.", confirmations: null };
+      }
+      if (receipt.blockNumber > finalized) {
+        return { verdict: "PENDING", reason: "Arbitrum funding is confirmed but not yet covered by finalized ancestry.", confirmations };
+      }
+      return { verdict: "VERIFIED", reason: "The pinned Arbitrum HTLC holds this swap's lock with the bound deadline in finalized ancestry.", confirmations };
+    }
+    // Preserve Polygon's existing exact 32-confirmation policy.
     if (confirmations < CLAIM_FUNDING_MIN_CONFIRMATIONS) {
       return { verdict: "PENDING", reason: `Funding has ${confirmations} confirmations; ${CLAIM_FUNDING_MIN_CONFIRMATIONS} are required before finishing.`, confirmations };
     }

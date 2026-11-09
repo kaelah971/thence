@@ -12,6 +12,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
+import { keccak256 } from "viem";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import fixture from "./fixtures/incidents-2026-11-02.json";
@@ -38,9 +39,14 @@ const LOCK = INC.attachment.payment_hash;
 const HTLC = INC.satora.getSwap.evm_htlc_address;
 const EVM_A = "0x0000000000000000000000000000000000000001";
 const USDC = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+const HTLC_TOKEN = INC.satora.getSwap.wbtc_address;
+const HTLC_REFUND_ADDRESS = INC.satora.getSwap.server_evm_address;
+const HTLC_CLAIM_ADDRESS = INC.satora.getSwap.client_evm_address;
 const hex32 = (tag: string) => "0x" + createHash("sha256").update(`p3-${RUN}-${tag}`).digest("hex");
 const pad = (addr: string) => "0x" + "00".repeat(12) + addr.slice(2).toLowerCase();
 const word = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
+const syntheticSwapKey = (hashLock: string, amount: bigint | number, token: string, refundAddress: string, claimAddress: string, timelock: number) =>
+  keccak256(`0x${[hashLock.slice(2), word(amount), pad(token).slice(2), pad(refundAddress).slice(2), pad(claimAddress).slice(2), word(timelock)].join("")}` as `0x${string}`);
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 /* --------------------------- synthetic chain --------------------------- */
@@ -69,7 +75,7 @@ function syntheticChain(): ChainReads {
           status: "success" as const,
           blockNumber: FUND_BLOCK,
           blockHash: `0x${"f0".repeat(32)}`,
-          logs: [{ address: HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK, pad("0x5ce278aaec6d9fa67bfcaf98512fe5175dfeebac"), pad("0x204e6e1ba85effb5212042ff16b4205ce6cddddd")], data: "0x" + word(BigInt("0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6")) + word(392) + word(lock) + "9d".repeat(32), logIndex: 1 }],
+          logs: [{ address: HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK, pad(HTLC_REFUND_ADDRESS), pad(HTLC_CLAIM_ADDRESS)], data: "0x" + word(BigInt(`0x${HTLC_TOKEN.slice(2)}`)) + word(392) + word(lock) + syntheticSwapKey(LOCK, 392, HTLC_TOKEN, HTLC_REFUND_ADDRESS, HTLC_CLAIM_ADDRESS, lock).slice(2), logIndex: 1 }],
         };
       }
       if (claimReceipts.has(hash)) {
@@ -141,6 +147,10 @@ const swapShape = (p: Pick<Pay, "swapId" | "sourceSats" | "lock">, over: Record<
   evm_htlc_address: HTLC,
   target_evm_address: EVM_A,
   target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: USDC },
+  wbtc_address: HTLC_TOKEN,
+  evm_expected_sats: "392",
+  server_evm_address: HTLC_REFUND_ADDRESS,
+  client_evm_address: HTLC_CLAIM_ADDRESS,
   status: "pending",
   invoice_expires_at: nowSec() + 5400,
   evm_refund_locktime: p.lock,

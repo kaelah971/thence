@@ -18,6 +18,7 @@
  * No real Lightning, Satora, Polygon or Nimiq system is ever contacted.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { keccak256 } from "viem";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:https";
 import { readFileSync } from "node:fs";
@@ -97,6 +98,8 @@ const state = {
 const hex32 = () => "0x" + randomBytes(32).toString("hex");
 const word = (n: bigint | number | string) => BigInt(n).toString(16).padStart(64, "0");
 const pad = (addr: string) => "0x" + "00".repeat(12) + addr.slice(2).toLowerCase();
+const swapKey = (hashLock: string, amount: bigint | number | string, token: string, refundAddress: string, claimAddress: string, timelock: bigint | number | string) =>
+  keccak256(`0x${[hashLock.slice(2), word(amount), pad(token).slice(2), pad(refundAddress).slice(2), pad(claimAddress).slice(2), word(timelock)].join("")}` as `0x${string}`);
 const blockHash = (n: number) => "0x" + createHash("sha256").update(`block-${n}`).digest("hex");
 const toHex = (n: number | bigint) => "0x" + BigInt(n).toString(16);
 const blockTs = (n: number) => BASE_TS + (n - BASE_BLOCK) * 2;
@@ -366,7 +369,9 @@ function control(action: string, body: Record<string, unknown>): unknown {
       // SIMULATED: Nimiq Pay paid the hold invoice; Satora locks the USDC
       // route's WBTC in the pinned HTLC with this swap's hash lock + deadline.
       const swap = swapOrThrow(body["swapId"]);
-      const r = addReceipt([{ address: HTLC, topics: [FUND_TOPIC, swap.hashLock, pad(SERVER_EVM), pad(COORDINATOR)], data: "0x" + word(BigInt(WBTC)) + word(392) + word(Number(swap.record["evm_refund_locktime"])) + "9d".repeat(32) }]);
+      const claimAddress = String(swap.record["client_evm_address"]);
+      const timelock = Number(swap.record["evm_refund_locktime"]);
+      const r = addReceipt([{ address: HTLC, topics: [FUND_TOPIC, swap.hashLock, pad(SERVER_EVM), pad(claimAddress)], data: "0x" + word(BigInt(WBTC)) + word(392) + word(timelock) + swapKey(swap.hashLock, 392, WBTC, SERVER_EVM, claimAddress, timelock).slice(2) }]);
       swap.record["status"] = "serverfunded";
       swap.record["evm_fund_txid"] = r.hash;
       state.latest += Number(body["confirmations"] ?? 40);
