@@ -120,7 +120,18 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
   // P7: a re-authorization (earlier attempt's outcome unknown) needs the
   // chain's own word that nothing redeemed or refunded this lock.
   const spend = transfer.status === "CLAIMING"
-    ? (await verifyHtlcUnspent({ chainId: facts.evmChainId, htlcAddress: facts.evmHtlcAddress, hashLock: attachment.paymentHash, fundTxHash: facts.evmFundTxid })).verdict
+    ? (await verifyHtlcUnspent({
+        chainId: facts.evmChainId,
+        htlcAddress: facts.evmHtlcAddress,
+        hashLock: attachment.paymentHash,
+        fundTxHash: facts.evmFundTxid,
+        expectedLocktimeSec: locktimeSec,
+        expectedTokenAddress: facts.evmHtlcTokenAddress,
+        expectedAmountAtomic: facts.evmHtlcAmountAtomic,
+        expectedRefundAddress: facts.evmHtlcRefundAddress,
+        expectedClaimAddress: facts.evmHtlcClaimAddress,
+        fundingVerdict: funding.verdict,
+      })).verdict
     : null;
   return { facts, routeMatches, funding, lifecycle, spend, gatheredAt: Date.now() };
 }

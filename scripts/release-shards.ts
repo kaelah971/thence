@@ -45,6 +45,7 @@ export const SHARDS: Record<string, string[]> = {
     "p4-chain-diagnostics",
     "p5-refund-consistency",
     "p3-claim-verification",
+    "p7-arbitrum-recovery",
     "payments-mode",
   ],
   S2: ["reconciliation", "settlement", "f42-handoff", "f812-attach-recovery", "f812-retire-replace"],

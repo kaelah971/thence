@@ -39,7 +39,7 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
-import { verifyHtlcRefund, type HtlcRefundResult } from "@/lib/settlement";
+import { verifyHtlcFunding, verifyHtlcRefund, type HtlcFundingResult, type HtlcRefundResult } from "@/lib/settlement";
 import { recordPath } from "@/lib/transitions";
 import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
 
@@ -289,13 +289,39 @@ async function gatherEvidence(
   const providerStatus = facts.status || "unknown";
   if (REFUNDED_PROVIDER_STATUSES.has(providerStatus) && transfer.status !== "REFUNDED") {
     const locktimeSec = facts.evmRefundLocktime ?? (attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null);
-    refund = await verifyHtlcRefund({
-      chainId: facts.evmChainId,
-      htlcAddress: facts.evmHtlcAddress,
-      hashLock: attachment.paymentHash,
-      providerRefundTxHash: facts.evmClaimTxid,
-      earliestRefundAt: locktimeSec !== null ? new Date(locktimeSec * 1000) : attachment.createdAt,
-    });
+    // On Arbitrum, re-check the bound fund receipt first. This independently
+    // anchors the terms used to derive the v7 SwapKey before a refund event can
+    // affect reconciliation; current provider terms alone are not sufficient.
+    let funding: HtlcFundingResult | null = null;
+    if (facts.evmChainId === 42161) {
+      funding = locktimeSec === null
+        ? { verdict: "INCONCLUSIVE", reason: "The Arbitrum funding deadline is unavailable.", confirmations: null }
+        : await verifyHtlcFunding({
+            chainId: facts.evmChainId,
+            htlcAddress: facts.evmHtlcAddress,
+            hashLock: attachment.paymentHash,
+            fundTxHash: facts.evmFundTxid,
+            expectedLocktimeSec: locktimeSec,
+            expectedTokenAddress: facts.evmHtlcTokenAddress,
+            expectedAmountAtomic: facts.evmHtlcAmountAtomic,
+            expectedRefundAddress: facts.evmHtlcRefundAddress,
+            expectedClaimAddress: facts.evmHtlcClaimAddress,
+          });
+    }
+    refund = funding && funding.verdict !== "VERIFIED"
+      ? { verdict: "INCONCLUSIVE", reason: `Arbitrum funding identity is not independently verified: ${funding.reason}`, confirmations: funding.confirmations, refundTxHash: null, source: null }
+      : await verifyHtlcRefund({
+          chainId: facts.evmChainId,
+          htlcAddress: facts.evmHtlcAddress,
+          hashLock: attachment.paymentHash,
+          providerRefundTxHash: facts.evmClaimTxid,
+          earliestRefundAt: locktimeSec !== null ? new Date(locktimeSec * 1000) : attachment.createdAt,
+          expectedLocktimeSec: locktimeSec,
+          expectedTokenAddress: facts.evmHtlcTokenAddress,
+          expectedAmountAtomic: facts.evmHtlcAmountAtomic,
+          expectedRefundAddress: facts.evmHtlcRefundAddress,
+          expectedClaimAddress: facts.evmHtlcClaimAddress,
+        });
   }
   return { kind: "facts", facts, refund };
 }
@@ -473,9 +499,9 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
               refundVerified: REFUNDED_PROVIDER_STATUSES.has(providerStatus) ? true : null,
               ...(REFUNDED_PROVIDER_STATUSES.has(providerStatus) && evidence.refund
                 ? {
-                    // Polygon-side only: the provider's USDC lock went back to the
+                    // EVM-side only: the provider's lock went back to the
                     // provider. Nimiq Pay's NIM side is not observable by Thence.
-                    refundScope: "polygon_htlc",
+                    refundScope: facts.evmChainId === 137 ? "polygon_htlc" : "arbitrum_htlc",
                     refundTxHash: evidence.refund.refundTxHash,
                     refundEvidenceSource: evidence.refund.source,
                     refundConfirmations: evidence.refund.confirmations,

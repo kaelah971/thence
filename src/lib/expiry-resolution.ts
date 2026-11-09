@@ -162,6 +162,7 @@ export interface ExpiredUnfundedEvidence {
     chainId: number;
     htlcAddress: string;
     hashLock: string;
+    activityMatching: "hash_lock_conservative";
     windowStart: string;
     windowEnd: string;
     verdict: "NO_ACTIVITY";
@@ -336,6 +337,10 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
   if (nonChain) throw refusal(nonChain);
   const window = scanWindow(attachment, facts);
   if (!window) throw refusal("INVOICE_NOT_SETTLED");
+  // Arbitrum no-activity closure intentionally does not narrow the scan with
+  // current provider HTLC terms: those terms are not immutably persisted in
+  // swap_attachments. The verifier therefore scans every lifecycle event for
+  // this bound payment hash and treats any one as activity.
   const chain = await verifyNoHtlcActivity({
     chainId: facts.evmChainId,
     htlcAddress: facts.evmHtlcAddress,
@@ -368,6 +373,7 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
       chainId: facts.evmChainId,
       htlcAddress: (facts.evmHtlcAddress ?? "").toLowerCase(),
       hashLock: attachment.paymentHash.toLowerCase(),
+      activityMatching: "hash_lock_conservative",
       windowStart: window.start.toISOString(),
       windowEnd: window.end.toISOString(),
       verdict: "NO_ACTIVITY",

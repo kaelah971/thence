@@ -126,7 +126,7 @@ export function checkTransferConsistency(s: ConsistencySnapshot, opts: { require
     const into = chain.find((t) => t.toStatus === "REFUNDED");
     const ev = (into?.evidence ?? {}) as Record<string, unknown>;
     if (!into || ev["refundVerified"] !== true) {
-      v.push({ code: "REFUNDED_WITHOUT_VERIFIED_REFUND", detail: "REFUNDED requires an audited, independently verified Polygon HTLC refund." });
+      v.push({ code: "REFUNDED_WITHOUT_VERIFIED_REFUND", detail: "REFUNDED requires an audited, independently verified EVM HTLC refund." });
     }
   }
   if (chain.length === 0) {
