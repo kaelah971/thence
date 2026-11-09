@@ -61,7 +61,7 @@ import {
 import { canTransition, type TransferStatus } from "@/domain/transfers";
 import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
-import { TRUSTED_HTLC_CONTRACTS, verifyNoHtlcActivity, type HtlcActivityResult } from "@/lib/settlement";
+import { computeHtlcSwapKey, TRUSTED_HTLC_CONTRACTS, verifyNoHtlcActivity, type HtlcActivityResult } from "@/lib/settlement";
 import { isUniqueViolation, recordTransition } from "@/lib/transitions";
 
 type Db = ReturnType<typeof getDb>;
@@ -162,6 +162,7 @@ export interface ExpiredUnfundedEvidence {
     chainId: number;
     htlcAddress: string;
     hashLock: string;
+    swapKey: string | null;
     windowStart: string;
     windowEnd: string;
     verdict: "NO_ACTIVITY";
@@ -336,10 +337,35 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
   if (nonChain) throw refusal(nonChain);
   const window = scanWindow(attachment, facts);
   if (!window) throw refusal("INVOICE_NOT_SETTLED");
+  let expectedSwapKey: string | null = null;
+  if (facts.evmChainId === 42161) {
+    try {
+      if (
+        facts.evmRefundLocktime === null ||
+        !Number.isSafeInteger(facts.evmRefundLocktime) ||
+        facts.evmRefundLocktime <= 0 ||
+        !facts.evmHtlcTokenAddress ||
+        !facts.evmHtlcAmountAtomic ||
+        !facts.evmHtlcRefundAddress ||
+        !facts.evmHtlcClaimAddress
+      ) throw new Error("missing Arbitrum SwapKey terms");
+      expectedSwapKey = computeHtlcSwapKey({
+        hashLock: attachment.paymentHash,
+        amount: BigInt(facts.evmHtlcAmountAtomic),
+        token: facts.evmHtlcTokenAddress,
+        refundAddress: facts.evmHtlcRefundAddress,
+        claimAddress: facts.evmHtlcClaimAddress,
+        timelock: BigInt(facts.evmRefundLocktime),
+      });
+    } catch {
+      expectedSwapKey = null;
+    }
+  }
   const chain = await verifyNoHtlcActivity({
     chainId: facts.evmChainId,
     htlcAddress: facts.evmHtlcAddress,
     hashLock: attachment.paymentHash,
+    expectedSwapKey,
     windowStart: window.start,
     windowEnd: window.end,
   });
@@ -368,6 +394,7 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
       chainId: facts.evmChainId,
       htlcAddress: (facts.evmHtlcAddress ?? "").toLowerCase(),
       hashLock: attachment.paymentHash.toLowerCase(),
+      swapKey: expectedSwapKey,
       windowStart: window.start.toISOString(),
       windowEnd: window.end.toISOString(),
       verdict: "NO_ACTIVITY",

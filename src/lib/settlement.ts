@@ -36,9 +36,13 @@ import { recordTransition } from "@/lib/transitions";
 /** ERC20 Transfer(address,address,uint256) event topic (protocol constant). */
 export const TRANSFER_EVENT_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" as const;
-/** HTLC refund event: SwapRefunded(bytes32 indexed preimageHash, bytes32 indexed key). */
+/** HTLC lifecycle event topics, verified against the pinned HTLCErc20 v7 ABI. */
+export const SWAP_REDEEMED_EVENT_TOPIC =
+  "0x935f11873f0f4154186d30d8d4181c7694ac59f800873f9c44b0a5122043660a" as const;
 export const SWAP_REFUNDED_EVENT_TOPIC =
   "0xdb5ade4effa253aae9bef95994b76da3fe75eb0d634e715ec4261c6fd55c06f1" as const;
+export const SWAP_REHASHED_EVENT_TOPIC =
+  "0x54e7aaf61f7d94f49a761b306cc6ead18e2e3ce3fd40197cbd2cad8ff2aaf04a" as const;
 
 type Db = ReturnType<typeof getDb>;
 
@@ -319,18 +323,20 @@ export interface RefundLogMatch {
 
 /**
  * Pure HTLC refund matcher. A refund is attributable only when the provider's
- * transaction receipt emitted SwapRefunded from the exact bound HTLC and the
- * exact swap hash lock. Provider status and a transaction pointer alone never
- * count as refund proof.
+ * transaction receipt emitted SwapRefunded from the exact bound HTLC, hash
+ * lock, and (for v7) complete SwapKey. Provider status and a transaction
+ * pointer alone never count as refund proof.
  */
-export function matchRefundEvent(logs: ChainLog[], htlcAddress: string, hashLock: string): RefundLogMatch {
+export function matchRefundEvent(logs: ChainLog[], htlcAddress: string, hashLock: string, expectedSwapKey?: string | null): RefundLogMatch {
   const htlc = htlcAddress.toLowerCase();
   const lock = hashLock.toLowerCase();
+  const key = expectedSwapKey?.toLowerCase() ?? null;
   const indexes: number[] = [];
   for (const log of logs) {
     if (log.address.toLowerCase() !== htlc) continue;
     if (log.topics.length < 3 || log.topics[0]?.toLowerCase() !== SWAP_REFUNDED_EVENT_TOPIC) continue;
     if (log.topics[1]?.toLowerCase() !== lock) continue;
+    if (key !== null && log.topics[2]?.toLowerCase() !== key) continue;
     if (typeof log.logIndex === "number") indexes.push(log.logIndex);
   }
   indexes.sort((a, b) => a - b);
@@ -481,13 +487,19 @@ export async function verifyNoHtlcActivity(input: {
   chainId: number;
   htlcAddress: string | null;
   hashLock: string;
+  /** Required on Arbitrum v7; Polygon retains its historical hash-lock scan. */
+  expectedSwapKey?: string | null;
   windowStart: Date;
   windowEnd: Date;
 }): Promise<HtlcActivityResult> {
   const base = { fromBlock: null, toBlock: null, latestBlock: null, logCount: 0, eventTopics: [] as string[] };
-  if (input.chainId !== 137) return { ...base, verdict: "INCONCLUSIVE", reason: "HTLC scans are enabled only for Polygon in this pilot." };
+  if (input.chainId !== 137 && input.chainId !== 42161) return { ...base, verdict: "INCONCLUSIVE", reason: "HTLC scans are enabled only for Polygon and Arbitrum." };
   if (!input.htlcAddress || !EVM_ADDRESS_RE.test(input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
     return { ...base, verdict: "INCONCLUSIVE", reason: "Missing a valid HTLC address or hash lock to scan." };
+  }
+  const expectedKey = input.expectedSwapKey?.toLowerCase() ?? null;
+  if (input.chainId === 42161 && (!expectedKey || !HASH_LOCK_RE.test(expectedKey))) {
+    return { ...base, verdict: "INCONCLUSIVE", reason: "Complete Arbitrum SwapKey evidence is unavailable; refusing to guess." };
   }
   if (!(input.windowEnd.getTime() > input.windowStart.getTime())) {
     return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window is empty." };
@@ -506,6 +518,14 @@ export async function verifyNoHtlcActivity(input: {
   let op = "getBlockNumber";
   try {
     const latest = await chain.getLatestBlockNumber(input.chainId);
+    let finalized: bigint | null = null;
+    if (input.chainId === 42161) {
+      // Never substitute a confirmation count for Arbitrum's L1-finalized tag.
+      finalized = await chain.getFinalizedBlockNumber(input.chainId);
+      if (finalized === null) return { ...base, verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide." };
+      if (finalized > latest) return { ...base, verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide." };
+      if (!(await chain.getBlockHash(input.chainId, finalized))) return { ...base, verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide." };
+    }
     const startTs = Math.floor(input.windowStart.getTime() / 1000);
     const endTs = Math.ceil(input.windowEnd.getTime() / 1000);
     op = "blockSearch(windowStart)";
@@ -521,9 +541,13 @@ export async function verifyNoHtlcActivity(input: {
     if ((await getTs(input.chainId, toBlock)) < endTs) {
       return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "The chain has not yet reached the end of the scan window." };
     }
-    const policy = DEFAULT_FINALITY_POLICY[input.chainId]!;
-    if (latest - toBlock + 1n < BigInt(policy.confirmations)) {
-      return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Scan window end does not yet have the required confirmations." };
+    if (input.chainId === 42161) {
+      if (toBlock > finalized!) return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Arbitrum has not finalized the complete scan window." };
+    } else {
+      const policy = DEFAULT_FINALITY_POLICY[input.chainId]!;
+      if (latest - toBlock + 1n < BigInt(policy.confirmations)) {
+        return { ...base, ...span, verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Scan window end does not yet have the required confirmations." };
+      }
     }
     if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
       return { ...base, ...span, verdict: "INCONCLUSIVE", reason: "Scan window exceeds the bounded block range." };
@@ -537,19 +561,34 @@ export async function verifyNoHtlcActivity(input: {
       const logs = await getLogs(input.chainId, input.htlcAddress, input.hashLock, s, e);
       for (const log of logs) {
         // Defensive re-filter: never trust the RPC's own filtering for a match.
-        if (log.address.toLowerCase() === htlc && log.topics[1]?.toLowerCase() === lock) matches.push(log);
+        if (log.address.toLowerCase() !== htlc || log.topics[1]?.toLowerCase() !== lock) continue;
+        if (input.chainId === 42161 && !matchHtlcLifecycleLog(log, expectedKey!)) continue;
+        matches.push(log);
       }
+    }
+    if (input.chainId === 42161 && (await chain.getLatestBlockNumber(input.chainId)) !== latest) {
+      return { ...base, ...span, verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during the activity scan; refusing to decide." };
     }
     if (matches.length > 0) {
       return {
         ...span,
         verdict: "ACTIVITY_FOUND",
-        reason: "The HTLC emitted events for this hash lock; the swap was funded on-chain.",
+        reason: input.chainId === 42161
+          ? "The pinned Arbitrum HTLC emitted a lifecycle event for the complete SwapKey."
+          : "The HTLC emitted events for this hash lock; the swap was funded on-chain.",
         logCount: matches.length,
         eventTopics: matches.map((l) => (l.topics[0] ?? "").toLowerCase()),
       };
     }
-    return { ...span, verdict: "NO_ACTIVITY", reason: "No HTLC event for this hash lock in the finalized scan window.", logCount: 0, eventTopics: [] };
+    return {
+      ...span,
+      verdict: "NO_ACTIVITY",
+      reason: input.chainId === 42161
+        ? "No lifecycle event for this Arbitrum SwapKey in the finalized scan window."
+        : "No HTLC event for this hash lock in the finalized scan window.",
+      logCount: 0,
+      eventTopics: [],
+    };
   } catch (err) {
     // Verdict unchanged: any failed read is UNAVAILABLE, never "no activity".
     // Only a sanitized cause is added and logged so operators can act on it.
@@ -611,12 +650,18 @@ export async function verifyEvmRefundEvidence(input: {
   refundTxHash: string;
   htlcAddress: string | null;
   hashLock: string;
+  /** Required for Arbitrum v7; Polygon keeps its historical hash-lock matcher. */
+  expectedSwapKey?: string | null;
 }): Promise<RefundVerificationResult> {
-  if (input.chainId !== 137) {
-    return { verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon in this pilot.", confirmations: null };
+  if (input.chainId !== 137 && input.chainId !== 42161) {
+    return { verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon and Arbitrum.", confirmations: null };
   }
   if (!TX_HASH_RE.test(input.refundTxHash) || !input.htlcAddress || !EVM_ADDRESS_RE.test(input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
     return { verdict: "INVALID", reason: "Provider refund evidence is missing a valid transaction, HTLC, or hash-lock identity.", confirmations: null };
+  }
+  const expectedKey = input.expectedSwapKey?.toLowerCase() ?? null;
+  if (input.chainId === 42161 && (!expectedKey || !HASH_LOCK_RE.test(expectedKey))) {
+    return { verdict: "INCONCLUSIVE", reason: "Complete Arbitrum SwapKey evidence is unavailable; refusing to guess.", confirmations: null };
   }
   const htlcAddress = input.htlcAddress;
   if (!(input.chainId in SETTLEMENT_CHAINS)) {
@@ -640,9 +685,9 @@ export async function verifyEvmRefundEvidence(input: {
   if (receipt.status === "reverted") {
     return { verdict: "INVALID", reason: "Refund transaction reverted on-chain.", confirmations: null };
   }
-  const match = matchRefundEvent(receipt.logs, htlcAddress, input.hashLock);
+  const match = matchRefundEvent(receipt.logs, htlcAddress, input.hashLock, expectedKey);
   if (!match.matched) {
-    return { verdict: "INVALID", reason: "Refund receipt does not contain a matching SwapRefunded event for this HTLC.", confirmations: null };
+    return { verdict: "INVALID", reason: "Refund receipt does not contain a matching SwapRefunded event for this HTLC and SwapKey.", confirmations: null };
   }
 
   try {
@@ -655,8 +700,10 @@ export async function verifyEvmRefundEvidence(input: {
     return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
   }
 
+  // Arbitrum always requires the node's L1-finalized tag. A configurable
+  // confirmation count must never weaken this gate.
   const overrides = getEnv().THENCE_SETTLEMENT_FINALITY_JSON as Record<string, { mode: string; confirmations: number }>;
-  const policy = overrides[String(input.chainId)] ?? DEFAULT_FINALITY_POLICY[input.chainId]!;
+  const policy = input.chainId === 42161 ? DEFAULT_FINALITY_POLICY[42161]! : overrides[String(input.chainId)] ?? DEFAULT_FINALITY_POLICY[input.chainId]!;
   try {
     if (policy.mode === "finalized") {
       const finalized = await chain.getFinalizedBlockNumber(input.chainId);
@@ -664,11 +711,18 @@ export async function verifyEvmRefundEvidence(input: {
       const latest = await chain.getLatestBlockNumber(input.chainId);
       // F9.2: finalized above the node's own head is inconsistent evidence.
       if (finalized > latest) return { verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.", confirmations: null };
+      if (input.chainId === 42161 && !(await chain.getBlockHash(input.chainId, finalized))) {
+        return { verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide.", confirmations: null };
+      }
       const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
       if (receipt.blockNumber > finalized) {
         return { verdict: "INSUFFICIENT_CONFIRMATIONS", reason: "Refund is confirmed but not yet covered by finalized ancestry.", confirmations };
       }
-      return { verdict: "VERIFIED", reason: "Polygon refund independently verified on-chain.", confirmations };
+      return {
+        verdict: "VERIFIED",
+        reason: input.chainId === 42161 ? "Arbitrum refund independently verified against the exact SwapKey in finalized ancestry." : "Polygon refund independently verified on-chain.",
+        confirmations,
+      };
     }
     const latest = await chain.getLatestBlockNumber(input.chainId);
     const confirmations = Math.max(0, Number(latest) - Number(receipt.blockNumber) + 1);
@@ -684,6 +738,28 @@ export async function verifyEvmRefundEvidence(input: {
 /** HTLCErc20 SwapCreated fund event topic (verified against the deployed ABI and the real 2026-11-02 fund receipt). */
 export const SWAP_FUNDED_EVENT_TOPIC =
   "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f" as const;
+
+/**
+ * Match a v7 lifecycle log to its complete SwapKey. SwapCreated stores the
+ * key in its final data word; redeem/refund index it as topic[2]; rehash
+ * indexes the old and new keys as topic[2] and topic[3].
+ */
+export function matchHtlcLifecycleLog(log: ChainLog, expectedSwapKey: string): boolean {
+  const topic = log.topics[0]?.toLowerCase();
+  const key = expectedSwapKey.toLowerCase();
+  if (topic === SWAP_FUNDED_EVENT_TOPIC) {
+    const data = log.data.replace(/^0x/, "");
+    return data.length >= 256 && `0x${data.slice(-64)}`.toLowerCase() === key;
+  }
+  if (topic === SWAP_REDEEMED_EVENT_TOPIC || topic === SWAP_REFUNDED_EVENT_TOPIC) {
+    return log.topics[2]?.toLowerCase() === key;
+  }
+  if (topic === SWAP_REHASHED_EVENT_TOPIC) {
+    return log.topics[2]?.toLowerCase() === key || log.topics[3]?.toLowerCase() === key;
+  }
+  return false;
+}
+
 /**
  * P3: confirmations the fund tx needs before the owner may reveal the
  * preimage. Polygon reorgs this deep are not expected; the margin protects
@@ -957,13 +1033,66 @@ export async function verifyHtlcUnspent(input: {
   htlcAddress: string | null;
   hashLock: string;
   fundTxHash: string | null;
+  /** Required for Arbitrum v7 so the scan is tied to the complete bound key. */
+  expectedLocktimeSec?: number | null;
+  expectedTokenAddress?: string | null | undefined;
+  expectedAmountAtomic?: string | null | undefined;
+  expectedRefundAddress?: string | null | undefined;
+  expectedClaimAddress?: string | null | undefined;
+  /** Funding must already have passed the chain-specific funding gate. */
+  fundingVerdict?: HtlcFundingVerdict;
 }): Promise<{ verdict: HtlcSpendVerdict; reason: string }> {
-  if (input.chainId !== 137 || !isTrustedHtlc(input.chainId, input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
-    return { verdict: "INCONCLUSIVE", reason: "No pinned Polygon HTLC to check." };
+  if ((input.chainId !== 137 && input.chainId !== 42161) || !isTrustedHtlc(input.chainId, input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
+    return { verdict: "INCONCLUSIVE", reason: "No pinned HTLC to check." };
   }
   if (!input.fundTxHash || !TX_HASH_RE.test(input.fundTxHash)) return { verdict: "INCONCLUSIVE", reason: "No funding transaction to scan from." };
   const rpcs = getEnv().THENCE_EVM_RPCS_JSON as Record<string, string>;
   if (!rpcs[String(input.chainId)]) return { verdict: "INCONCLUSIVE", reason: "No trusted RPC is configured for this chain." };
+  let expectedSwapKey: string | null = null;
+  if (input.chainId === 42161) {
+    if (
+      input.fundingVerdict !== "VERIFIED" ||
+      !Number.isSafeInteger(input.expectedLocktimeSec) ||
+      input.expectedLocktimeSec! <= 0 ||
+      !input.expectedTokenAddress || !EVM_ADDRESS_RE.test(input.expectedTokenAddress) ||
+      !input.expectedAmountAtomic || !/^[0-9]+$/.test(input.expectedAmountAtomic) ||
+      !input.expectedRefundAddress || !EVM_ADDRESS_RE.test(input.expectedRefundAddress) ||
+      !input.expectedClaimAddress || !EVM_ADDRESS_RE.test(input.expectedClaimAddress)
+    ) {
+      return { verdict: "INCONCLUSIVE", reason: "Complete finalized Arbitrum HTLC identity is unavailable; refusing to retry." };
+    }
+    try {
+      const amount = BigInt(input.expectedAmountAtomic);
+      if (amount <= 0n) return { verdict: "INCONCLUSIVE", reason: "Expected Arbitrum HTLC amount is invalid; refusing to retry." };
+      expectedSwapKey = computeHtlcSwapKey({
+        hashLock: input.hashLock,
+        amount,
+        token: input.expectedTokenAddress,
+        refundAddress: input.expectedRefundAddress,
+        claimAddress: input.expectedClaimAddress,
+        timelock: BigInt(input.expectedLocktimeSec!),
+      });
+    } catch {
+      return { verdict: "INCONCLUSIVE", reason: "Expected Arbitrum HTLC identity is malformed; refusing to retry." };
+    }
+    // A2b1's finalized + current-head gate is repeated here rather than
+    // trusting a caller's earlier snapshot. Rehashes and terminal states are
+    // all refusal evidence for the original key.
+    const lifecycle = await verifyHtlcLifecycle({
+      chainId: input.chainId,
+      htlcAddress: input.htlcAddress,
+      hashLock: input.hashLock,
+      expectedLocktimeSec: input.expectedLocktimeSec!,
+      expectedTokenAddress: input.expectedTokenAddress,
+      expectedAmountAtomic: input.expectedAmountAtomic,
+      expectedRefundAddress: input.expectedRefundAddress,
+      expectedClaimAddress: input.expectedClaimAddress,
+      fundingVerdict: input.fundingVerdict!,
+    });
+    if (lifecycle.verdict === "REJECTED") return { verdict: "SPENT", reason: `The original Arbitrum HTLC key is not active: ${lifecycle.reason}` };
+    if (lifecycle.verdict === "UNAVAILABLE") return { verdict: "UNAVAILABLE", reason: lifecycle.reason };
+    if (lifecycle.verdict !== "ACTIVE") return { verdict: "INCONCLUSIVE", reason: lifecycle.reason };
+  }
   const chain = reads();
   if (!chain.getLogsByTopic1) return { verdict: "INCONCLUSIVE", reason: "Chain reader cannot scan HTLC logs." };
   const htlc = input.htlcAddress!.toLowerCase();
@@ -971,18 +1100,37 @@ export async function verifyHtlcUnspent(input: {
   try {
     const receipt = await chain.getReceipt(input.chainId, input.fundTxHash);
     if (!receipt || receipt.status !== "success") return { verdict: "INCONCLUSIVE", reason: "Funding receipt is unavailable." };
+    if (input.chainId === 42161) {
+      const atHeight = await chain.getBlockHash(input.chainId, receipt.blockNumber);
+      if (!atHeight) return { verdict: "INCONCLUSIVE", reason: "Funding header evidence is unavailable; refusing to retry." };
+      if (atHeight.toLowerCase() !== receipt.blockHash.toLowerCase()) return { verdict: "INCONCLUSIVE", reason: "Funding block hash changed; refusing to retry." };
+    }
     const latest = await chain.getLatestBlockNumber(input.chainId);
-    if (latest - receipt.blockNumber + 1n > MAX_HTLC_SCAN_BLOCKS) return { verdict: "INCONCLUSIVE", reason: "Scan range exceeds the bound." };
+    if (latest < receipt.blockNumber || latest - receipt.blockNumber + 1n > MAX_HTLC_SCAN_BLOCKS) return { verdict: "INCONCLUSIVE", reason: "Scan range exceeds the bound." };
+    let sawFunding = false;
     for (let s = receipt.blockNumber; s <= latest; s += HTLC_LOG_CHUNK_BLOCKS) {
       const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > latest ? latest : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
       const logs = await chain.getLogsByTopic1(input.chainId, htlc, lock, s, e);
       for (const log of logs) {
         if (log.address.toLowerCase() !== htlc || log.topics[1]?.toLowerCase() !== lock) continue;
-        if (log.topics[0]?.toLowerCase() === SWAP_FUNDED_EVENT_TOPIC) continue;
-        return { verdict: "SPENT", reason: "The HTLC already emitted a redeem or refund event for this lock." };
+        if (input.chainId === 42161 && !matchHtlcLifecycleLog(log, expectedSwapKey!)) continue;
+        if (log.topics[0]?.toLowerCase() === SWAP_FUNDED_EVENT_TOPIC) {
+          sawFunding = true;
+          continue;
+        }
+        return {
+          verdict: "SPENT",
+          reason: input.chainId === 42161
+            ? "The original Arbitrum SwapKey emitted a redeem, refund or rehash event."
+            : "The HTLC already emitted a redeem or refund event for this lock.",
+        };
       }
     }
-    return { verdict: "UNSPENT", reason: "Only the funding event exists for this lock on the pinned HTLC." };
+    if (input.chainId === 42161) {
+      if ((await chain.getLatestBlockNumber(input.chainId)) !== latest) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during the retry scan; refusing to retry." };
+      if (!sawFunding) return { verdict: "INCONCLUSIVE", reason: "The bounded Arbitrum scan did not prove the complete SwapKey was funded." };
+    }
+    return { verdict: "UNSPENT", reason: input.chainId === 42161 ? "The complete original Arbitrum SwapKey has only its funding event through a stable current head." : "Only the funding event exists for this lock on the pinned HTLC." };
   } catch {
     return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable." };
   }
@@ -1016,10 +1164,16 @@ export async function verifyHtlcRefund(input: {
   providerRefundTxHash: string | null;
   /** Earliest time a refund could exist on-chain (the EVM refund locktime, else the bind time). */
   earliestRefundAt: Date;
+  /** Complete bound terms used to derive the v7 SwapKey on Arbitrum. */
+  expectedLocktimeSec?: number | null;
+  expectedTokenAddress?: string | null | undefined;
+  expectedAmountAtomic?: string | null | undefined;
+  expectedRefundAddress?: string | null | undefined;
+  expectedClaimAddress?: string | null | undefined;
 }): Promise<HtlcRefundResult> {
   const none = { refundTxHash: null, source: null } as const;
-  if (input.chainId !== 137) {
-    return { ...none, verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon in this pilot.", confirmations: null };
+  if (input.chainId !== 137 && input.chainId !== 42161) {
+    return { ...none, verdict: "INCONCLUSIVE", reason: "Refund verification is enabled only for Polygon and Arbitrum.", confirmations: null };
   }
   if (!isTrustedHtlc(input.chainId, input.htlcAddress)) {
     return { ...none, verdict: "INVALID", reason: "Provider names an HTLC contract outside the pinned trust list.", confirmations: null };
@@ -1027,10 +1181,37 @@ export async function verifyHtlcRefund(input: {
   if (!HASH_LOCK_RE.test(input.hashLock)) {
     return { ...none, verdict: "INVALID", reason: "Bound swap has no valid hash lock.", confirmations: null };
   }
+  let expectedSwapKey: string | null = null;
+  if (input.chainId === 42161) {
+    if (
+      !Number.isSafeInteger(input.expectedLocktimeSec) ||
+      input.expectedLocktimeSec! <= 0 ||
+      !input.expectedTokenAddress || !EVM_ADDRESS_RE.test(input.expectedTokenAddress) ||
+      !input.expectedAmountAtomic || !/^[0-9]+$/.test(input.expectedAmountAtomic) ||
+      !input.expectedRefundAddress || !EVM_ADDRESS_RE.test(input.expectedRefundAddress) ||
+      !input.expectedClaimAddress || !EVM_ADDRESS_RE.test(input.expectedClaimAddress)
+    ) {
+      return { ...none, verdict: "INCONCLUSIVE", reason: "Complete bound Arbitrum SwapKey terms are unavailable; refusing to guess.", confirmations: null };
+    }
+    try {
+      const amount = BigInt(input.expectedAmountAtomic);
+      if (amount <= 0n) return { ...none, verdict: "INCONCLUSIVE", reason: "Bound Arbitrum HTLC amount is invalid; refusing to guess.", confirmations: null };
+      expectedSwapKey = computeHtlcSwapKey({
+        hashLock: input.hashLock,
+        amount,
+        token: input.expectedTokenAddress,
+        refundAddress: input.expectedRefundAddress,
+        claimAddress: input.expectedClaimAddress,
+        timelock: BigInt(input.expectedLocktimeSec!),
+      });
+    } catch {
+      return { ...none, verdict: "INCONCLUSIVE", reason: "Bound Arbitrum SwapKey terms are malformed; refusing to guess.", confirmations: null };
+    }
+  }
   const htlc = input.htlcAddress!.toLowerCase();
   const pointer = input.providerRefundTxHash && TX_HASH_RE.test(input.providerRefundTxHash) ? input.providerRefundTxHash : null;
   if (pointer) {
-    const viaPointer = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: pointer, htlcAddress: htlc, hashLock: input.hashLock });
+    const viaPointer = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: pointer, htlcAddress: htlc, hashLock: input.hashLock, expectedSwapKey });
     // Anything but INVALID (verified, still confirming, chain unavailable) is
     // the answer. INVALID means the pointer is not this swap's refund: fall
     // back to the HTLC's own event log rather than trusting or rejecting it.
@@ -1057,7 +1238,18 @@ export async function verifyHtlcRefund(input: {
       return { ...none, verdict: "INCONCLUSIVE", reason: "Refund scan window starts before chain history.", confirmations: null };
     }
     let toBlock = latest;
-    if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
+    if (input.chainId === 42161) {
+      // Missing or misleading provider pointers are recoverable only through a
+      // complete scan ending at finalized ancestry. Never truncate Arbitrum's
+      // relevant window and silently claim absence.
+      const finalized = await chain.getFinalizedBlockNumber(input.chainId);
+      if (finalized === null) return { ...none, verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide.", confirmations: null };
+      if (finalized > latest) return { ...none, verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.", confirmations: null };
+      if (!(await chain.getBlockHash(input.chainId, finalized))) return { ...none, verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide.", confirmations: null };
+      toBlock = finalized;
+      if (toBlock < fromBlock) return { ...none, verdict: "INCONCLUSIVE", reason: "Arbitrum has not finalized the refund scan window.", confirmations: null };
+      if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) return { ...none, verdict: "INCONCLUSIVE", reason: "Arbitrum refund scan window exceeds the bounded complete range.", confirmations: null };
+    } else if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) {
       toBlock = fromBlock + MAX_HTLC_SCAN_BLOCKS - 1n;
       truncated = true;
     }
@@ -1069,14 +1261,18 @@ export async function verifyHtlcRefund(input: {
         if (log.address.toLowerCase() !== htlc) continue;
         if (log.topics[0]?.toLowerCase() !== SWAP_REFUNDED_EVENT_TOPIC) continue;
         if (log.topics[1]?.toLowerCase() !== input.hashLock.toLowerCase()) continue;
+        if (input.chainId === 42161 && !matchHtlcLifecycleLog(log, expectedSwapKey!)) continue;
         if (log.transactionHash && TX_HASH_RE.test(log.transactionHash)) found.add(log.transactionHash.toLowerCase());
       }
+    }
+    if (input.chainId === 42161 && (await chain.getLatestBlockNumber(input.chainId)) !== latest) {
+      return { ...none, verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during refund discovery; refusing to decide.", confirmations: null };
     }
   } catch {
     return { ...none, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
   }
   if (found.size > 1) {
-    return { ...none, verdict: "INCONCLUSIVE", reason: "More than one refund event names this hash lock; refusing to choose.", confirmations: null };
+    return { ...none, verdict: "INCONCLUSIVE", reason: "More than one refund event names this swap; refusing to choose.", confirmations: null };
   }
   const [txHash] = [...found];
   if (!txHash) {
@@ -1085,11 +1281,13 @@ export async function verifyHtlcRefund(input: {
       verdict: "INCONCLUSIVE",
       reason: truncated
         ? "No refund event found in the bounded scan window."
-        : "No refund event for this hash lock on the HTLC yet.",
+        : input.chainId === 42161
+          ? "No SwapRefunded event for this complete Arbitrum SwapKey in finalized ancestry yet."
+          : "No refund event for this hash lock on the HTLC yet.",
       confirmations: null,
     };
   }
-  const viaScan = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: txHash, htlcAddress: htlc, hashLock: input.hashLock });
+  const viaScan = await verifyEvmRefundEvidence({ chainId: input.chainId, refundTxHash: txHash, htlcAddress: htlc, hashLock: input.hashLock, expectedSwapKey });
   return { ...viaScan, refundTxHash: txHash, source: "htlc_log_scan" };
 }
 
