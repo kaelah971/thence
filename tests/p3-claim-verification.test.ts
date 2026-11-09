@@ -13,12 +13,14 @@ import fixture from "./fixtures/incidents-2026-11-02.json";
 import {
   CHAIN_READ_TIMEOUT_MS,
   CLAIM_FUNDING_MIN_CONFIRMATIONS,
+  HTLC_SWAP_STATE,
   SWAP_FUNDED_EVENT_TOPIC,
   setSettlementChainForTests,
   verifyHtlcFunding,
+  verifyHtlcLifecycle,
   type ChainReads,
 } from "@/lib/settlement";
-import { claimIdentityProblem } from "@/lib/claim-intent";
+import { claimIdentityProblem, claimLifecycleProblem } from "@/lib/claim-intent";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 
 const INC = fixture.incident_077770a1;
@@ -120,6 +122,7 @@ function arbitrumChain(
     getLatestBlockNumber: async () => ARBITRUM_BLOCK,
     getFinalizedBlockNumber: async () => ARBITRUM_BLOCK,
     getBlockHash: async (_chainId, blockNumber) => (blockNumber === ARBITRUM_BLOCK ? ARBITRUM_BLOCK_HASH : null),
+    getHtlcSwapState: async () => ({ state: HTLC_SWAP_STATE.ACTIVE, preimage: `0x${"00".repeat(32)}` }),
     ...over,
   });
 }
@@ -235,6 +238,75 @@ describe("A2a Arbitrum One HTLC funding finality", () => {
 
     setSettlementChainForTests(arbitrumChain({ getFinalizedBlockNumber: async () => { throw new Error("finality rpc 502"); } }));
     expect((await verifyHtlcFunding(arbitrumInput())).verdict).toBe("UNAVAILABLE");
+  });
+});
+
+describe("A2b1 Arbitrum v7 HTLC lifecycle safety", () => {
+  beforeEach(() => {
+    vi.stubEnv("THENCE_EVM_RPCS_JSON", JSON.stringify({ "137": "https://fixture.invalid", "42161": "https://fixture.invalid" }));
+    setSettlementChainForTests(arbitrumChain());
+  });
+
+  const lifecycleInput = (over: Partial<Parameters<typeof verifyHtlcLifecycle>[0]> = {}) => ({
+    ...arbitrumInput(),
+    fundingVerdict: "VERIFIED" as const,
+    ...over,
+  });
+  const state = (value: number) => ({ state: value, preimage: `0x${"00".repeat(32)}` });
+
+  it("accepts the complete bound key only when Active at finalized state and current head", async () => {
+    const result = await verifyHtlcLifecycle(lifecycleInput());
+    expect(result).toMatchObject({ verdict: "ACTIVE", finalizedState: "ACTIVE", latestState: "ACTIVE" });
+  });
+
+  it.each([
+    ["Rehashed", HTLC_SWAP_STATE.REHASHED],
+    ["Redeemed", HTLC_SWAP_STATE.REDEEMED],
+    ["Refunded", HTLC_SWAP_STATE.REFUNDED],
+  ])("rejects an original key that is %s at the current head", async (_label, value) => {
+    setSettlementChainForTests(arbitrumChain({ getHtlcSwapState: async () => state(value) }));
+    expect(await verifyHtlcLifecycle(lifecycleInput())).toMatchObject({ verdict: "REJECTED", latestState: _label.toUpperCase() });
+  });
+
+  it("rejects an unknown key and fails closed on an unknown enum value", async () => {
+    setSettlementChainForTests(arbitrumChain({ getHtlcSwapState: async () => state(HTLC_SWAP_STATE.NONE) }));
+    expect(await verifyHtlcLifecycle(lifecycleInput())).toMatchObject({ verdict: "REJECTED", latestState: "NONE" });
+    setSettlementChainForTests(arbitrumChain({ getHtlcSwapState: async () => state(99) }));
+    expect((await verifyHtlcLifecycle(lifecycleInput())).verdict).toBe("INCONCLUSIVE");
+  });
+
+  it("does not authorize a different complete key", async () => {
+    const expected = swapKey(LOCK, HTLC_AMOUNT, HTLC_TOKEN, HTLC_REFUND_ADDRESS, HTLC_CLAIM_ADDRESS, LOCKTIME).toLowerCase();
+    setSettlementChainForTests(arbitrumChain({ getHtlcSwapState: async (_c, _a, key) => state(key.toLowerCase() === expected ? HTLC_SWAP_STATE.ACTIVE : HTLC_SWAP_STATE.NONE) }));
+    expect(await verifyHtlcLifecycle(lifecycleInput({ expectedAmountAtomic: String(BigInt(HTLC_AMOUNT) + 1n) }))).toMatchObject({ verdict: "REJECTED", latestState: "NONE" });
+  });
+
+  it("fails closed when lifecycle reads, finality, or header evidence are unavailable", async () => {
+    setSettlementChainForTests(arbitrumChain({ getHtlcSwapState: async () => { throw new Error("rpc 502"); } }));
+    expect((await verifyHtlcLifecycle(lifecycleInput())).verdict).toBe("UNAVAILABLE");
+    setSettlementChainForTests(arbitrumChain({ getFinalizedBlockNumber: async () => null }));
+    expect((await verifyHtlcLifecycle(lifecycleInput())).verdict).toBe("INCONCLUSIVE");
+    setSettlementChainForTests(arbitrumChain({ getBlockHash: async () => null }));
+    expect((await verifyHtlcLifecycle(lifecycleInput())).verdict).toBe("INCONCLUSIVE");
+    const { getHtlcSwapState: _missing, ...withoutState } = arbitrumChain();
+    setSettlementChainForTests(withoutState);
+    expect((await verifyHtlcLifecycle(lifecycleInput())).verdict).toBe("INCONCLUSIVE");
+  });
+
+  it("observes a rehash that appears while the current-head read is in flight", async () => {
+    let headReads = 0;
+    setSettlementChainForTests(arbitrumChain({
+      getLatestBlockNumber: async () => headReads++ === 0 ? ARBITRUM_BLOCK : ARBITRUM_BLOCK + 1n,
+      getBlockHash: async (_c, block) => block === ARBITRUM_BLOCK || block === ARBITRUM_BLOCK + 1n ? `0x${block === ARBITRUM_BLOCK ? "a1" : "b2".repeat(1)}${block === ARBITRUM_BLOCK ? "a1".repeat(31) : "b2".repeat(31)}` : null,
+      getHtlcSwapState: async (_c, _a, _key, block) => state(block === ARBITRUM_BLOCK ? HTLC_SWAP_STATE.ACTIVE : HTLC_SWAP_STATE.REHASHED),
+    }));
+    expect(await verifyHtlcLifecycle(lifecycleInput())).toMatchObject({ verdict: "REJECTED", latestState: "REHASHED" });
+  });
+
+  it("applies the same refusal to a retry and leaves Polygon outside this gate", () => {
+    const rehashed = { verdict: "REJECTED" as const, reason: "The original Arbitrum HTLC key is REHASHED at the current chain head." };
+    expect(claimLifecycleProblem(42161, rehashed)).toMatch(/REHASHED/);
+    expect(claimLifecycleProblem(137, rehashed)).toBeNull();
   });
 });
 

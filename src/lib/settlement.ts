@@ -79,6 +79,30 @@ export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>>
   42161: ["0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748"],
 };
 
+const HTLC_STATE_ABI = [
+  {
+    type: "function",
+    name: "swapState",
+    stateMutability: "view",
+    inputs: [{ name: "key", type: "bytes32" }],
+    outputs: [
+      { name: "state", type: "uint8" },
+      { name: "preimage", type: "bytes32" },
+    ],
+  },
+] as const;
+
+/** HTLCErc20 v7 SwapState values, verified against the pinned source revision. */
+export const HTLC_SWAP_STATE = {
+  NONE: 0,
+  ACTIVE: 1,
+  REDEEMED: 2,
+  REFUNDED: 3,
+  REHASHED: 4,
+} as const;
+
+export type HtlcSwapStateName = keyof typeof HTLC_SWAP_STATE;
+
 export function isTrustedHtlc(chainId: number, address: string | null | undefined): boolean {
   if (!address) return false;
   return (TRUSTED_HTLC_CONTRACTS[chainId] ?? []).includes(address.toLowerCase());
@@ -110,6 +134,11 @@ export interface ChainReceipt {
   logs: ChainLog[];
 }
 
+export interface HtlcSwapStateSnapshot {
+  state: number;
+  preimage: string;
+}
+
 /** Read-only chain access. The implementation performs NO writes, ever. */
 export interface ChainReads {
   getTransaction(chainId: number, hash: string): Promise<ChainTransaction | null>;
@@ -119,6 +148,8 @@ export interface ChainReads {
   getFinalizedBlockNumber(chainId: number): Promise<bigint | null>;
   /** Block hash at a height (reorg detection); null when unavailable. */
   getBlockHash(chainId: number, blockNumber: bigint): Promise<string | null>;
+  /** v7 lifecycle state at an explicitly selected block, or absent in older readers. */
+  getHtlcSwapState?(chainId: number, address: string, swapKey: string, blockNumber: bigint): Promise<HtlcSwapStateSnapshot>;
   /** P4: block timestamp in unix seconds. Optional: absent means "cannot scan". */
   getBlockTimestamp?(chainId: number, blockNumber: bigint): Promise<number>;
   /**
@@ -202,6 +233,20 @@ function liveReads(): ChainReads {
         return null;
       }
     },
+    async getHtlcSwapState(chainId, address, swapKey, blockNumber) {
+      const result = await withChainTimeout(
+        clientFor(chainId).readContract({
+          address: address as Hex,
+          abi: HTLC_STATE_ABI,
+          functionName: "swapState",
+          args: [swapKey as Hex],
+          blockNumber,
+        }),
+        "getHtlcSwapState",
+      );
+      const [state, preimage] = result as readonly [number | bigint, string];
+      return { state: Number(state), preimage };
+    },
     async getBlockTimestamp(chainId, blockNumber) {
       const b = await withChainTimeout(clientFor(chainId).getBlock({ blockNumber }), "getBlock");
       return Number(b.timestamp);
@@ -246,6 +291,7 @@ function bounded(chain: ChainReads): ChainReads {
     getLatestBlockNumber: (c) => t(chain.getLatestBlockNumber(c), "getBlockNumber"),
     getFinalizedBlockNumber: (c) => t(chain.getFinalizedBlockNumber(c), "getFinalizedBlock"),
     getBlockHash: (c, n) => t(chain.getBlockHash(c, n), "getBlock"),
+    ...(chain.getHtlcSwapState ? { getHtlcSwapState: (c: number, a: string, k: string, n: bigint) => t(chain.getHtlcSwapState!(c, a, k, n), "getHtlcSwapState") } : {}),
     ...(chain.getBlockTimestamp ? { getBlockTimestamp: (c: number, n: bigint) => t(chain.getBlockTimestamp!(c, n), "getBlock") } : {}),
     ...(chain.getLogsByTopic1 ? { getLogsByTopic1: (c: number, a: string, l: string, f: bigint, e: bigint) => t(chain.getLogsByTopic1!(c, a, l, f, e), "getLogs") } : {}),
   };
@@ -536,7 +582,7 @@ function abiWord(value: string): string {
   return value.replace(/^0x/, "").padStart(64, "0");
 }
 
-function computeHtlcSwapKey(input: {
+export function computeHtlcSwapKey(input: {
   hashLock: string;
   amount: bigint;
   token: string;
@@ -774,6 +820,122 @@ export async function verifyHtlcFunding(input: {
     return { verdict: "VERIFIED", reason: "The pinned HTLC holds this swap's lock with the bound deadline.", confirmations };
   } catch {
     return { verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };
+  }
+}
+
+export type HtlcLifecycleVerdict = "ACTIVE" | "REJECTED" | "INCONCLUSIVE" | "UNAVAILABLE";
+
+export interface HtlcLifecycleResult {
+  verdict: HtlcLifecycleVerdict;
+  reason: string;
+  finalizedState?: HtlcSwapStateName;
+  latestState?: HtlcSwapStateName;
+}
+
+export interface HtlcLifecycleInput {
+  chainId: number;
+  htlcAddress: string | null;
+  hashLock: string;
+  expectedLocktimeSec: number;
+  expectedTokenAddress: string | null | undefined;
+  expectedAmountAtomic: string | null | undefined;
+  expectedRefundAddress: string | null | undefined;
+  expectedClaimAddress: string | null | undefined;
+  fundingVerdict: HtlcFundingVerdict;
+}
+
+function htlcStateName(value: number): HtlcSwapStateName | null {
+  switch (value) {
+    case HTLC_SWAP_STATE.NONE:
+      return "NONE";
+    case HTLC_SWAP_STATE.ACTIVE:
+      return "ACTIVE";
+    case HTLC_SWAP_STATE.REDEEMED:
+      return "REDEEMED";
+    case HTLC_SWAP_STATE.REFUNDED:
+      return "REFUNDED";
+    case HTLC_SWAP_STATE.REHASHED:
+      return "REHASHED";
+    default:
+      return null;
+  }
+}
+
+/**
+ * A2b1 — verify that the original Arbitrum v7 key is still active.
+ *
+ * Funding finality alone is insufficient: v7 can move the lock from the old
+ * key to a new key without another SwapCreated event. The old key is read at
+ * both finalized state and a stable current head. A terminal current-head
+ * state rejects the claim; missing, inconsistent, or stale chain evidence
+ * defers it. This intentionally never follows a rehashed key.
+ */
+export async function verifyHtlcLifecycle(input: HtlcLifecycleInput): Promise<HtlcLifecycleResult> {
+  if (input.chainId !== 42161) return { verdict: "ACTIVE", reason: "The Arbitrum lifecycle gate does not apply to this chain." };
+  if (input.fundingVerdict !== "VERIFIED") return { verdict: "INCONCLUSIVE", reason: "The bound Arbitrum funding is not independently finalized." };
+  if (!isTrustedHtlc(input.chainId, input.htlcAddress)) return { verdict: "REJECTED", reason: "Provider names an HTLC contract outside the pinned Arbitrum trust list." };
+  if (
+    !HASH_LOCK_RE.test(input.hashLock) ||
+    !Number.isSafeInteger(input.expectedLocktimeSec) ||
+    input.expectedLocktimeSec <= 0 ||
+    !input.expectedTokenAddress || !EVM_ADDRESS_RE.test(input.expectedTokenAddress) ||
+    !input.expectedAmountAtomic || !/^[0-9]+$/.test(input.expectedAmountAtomic) ||
+    !input.expectedRefundAddress || !EVM_ADDRESS_RE.test(input.expectedRefundAddress) ||
+    !input.expectedClaimAddress || !EVM_ADDRESS_RE.test(input.expectedClaimAddress)
+  ) {
+    return { verdict: "INCONCLUSIVE", reason: "Complete bound HTLC identity terms are unavailable; refusing to guess." };
+  }
+  let amount: bigint;
+  try {
+    amount = BigInt(input.expectedAmountAtomic);
+  } catch {
+    return { verdict: "INCONCLUSIVE", reason: "Bound HTLC amount is malformed; refusing to guess." };
+  }
+  if (amount <= 0n) return { verdict: "INCONCLUSIVE", reason: "Bound HTLC amount is invalid; refusing to guess." };
+
+  const chain = reads();
+  if (!chain.getHtlcSwapState) return { verdict: "INCONCLUSIVE", reason: "RPC cannot read the pinned Arbitrum HTLC lifecycle state; refusing to decide." };
+  const key = computeHtlcSwapKey({
+    hashLock: input.hashLock,
+    amount,
+    token: input.expectedTokenAddress,
+    refundAddress: input.expectedRefundAddress,
+    claimAddress: input.expectedClaimAddress,
+    timelock: BigInt(input.expectedLocktimeSec),
+  });
+
+  try {
+    const finalizedBlock = await chain.getFinalizedBlockNumber(input.chainId);
+    const initialHead = await chain.getLatestBlockNumber(input.chainId);
+    if (finalizedBlock === null) return { verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide." };
+    if (finalizedBlock > initialHead) return { verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide." };
+    if (!(await chain.getBlockHash(input.chainId, finalizedBlock))) return { verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide." };
+
+    const finalized = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, finalizedBlock);
+    let head = initialHead;
+    let latest = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, head);
+    const observedHead = await chain.getLatestBlockNumber(input.chainId);
+    if (observedHead < head) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head moved backwards during lifecycle verification; refusing to decide." };
+    if (observedHead > head) {
+      head = observedHead;
+      latest = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, head);
+      const stableHead = await chain.getLatestBlockNumber(input.chainId);
+      if (stableHead !== head) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during lifecycle verification; retry required." };
+    }
+    if (!(await chain.getBlockHash(input.chainId, head))) return { verdict: "INCONCLUSIVE", reason: "Current Arbitrum head evidence is unavailable; refusing to decide." };
+
+    const finalizedState = htlcStateName(finalized.state);
+    const latestState = htlcStateName(latest.state);
+    if (!finalizedState || !latestState) return { verdict: "INCONCLUSIVE", reason: "Arbitrum returned an unknown HTLC lifecycle state; refusing to decide." };
+    if (latestState !== "ACTIVE") {
+      return { verdict: "REJECTED", reason: `The original Arbitrum HTLC key is ${latestState} at the current chain head.`, finalizedState, latestState };
+    }
+    if (finalizedState !== "ACTIVE") {
+      return { verdict: "INCONCLUSIVE", reason: `Arbitrum lifecycle state is inconsistent: finalized state is ${finalizedState}, current state is ACTIVE.`, finalizedState, latestState };
+    }
+    return { verdict: "ACTIVE", reason: "The complete bound Arbitrum HTLC key is Active at finalized state and the current chain head.", finalizedState, latestState };
+  } catch {
+    return { verdict: "UNAVAILABLE", reason: "Arbitrum lifecycle chain data is temporarily unavailable." };
   }
 }
 

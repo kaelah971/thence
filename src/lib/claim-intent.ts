@@ -28,7 +28,7 @@ import { transition, type TransferStatus } from "@/domain/transfers";
 import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
 import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
-import { CLAIM_FUNDING_MIN_CONFIRMATIONS, verifyHtlcFunding, verifyHtlcUnspent, type HtlcFundingResult, type HtlcSpendVerdict } from "@/lib/settlement";
+import { CLAIM_FUNDING_MIN_CONFIRMATIONS, verifyHtlcFunding, verifyHtlcLifecycle, verifyHtlcUnspent, type HtlcFundingResult, type HtlcLifecycleResult, type HtlcSpendVerdict } from "@/lib/settlement";
 import { recordTransition } from "@/lib/transitions";
 
 /**
@@ -66,7 +66,13 @@ function refuse(status: number, code: string, message: string): never {
   throw new AuthError(status, code, message);
 }
 
-type Evidence = { facts: VerifiedSwapFacts; routeMatches: boolean; funding: HtlcFundingResult; spend: HtlcSpendVerdict | null; gatheredAt: number };
+/** Pure claim gate mapping; a rehash is never followed automatically. */
+export function claimLifecycleProblem(chainId: number, lifecycle: HtlcLifecycleResult | null): string | null {
+  if (chainId !== 42161 || lifecycle?.verdict === "ACTIVE") return null;
+  return lifecycle?.reason ?? "The Arbitrum HTLC lifecycle could not be verified.";
+}
+
+type Evidence = { facts: VerifiedSwapFacts; routeMatches: boolean; funding: HtlcFundingResult; lifecycle: HtlcLifecycleResult | null; spend: HtlcSpendVerdict | null; gatheredAt: number };
 
 async function gather(transfer: typeof transfers.$inferSelect, attachment: typeof swapAttachments.$inferSelect): Promise<Evidence> {
   let facts: VerifiedSwapFacts;
@@ -98,12 +104,25 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
           expectedRefundAddress: facts.evmHtlcRefundAddress,
           expectedClaimAddress: facts.evmHtlcClaimAddress,
         });
+  const lifecycle = facts.evmChainId === 42161
+    ? await verifyHtlcLifecycle({
+        chainId: facts.evmChainId,
+        htlcAddress: facts.evmHtlcAddress,
+        hashLock: attachment.paymentHash,
+        expectedLocktimeSec: locktimeSec ?? 0,
+        expectedTokenAddress: facts.evmHtlcTokenAddress,
+        expectedAmountAtomic: facts.evmHtlcAmountAtomic,
+        expectedRefundAddress: facts.evmHtlcRefundAddress,
+        expectedClaimAddress: facts.evmHtlcClaimAddress,
+        fundingVerdict: funding.verdict,
+      })
+    : null;
   // P7: a re-authorization (earlier attempt's outcome unknown) needs the
   // chain's own word that nothing redeemed or refunded this lock.
   const spend = transfer.status === "CLAIMING"
     ? (await verifyHtlcUnspent({ chainId: facts.evmChainId, htlcAddress: facts.evmHtlcAddress, hashLock: attachment.paymentHash, fundTxHash: facts.evmFundTxid })).verdict
     : null;
-  return { facts, routeMatches, funding, spend, gatheredAt: Date.now() };
+  return { facts, routeMatches, funding, lifecycle, spend, gatheredAt: Date.now() };
 }
 
 /** Pure: every identity fact the claim depends on, against the bound swap and transfer terms. */
@@ -159,7 +178,12 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
       required: String(CLAIM_FUNDING_MIN_CONFIRMATIONS),
     });
   }
-  if (ev.funding.verdict !== "VERIFIED") refuse(503, "CHAIN_UNAVAILABLE", "Polygon can't be checked right now. Try again shortly.");
+  if (ev.funding.verdict !== "VERIFIED") refuse(503, "CHAIN_UNAVAILABLE", ev.facts.evmChainId === 42161 ? "Arbitrum funding can't be checked right now. Try again shortly." : "Polygon can't be checked right now. Try again shortly.");
+  const lifecycleProblem = claimLifecycleProblem(ev.facts.evmChainId, ev.lifecycle);
+  if (lifecycleProblem) {
+    if (ev.lifecycle?.verdict === "REJECTED") refuse(409, "HTLC_NOT_ACTIVE", `${lifecycleProblem} Do not continue.`);
+    refuse(503, "CHAIN_UNAVAILABLE", "The Arbitrum HTLC lifecycle can't be checked right now. Try again shortly.");
+  }
   if (pre.status === "CLAIMING") {
     if (ev.spend === "SPENT") refuse(409, "CLAIM_ALREADY_SUBMITTED", "The earlier delivery attempt reached Polygon. Wait while Thence confirms it — don't try again.");
     if (ev.spend !== "UNSPENT") refuse(503, "CLAIM_OUTCOME_UNRESOLVED", "Thence can't yet prove the earlier delivery attempt didn't go through, so it won't try again. Check again shortly.");
