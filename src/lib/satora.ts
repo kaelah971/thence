@@ -22,6 +22,7 @@
 import { Client } from "@satora/swap";
 import type { Chain } from "@satora/swap";
 import { getEnv } from "@/lib/env";
+import { routeIdForPair, type RouteId } from "@/domain/routes";
 import { isAtomicAmount } from "@/domain/money";
 
 export const SATORA_READ_TIMEOUT_MS = 15_000;
@@ -30,6 +31,20 @@ const REFERENCE_TTL_MS = 60_000;
 
 /** Canonical EVM chain ids (public protocol constants, also the SDK `Chain` type). */
 const CHAIN_IDS: Record<string, Chain> = { Ethereum: "1", Polygon: "137", Arbitrum: "42161", Base: "8453" };
+const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+interface TrustedRouteTokenIdentity {
+  address: string;
+  chainId: Chain;
+  decimals: number;
+}
+/** Independent trust anchor for Circle native USDC on Arbitrum One. */
+const TRUSTED_ROUTE_TOKEN_IDENTITIES: Partial<Record<RouteId, TrustedRouteTokenIdentity>> = {
+  "usdc-arbitrum": {
+    address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    chainId: "42161",
+    decimals: 6,
+  },
+};
 
 export class SatoraError extends Error {
   readonly code: string;
@@ -209,24 +224,75 @@ export interface ResolvedRoute {
 
 /**
  * Pure token/pair resolution against a GIVEN catalogue snapshot.
- * Identity is contract + chain, never bare ticker: USDT0 ≠ classic USDT.
- * Throws SatoraError(ROUTE_NOT_QUOTEABLE) when the snapshot lacks the pair
- * — including classic USDT on Polygon, which is absent from the catalogue
- * (only USDT0/USDC are listed on 137; verified live, never assumed).
- * Unit-testable: disappearance/reappearance is just snapshot diffing.
+ * Configured routes resolve by exact contract + chain + decimals, never bare
+ * ticker. Routes without an approved token configuration retain their legacy
+ * provider selection for compatibility. Unit-testable: disappearance and
+ * reordering are just snapshot differences.
  */
+export interface RouteResolutionOptions {
+  /** Exact token contract approved for this route, when configured. */
+  approvedTokenAddress?: string;
+  /** Independent canonical contract identity for a trusted route token. */
+  canonicalTokenAddress?: string;
+  /** Independent canonical chain identity for a trusted route token. */
+  canonicalChainId?: Chain;
+  /** Arbitrum native USDC requires an approved address; legacy routes may omit it. */
+  requireApprovedToken?: boolean;
+  /** Route-specific provider precision, when the token identity requires it. */
+  expectedTokenDecimals?: number;
+}
+
 export function resolveRouteWith(
   tokens: ProviderToken[],
   pairs: SwapPair[],
   asset: string,
   network: string,
+  options: RouteResolutionOptions = {},
 ): ResolvedRoute {
   const chainId = CHAIN_IDS[network];
   if (!chainId) throw new SatoraError("UNSUPPORTED_ROUTE", `Network ${network} has no EVM chain mapping.`);
-  const match = tokens.find((t) => t.symbol === asset && t.chain === chainId);
-  if (!match) {
+
+  const configuredAddress = options.approvedTokenAddress?.trim();
+  const canonicalAddress = options.canonicalTokenAddress?.trim();
+  if (canonicalAddress !== undefined && !EVM_ADDRESS_RE.test(canonicalAddress)) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The trusted token identity for ${asset} on ${network} is malformed.`);
+  }
+  if (options.canonicalChainId !== undefined && chainId !== options.canonicalChainId) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The route chain does not match the trusted token identity for ${asset}.`);
+  }
+  const mustMatchConfigured = options.requireApprovedToken === true || configuredAddress !== undefined || canonicalAddress !== undefined;
+  if (mustMatchConfigured && (!configuredAddress || !EVM_ADDRESS_RE.test(configuredAddress))) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `No approved token is configured for ${asset} on ${network}.`);
+  }
+  if (canonicalAddress !== undefined && configuredAddress!.toLowerCase() !== canonicalAddress.toLowerCase()) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The configured token does not match the trusted native token identity for ${asset} on ${network}.`);
+  }
+
+  const candidates = tokens.filter((t) => t.symbol === asset && t.chain === chainId);
+  if (candidates.length === 0) {
     throw new SatoraError("ROUTE_NOT_QUOTEABLE", `${asset} on ${network} is not offered by the route provider right now.`);
   }
+
+  let match: ProviderToken;
+  if (mustMatchConfigured) {
+    const approved = candidates.filter((t) => t.address.toLowerCase() === configuredAddress!.toLowerCase());
+    if (approved.length === 0) {
+      throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The configured ${asset} token is not offered on ${network}.`);
+    }
+    if (approved.length > 1) {
+      throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The provider returned an ambiguous ${asset} token identity on ${network}.`);
+    }
+    match = approved[0]!;
+  } else {
+    // Preserve legacy provider selection for routes without an approved token
+    // configuration. Arbitrum native USDC always takes the branch above.
+    match = candidates[0]!;
+  }
+
+  if (options.expectedTokenDecimals !== undefined && match.decimals !== options.expectedTokenDecimals) {
+    throw new SatoraError("ROUTE_NOT_QUOTEABLE", `The provider returned the wrong decimals for ${asset} on ${network}.`);
+  }
+
   const pair = pairs.find((p) => p.source === "Lightning" && p.target === chainId);
   if (!pair) {
     throw new SatoraError("ROUTE_NOT_QUOTEABLE", `Lightning to ${network} is not offered by the route provider right now.`);
@@ -246,7 +312,23 @@ export function resolveRouteWith(
 export async function resolveRoute(asset: string, network: string): Promise<ResolvedRoute> {
   const tokens = await getProviderTokens();
   const pairs = await getProviderPairs();
-  return resolveRouteWith(tokens, pairs, asset, network);
+  const routeId = routeIdForPair(asset, network);
+  const env = getEnv();
+  const approvedTokenAddress = routeId === null ? undefined : env.THENCE_ROUTE_TOKENS_JSON[routeId];
+  const trustedIdentity = routeId === null ? undefined : TRUSTED_ROUTE_TOKEN_IDENTITIES[routeId];
+  const options: RouteResolutionOptions = {
+    // A1 is deliberately strict for the future Arbitrum route. Existing
+    // Polygon deployments remain compatible when their private token map is
+    // absent; when present, that configured address is enforced as well.
+    requireApprovedToken: routeId === "usdc-arbitrum",
+  };
+  if (approvedTokenAddress !== undefined) options.approvedTokenAddress = approvedTokenAddress;
+  if (trustedIdentity !== undefined) {
+    options.canonicalTokenAddress = trustedIdentity.address;
+    options.canonicalChainId = trustedIdentity.chainId;
+    options.expectedTokenDecimals = trustedIdentity.decimals;
+  }
+  return resolveRouteWith(tokens, pairs, asset, network, options);
 }
 
 export interface ExactQuote {

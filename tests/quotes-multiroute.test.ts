@@ -51,6 +51,20 @@ const FIXTURE_PAIRS: SwapPair[] = [
   { source: "Lightning", target: "137", min_sats: 356, max_sats: 20000000 },
   { source: "Lightning", target: "1", min_sats: 10000, max_sats: 20000000 },
 ];
+const ARBITRUM_NATIVE_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
+const ARBITRUM_USDC_E = "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8";
+const ARBITRUM_PAIRS: SwapPair[] = [{ source: "Lightning", target: "42161", min_sats: 356, max_sats: 20000000 }];
+const ARBITRUM_TOKEN_POLICY = {
+  approvedTokenAddress: ARBITRUM_NATIVE_USDC,
+  canonicalTokenAddress: ARBITRUM_NATIVE_USDC,
+  canonicalChainId: "42161" as const,
+  requireApprovedToken: true,
+  expectedTokenDecimals: 6,
+} as const;
+const ARBITRUM_TOKENS: ProviderToken[] = [
+  { address: ARBITRUM_USDC_E, symbol: "USDC", chain: "42161", decimals: 6 },
+  { address: ARBITRUM_NATIVE_USDC, symbol: "USDC", chain: "42161", decimals: 6 },
+];
 
 describe("provider timeout behavior (pure)", () => {
   it("rejects hung provider calls with PROVIDER_TIMEOUT", async () => {
@@ -103,6 +117,118 @@ describe("token/chain resolution (pure fixtures)", () => {
 
   it("rejects unknown networks without guessing chain ids", () => {
     expect(() => resolveRouteWith(FIXTURE_TOKENS, FIXTURE_PAIRS, "USDC", "Solana")).toThrowError(/no EVM chain mapping/);
+  });
+});
+
+describe("native USDC/Arbitrum token identity", () => {
+  it("selects configured native USDC regardless of provider catalogue order", () => {
+    const reversed = resolveRouteWith(ARBITRUM_TOKENS, ARBITRUM_PAIRS, "USDC", "Arbitrum", ARBITRUM_TOKEN_POLICY);
+    const originalOrder = resolveRouteWith([...ARBITRUM_TOKENS].reverse(), ARBITRUM_PAIRS, "USDC", "Arbitrum", ARBITRUM_TOKEN_POLICY);
+    expect(reversed).toMatchObject({ chainId: "42161", tokenAddress: ARBITRUM_NATIVE_USDC, tokenDecimals: 6 });
+    expect(originalOrder.tokenAddress).toBe(ARBITRUM_NATIVE_USDC);
+  });
+
+  it("rejects USDC.e and wrong configured contracts without fallback", () => {
+    expect(() => resolveRouteWith(
+      [{ ...ARBITRUM_TOKENS[0]! }],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      ARBITRUM_TOKEN_POLICY,
+    )).toThrowError(/configured.*not offered/i);
+    expect(() => resolveRouteWith(
+      [{ ...ARBITRUM_TOKENS[0]! }],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      { ...ARBITRUM_TOKEN_POLICY, approvedTokenAddress: ARBITRUM_USDC_E },
+    )).toThrowError(/trusted native token identity/i);
+    expect(() => resolveRouteWith(ARBITRUM_TOKENS, ARBITRUM_PAIRS, "USDC", "Arbitrum", {
+      ...ARBITRUM_TOKEN_POLICY,
+      approvedTokenAddress: "0x0000000000000000000000000000000000000001",
+    })).toThrowError(/trusted native token identity/i);
+  });
+
+  it("fails closed for missing config, wrong chain, wrong decimals, and disappearance", () => {
+    expect(() => resolveRouteWith(ARBITRUM_TOKENS, ARBITRUM_PAIRS, "USDC", "Arbitrum", {
+      requireApprovedToken: true,
+      expectedTokenDecimals: 6,
+    })).toThrowError(/approved token is configured/i);
+    expect(() => resolveRouteWith(
+      [{ ...ARBITRUM_TOKENS[1]!, chain: "137" }],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      ARBITRUM_TOKEN_POLICY,
+    )).toThrowError(/not offered/i);
+    expect(() => resolveRouteWith(
+      [{ ...ARBITRUM_TOKENS[1]!, decimals: 18 }],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      ARBITRUM_TOKEN_POLICY,
+    )).toThrowError(/wrong decimals/i);
+    expect(() => resolveRouteWith(
+      [ARBITRUM_TOKENS[0]!],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      ARBITRUM_TOKEN_POLICY,
+    )).toThrowError(/configured.*not offered/i);
+    expect(() => resolveRouteWith(
+      ARBITRUM_TOKENS,
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      { ...ARBITRUM_TOKEN_POLICY, canonicalChainId: "137" },
+    )).toThrowError(/route chain does not match/i);
+  });
+
+  it("rejects duplicate provider entries for the approved identity", () => {
+    expect(() => resolveRouteWith(
+      [...ARBITRUM_TOKENS, { ...ARBITRUM_TOKENS[1]! }],
+      ARBITRUM_PAIRS,
+      "USDC",
+      "Arbitrum",
+      ARBITRUM_TOKEN_POLICY,
+    )).toThrowError(/ambiguous/i);
+  });
+
+  it("applies the configured token through the live resolver seam", async () => {
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousTokenMap = process.env.THENCE_ROUTE_TOKENS_JSON;
+    process.env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/thence";
+    process.env.THENCE_ROUTE_TOKENS_JSON = JSON.stringify({ "usdc-arbitrum": ARBITRUM_NATIVE_USDC });
+    resetSatoraCachesForTests();
+    setSatoraFetchersForTests({
+      getTokens: async () => ({
+        evm_tokens: ARBITRUM_TOKENS.map(({ address, symbol, chain, decimals }) => ({
+          token_id: address,
+          symbol,
+          chain,
+          decimals,
+        })),
+      }),
+      getSwapPairs: async () => ({ pairs: ARBITRUM_PAIRS }),
+    });
+    try {
+      await expect(resolveRoute("USDC", "Arbitrum")).resolves.toMatchObject({
+        chainId: "42161",
+        tokenAddress: ARBITRUM_NATIVE_USDC,
+        tokenDecimals: 6,
+      });
+      process.env.THENCE_ROUTE_TOKENS_JSON = JSON.stringify({ "usdc-arbitrum": ARBITRUM_USDC_E });
+      await expect(resolveRoute("USDC", "Arbitrum")).rejects.toThrowError(/trusted native token identity/i);
+      delete process.env.THENCE_ROUTE_TOKENS_JSON;
+      await expect(resolveRoute("USDC", "Arbitrum")).rejects.toThrowError(/approved token is configured/i);
+    } finally {
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+      if (previousTokenMap === undefined) delete process.env.THENCE_ROUTE_TOKENS_JSON;
+      else process.env.THENCE_ROUTE_TOKENS_JSON = previousTokenMap;
+      setSatoraFetchersForTests(null);
+      resetSatoraCachesForTests();
+    }
   });
 });
 
