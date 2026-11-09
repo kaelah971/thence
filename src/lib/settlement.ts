@@ -487,7 +487,7 @@ export async function verifyNoHtlcActivity(input: {
   chainId: number;
   htlcAddress: string | null;
   hashLock: string;
-  /** Required on Arbitrum v7; Polygon retains its historical hash-lock scan. */
+  /** Optional diagnostic identity; Arbitrum no-activity scans remain hash-wide by design. */
   expectedSwapKey?: string | null;
   windowStart: Date;
   windowEnd: Date;
@@ -496,10 +496,6 @@ export async function verifyNoHtlcActivity(input: {
   if (input.chainId !== 137 && input.chainId !== 42161) return { ...base, verdict: "INCONCLUSIVE", reason: "HTLC scans are enabled only for Polygon and Arbitrum." };
   if (!input.htlcAddress || !EVM_ADDRESS_RE.test(input.htlcAddress) || !HASH_LOCK_RE.test(input.hashLock)) {
     return { ...base, verdict: "INCONCLUSIVE", reason: "Missing a valid HTLC address or hash lock to scan." };
-  }
-  const expectedKey = input.expectedSwapKey?.toLowerCase() ?? null;
-  if (input.chainId === 42161 && (!expectedKey || !HASH_LOCK_RE.test(expectedKey))) {
-    return { ...base, verdict: "INCONCLUSIVE", reason: "Complete Arbitrum SwapKey evidence is unavailable; refusing to guess." };
   }
   if (!(input.windowEnd.getTime() > input.windowStart.getTime())) {
     return { ...base, verdict: "INCONCLUSIVE", reason: "Scan window is empty." };
@@ -562,7 +558,10 @@ export async function verifyNoHtlcActivity(input: {
       for (const log of logs) {
         // Defensive re-filter: never trust the RPC's own filtering for a match.
         if (log.address.toLowerCase() !== htlc || log.topics[1]?.toLowerCase() !== lock) continue;
-        if (input.chainId === 42161 && !matchHtlcLifecycleLog(log, expectedKey!)) continue;
+        // Arbitrum expired-unfunded recovery is deliberately conservative:
+        // terms are not immutably persisted in swap_attachments, so a current
+        // provider-derived key cannot safely narrow this absence proof. Any
+        // lifecycle event for the bound hash is activity and blocks closure.
         matches.push(log);
       }
     }
@@ -574,7 +573,7 @@ export async function verifyNoHtlcActivity(input: {
         ...span,
         verdict: "ACTIVITY_FOUND",
         reason: input.chainId === 42161
-          ? "The pinned Arbitrum HTLC emitted a lifecycle event for the complete SwapKey."
+          ? "The pinned Arbitrum HTLC emitted lifecycle activity for the bound payment hash."
           : "The HTLC emitted events for this hash lock; the swap was funded on-chain.",
         logCount: matches.length,
         eventTopics: matches.map((l) => (l.topics[0] ?? "").toLowerCase()),
@@ -584,7 +583,7 @@ export async function verifyNoHtlcActivity(input: {
       ...span,
       verdict: "NO_ACTIVITY",
       reason: input.chainId === 42161
-        ? "No lifecycle event for this Arbitrum SwapKey in the finalized scan window."
+        ? "No lifecycle event for the bound Arbitrum payment hash in the finalized scan window."
         : "No HTLC event for this hash lock in the finalized scan window.",
       logCount: 0,
       eventTopics: [],

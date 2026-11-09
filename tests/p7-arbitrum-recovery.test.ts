@@ -320,11 +320,11 @@ describe("A2b2 Arbitrum v7 no-activity recovery evidence", () => {
     await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "INSUFFICIENT_CONFIRMATIONS" });
   });
 
-  it("finds exact-key activity and ignores another same-hash key", async () => {
+  it("finds activity for the bound hash even when the complete key differs", async () => {
     setSettlementChainForTests(fixtureChain({ logs: [refundLog()] }));
     await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "ACTIVITY_FOUND", logCount: 1 });
     setSettlementChainForTests(fixtureChain({ logs: [refundLog(WRONG_KEY, WRONG_TX)] }));
-    await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "NO_ACTIVITY", logCount: 0 });
+    await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "ACTIVITY_FOUND", logCount: 1 });
   });
 
   it("counts SwapRehashed as activity for the stale original key", async () => {
@@ -332,9 +332,9 @@ describe("A2b2 Arbitrum v7 no-activity recovery evidence", () => {
     await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "ACTIVITY_FOUND", eventTopics: [SWAP_REHASHED_EVENT_TOPIC] });
   });
 
-  it("requires the complete key and finalized header evidence", async () => {
+  it("keeps hash-wide closure conservative while requiring finalized headers", async () => {
     setSettlementChainForTests(fixtureChain({ logs: [] }));
-    await expect(verifyNoHtlcActivity(noActivityInput({ expectedSwapKey: null }))).resolves.toMatchObject({ verdict: "INCONCLUSIVE" });
+    await expect(verifyNoHtlcActivity(noActivityInput({ expectedSwapKey: null }))).resolves.toMatchObject({ verdict: "NO_ACTIVITY" });
     setSettlementChainForTests(fixtureChain({ finalized: null, logs: [] }));
     await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE" });
   });

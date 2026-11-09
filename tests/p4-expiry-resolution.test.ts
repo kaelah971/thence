@@ -25,8 +25,8 @@ import {
   users,
 } from "@/db/schema";
 import { assertFundingExposure, getPilotConfig } from "@/lib/pilot";
-import { setSatoraFetchersForTests } from "@/lib/satora";
-import { SWAP_REFUNDED_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
+import { resetSatoraCachesForTests, setSatoraFetchersForTests } from "@/lib/satora";
+import { computeHtlcSwapKey, SWAP_REFUNDED_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
 import { TRUSTED_HTLC_CONTRACTS } from "@/lib/expiry-resolution";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransfer } from "../app/api/transfers/route";
@@ -38,9 +38,14 @@ import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route
 import { POST as closePost } from "../app/api/transfers/[id]/close-expired/route";
 
 const HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
+const ARBITRUM_HTLC = TRUSTED_HTLC_CONTRACTS[42161]![0]!;
+const ARBITRUM_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
 const EVM_A = "0x0000000000000000000000000000000000000001";
 const FUND_TOPIC = "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f";
 const ROUTES = "usdc-polygon";
+const polygonToken = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+const word = (value: bigint | number | string) => BigInt(value).toString(16).padStart(64, "0");
+const addressWord = (value: string) => value.slice(2).toLowerCase().padStart(64, "0");
 const createdUserIds: string[] = [];
 let cc = 0;
 const client = (tag: string): Record<string, string> => ({ "x-forwarded-for": `p4-${RUN}-${tag}-${cc++}` });
@@ -64,7 +69,7 @@ function syntheticChain(): ChainReads {
     async getReceipt() { return null; },
     async getLatestBlockNumber() { if (chainDown) throw new Error("down"); return HEAD; },
     async getFinalizedBlockNumber() { return HEAD - 300n; },
-    async getBlockHash() { return null; },
+    async getBlockHash(_c, n) { if (chainDown) throw new Error("down"); return `0x${n.toString(16).padStart(64, "0")}`; },
     async getBlockTimestamp(_c, n) { if (chainDown) throw new Error("down"); return nowSec() - Number(HEAD - n) * 2; },
     async getLogsByTopic1(_c, address, topic1) {
       if (chainDown) throw new Error("down");
@@ -75,7 +80,14 @@ function syntheticChain(): ChainReads {
 
 /* ---------------- provider fixture (mirrors eddaa6de's shape) ---------------- */
 let swapOverrides: Record<string, unknown> = {};
-function swapFor(id: string, hashLock: string, sourceSats: string): Record<string, unknown> {
+function swapFor(
+  id: string,
+  hashLock: string,
+  sourceSats: string,
+  options: { chainId?: number; htlcAddress?: string; tokenAddress?: string } = {},
+): Record<string, unknown> {
+  const chainId = options.chainId ?? 137;
+  const tokenAddress = options.tokenAddress ?? "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
   return {
     id,
     direction: "lightning_to_evm",
@@ -83,10 +95,10 @@ function swapFor(id: string, hashLock: string, sourceSats: string): Record<strin
     hash_lock: hashLock,
     source_amount: sourceSats,
     target_amount: "300000",
-    evm_chain_id: 137,
-    evm_htlc_address: "0xf12A26a6CEfc1F5a0772fAf09F94c5e5662a3948",
+    evm_chain_id: chainId,
+    evm_htlc_address: options.htlcAddress ?? HTLC,
     target_evm_address: EVM_A,
-    target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" },
+    target_token: { chain: String(chainId), decimals: 6, name: "USD Coin", symbol: "USDC", token_id: tokenAddress },
     status: "pending",
     invoice_expires_at: Math.floor(Date.now() / 1000) + 3600,
     evm_fund_txid: null,
@@ -110,10 +122,15 @@ function installProvider(): void {
  * Build an eddaa6de-like payment: authorized, unknown outcome → RECONCILING,
  * bound swap aged so its invoice expired 2 h ago (test DB only).
  */
-async function stuckReconciling(tag: string): Promise<{ id: string; userId: string; cookie: string; hashLock: string }> {
+async function stuckReconciling(
+  tag: string,
+  options: { routeId?: string; network?: string; chainId?: number; htlcAddress?: string; tokenAddress?: string } = {},
+): Promise<{ id: string; userId: string; cookie: string; hashLock: string }> {
+  const routeId = options.routeId ?? "usdc-polygon";
+  const network = options.network ?? "Polygon";
   const { userId, cookie } = await loginAs(client(`login-${tag}`), (id) => createdUserIds.push(id));
   const created = await createTransfer(
-    postJson("http://localhost/api/transfers", { routeId: "usdc-polygon", targetAmountAtomic: "300000", idempotencyKey: `p4-${RUN}-${tag}`, direct: { asset: "USDC", network: "Polygon", address: EVM_A } }, { cookie, ...client(tag) }),
+    postJson("http://localhost/api/transfers", { routeId, targetAmountAtomic: "300000", idempotencyKey: `p4-${RUN}-${tag}`, direct: { asset: "USDC", network, address: EVM_A } }, { cookie, ...client(tag) }),
   );
   if (created.status !== 201) throw new Error(`setup create failed: ${created.status}`);
   const transfer = ((await created.json()) as { transfer: { id: string; quote: { sourceSats: string } } }).transfer;
@@ -122,7 +139,7 @@ async function stuckReconciling(tag: string): Promise<{ id: string; userId: stri
   const token = ((await prep.json()) as { attemptToken: string }).attemptToken;
   const swapId = `p4-swap-${RUN}-${tag}`;
   const hashLock = `0x${Buffer.from(`${RUN}-${tag}`).toString("hex").padEnd(64, "0").slice(0, 64)}`;
-  swaps.set(swapId, swapFor(swapId, hashLock, transfer.quote.sourceSats));
+  swaps.set(swapId, swapFor(swapId, hashLock, transfer.quote.sourceSats, options));
   swapOverrides = {};
   installProvider();
   const attached = await attachPost(
@@ -237,6 +254,72 @@ describe.skipIf(!LIVE)("P4 close-expired (isolated test database)", () => {
     expect(await statusOf(id)).toBe("RECONCILING");
     expect(await terminalRows(id)).toHaveLength(0);
     await expect(assertFundingExposure(userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+  });
+
+  it("refuses an Arbitrum same-hash SwapCreated event with different terms at the expiry decision boundary", async () => {
+    const priorRoutes = process.env["THENCE_ENABLED_ROUTES"];
+    const priorTokens = process.env["THENCE_ROUTE_TOKENS_JSON"];
+    const priorRpcs = process.env["THENCE_EVM_RPCS_JSON"];
+    const { id, userId, cookie, hashLock } = await stuckReconciling("arb-same-hash");
+    try {
+      process.env["THENCE_ENABLED_ROUTES"] = "usdc-polygon,usdc-arbitrum";
+      process.env["THENCE_ROUTE_TOKENS_JSON"] = JSON.stringify({ "usdc-polygon": polygonToken, "usdc-arbitrum": ARBITRUM_USDC });
+      process.env["THENCE_EVM_RPCS_JSON"] = JSON.stringify({ "137": "https://example.invalid", "42161": "https://example.invalid" });
+      await getDb().update(transfers).set({ routeId: "usdc-arbitrum", targetNetwork: "Arbitrum" }).where(eq(transfers.id, id));
+      swapOverrides = {
+        status: "expired",
+        evm_chain_id: 42161,
+        evm_htlc_address: ARBITRUM_HTLC,
+        target_token: { chain: "42161", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: ARBITRUM_USDC },
+      };
+      resetSatoraCachesForTests();
+      setSatoraFetchersForTests({
+        getTokens: async () => ({ evm_tokens: [
+          { token_id: polygonToken, symbol: "USDC", chain: "137", decimals: 6 },
+          { token_id: ARBITRUM_USDC, symbol: "USDC", chain: "42161", decimals: 6 },
+        ] }),
+        getSwapPairs: async () => ({ pairs: [
+          { source: "Lightning", target: "137", min_sats: 1, max_sats: 20_000_000 },
+          { source: "Lightning", target: "42161", min_sats: 1, max_sats: 20_000_000 },
+        ] }),
+        getSwap: async (swapId: string) => ({ ...swaps.get(swapId), ...swapOverrides, id: swapId }),
+      });
+      const differentKey = computeHtlcSwapKey({
+        hashLock,
+        amount: 300001n,
+        token: "0x4200000000000000000000000000000000000023",
+        refundAddress: "0x00000000000000000000000000000000000000a1",
+        claimAddress: EVM_A,
+        timelock: 1_900_000_000n,
+      });
+      chainLogs = (lock) => [{
+        address: ARBITRUM_HTLC,
+        topics: [
+          FUND_TOPIC,
+          lock,
+          `0x${addressWord("0x00000000000000000000000000000000000000a1")}`,
+          `0x${addressWord(EVM_A)}`,
+        ],
+        data: `0x${addressWord("0x4200000000000000000000000000000000000023")}${word(300001n)}${word(1_900_000_000n)}${differentKey.slice(2)}`,
+        logIndex: 7,
+      }];
+
+      const res = await close(id, cookie, "arb-same-hash");
+      expect(res.status).toBe(409);
+      expect(res.body["error"]).toBe("CHAIN_ACTIVITY_FOUND");
+      expect(await statusOf(id)).toBe("RECONCILING");
+      expect(await terminalRows(id)).toHaveLength(0);
+      await expect(assertFundingExposure(userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+    } finally {
+      setSatoraFetchersForTests(null);
+      resetSatoraCachesForTests();
+      if (priorRoutes === undefined) delete process.env["THENCE_ENABLED_ROUTES"];
+      else process.env["THENCE_ENABLED_ROUTES"] = priorRoutes;
+      if (priorTokens === undefined) delete process.env["THENCE_ROUTE_TOKENS_JSON"];
+      else process.env["THENCE_ROUTE_TOKENS_JSON"] = priorTokens;
+      if (priorRpcs === undefined) delete process.env["THENCE_EVM_RPCS_JSON"];
+      else process.env["THENCE_EVM_RPCS_JSON"] = priorRpcs;
+    }
   });
 
   it("refuses on recorded Nimiq-side funding (cannot prove the NIM came back)", async () => {
