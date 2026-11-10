@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { transferProofs, transfers } from "@/db/schema";
+import { toUserFriendlyAddress } from "@/lib/nimiq";
 import {
   decodeProofCursor,
   encodeProofCursor,
+  getIndependentNimiqSourceProof,
   isPublicProofPublicationEnabled,
   isPublishableGlobalProof,
   parseProofFeedQuery,
@@ -16,6 +18,8 @@ const ARBITRUM_NATIVE_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
 const DESTINATION = "0x2222222222222222222222222222222222222222";
 const CLAIM_TX = `0x${"ab".repeat(32)}`;
 const BLOCK_HASH = `0x${"cd".repeat(32)}`;
+const NIMIQ_TX_HASH = "12".repeat(32);
+const NIMIQ_SENDER = toUserFriendlyAddress(Buffer.from("00112233445566778899aabbccddeeff00112233", "hex"));
 const PROOF_ID = "11111111-1111-4111-8111-111111111111";
 
 const config = publicProofConfig({
@@ -74,6 +78,21 @@ function row(overrides: { transfer?: Record<string, unknown>; proof?: Record<str
   };
 }
 
+function verifiedSource(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    transactionHash: NIMIQ_TX_HASH,
+    sender: NIMIQ_SENDER,
+    amountLuna: "100000",
+    feeLuna: "100",
+    totalDebitLuna: "100100",
+    blockNumber: "123",
+    confirmations: "12",
+    network: "mainnet",
+    verifiedAt: "2026-11-10T12:09:00.000Z",
+    ...overrides,
+  };
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });
@@ -86,38 +105,67 @@ describe("A3c.1 global proof publication", () => {
     expect(isPublicProofPublicationEnabled({ THENCE_PUBLIC_PROOFS_ENABLED: "1" })).toBe(true);
   });
 
-  it("publishes only verified destination evidence and redacts private/payment-source fields", () => {
+  it("refuses a complete destination proof while independent NIM evidence is unavailable", () => {
     const candidate = row();
+    expect(getIndependentNimiqSourceProof(candidate)).toBeNull();
+    expect(isPublishableGlobalProof(candidate, config)).toBe(false);
+    expect(toPublicProof(candidate, config)).toBeNull();
+  });
+
+  it("does not upgrade a host-reported NIM identifier into source proof", () => {
+    const candidate = row({ proof: { nimiqTxHash: `0x${"12".repeat(32)}` } });
+    expect(getIndependentNimiqSourceProof(candidate)).toBeNull();
+    expect(isPublishableGlobalProof(candidate, config)).toBe(false);
+    expect(toPublicProof(candidate, config)).toBeNull();
+  });
+
+  it("publishes both independently verified source and destination proof fields", () => {
+    const candidate = {
+      ...row({ proof: { nimiqTxHash: NIMIQ_TX_HASH } }),
+      sourceVerified: true,
+      sourceVerifiedHash: NIMIQ_TX_HASH,
+      sourceVerifiedEvidence: verifiedSource(),
+    };
+    expect(getIndependentNimiqSourceProof(candidate)).toEqual({ transactionHash: NIMIQ_TX_HASH });
     expect(isPublishableGlobalProof(candidate, config)).toBe(true);
-    const view = toPublicProof(candidate, config);
-    expect(view).toMatchObject({
-      proofId: PROOF_ID,
-      status: "DELIVERED",
-      verification: { destination: "VERIFIED", source: "NOT_VERIFIED", overall: "DESTINATION_ONLY" },
-      source: { asset: "NIM", evidence: "NOT_RECORDED", verification: "NOT_VERIFIED" },
+    expect(toPublicProof(candidate, config)).toMatchObject({
+      verification: { destination: "VERIFIED", source: "VERIFIED", overall: "VERIFIED" },
+      source: {
+        asset: "NIM",
+        network: "mainnet",
+        sender: NIMIQ_SENDER,
+        amountLuna: "100000",
+        transactionHash: NIMIQ_TX_HASH,
+        explorerTxUrl: `https://nimiq.watch/#${NIMIQ_TX_HASH}`,
+        evidence: "VERIFIED",
+        verification: "VERIFIED",
+      },
       destination: {
         asset: "USDC",
         network: "Polygon",
-        chainId: 137,
-        requestedAmountAtomic: "300000",
+        recipient: DESTINATION.toLowerCase(),
         verifiedAmountAtomic: "300000",
-        decimals: 6,
         transactionHash: CLAIM_TX,
+        explorerTxUrl: `https://polygonscan.com/tx/${CLAIM_TX}`,
       },
     });
-    expect(JSON.stringify(view)).not.toContain("Private label must not publish");
-    expect(JSON.stringify(view)).not.toContain("private-satora-id");
-    expect(JSON.stringify(view)).not.toContain("private-idempotency-key");
-    expect(view).not.toHaveProperty("quotedSourceSats");
-    expect(view).not.toHaveProperty("lightningHash");
+    const serialized = JSON.stringify(toPublicProof(candidate, config));
+    expect(serialized).toContain(NIMIQ_TX_HASH);
+    expect(serialized).toContain("100000");
+    expect(serialized).toContain("300000");
+    expect(serialized).not.toContain("private-satora-id");
+    expect(serialized).not.toContain("ef".repeat(32));
   });
 
-  it("classifies an unverified NIM identifier without publishing it as source proof", () => {
-    const candidate = row({ proof: { nimiqTxHash: `0x${"12".repeat(32)}` } });
-    const view = toPublicProof(candidate, config);
-    expect(view?.source).toMatchObject({ evidence: "IDENTIFIER_UNVERIFIED", verification: "NOT_VERIFIED" });
-    expect(view?.verification.overall).toBe("DESTINATION_ONLY");
-    expect(JSON.stringify(view)).not.toContain("121212");
+  it("fails closed when the verified-source audit marker is missing required proof fields", () => {
+    const candidate = {
+      ...row({ proof: { nimiqTxHash: NIMIQ_TX_HASH } }),
+      sourceVerified: true,
+      sourceVerifiedHash: NIMIQ_TX_HASH,
+      sourceVerifiedEvidence: verifiedSource({ sender: "not-a-nimiq-address" }),
+    };
+    expect(isPublishableGlobalProof(candidate, config)).toBe(false);
+    expect(toPublicProof(candidate, config)).toBeNull();
   });
 
   it.each([
@@ -128,8 +176,14 @@ describe("A3c.1 global proof publication", () => {
     [{ proof: { finalityLevel: "confirmations-1" } }, "insufficient Polygon finality"],
     [{ transfer: { routeId: "usdc-arbitrum", targetNetwork: "Arbitrum" }, proof: { chainId: 42161, tokenContract: "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8", finalityLevel: "finalized" } }, "Arbitrum USDC.e"],
   ] as const)("rejects %s", (overrides, _label) => {
-    expect(isPublishableGlobalProof(row(overrides), config)).toBe(false);
-    expect(toPublicProof(row(overrides), config)).toBeNull();
+    const overrideProof = "proof" in overrides ? overrides.proof : undefined;
+    const candidate = row(overrides);
+    candidate.proof = { ...candidate.proof, nimiqTxHash: NIMIQ_TX_HASH, ...(overrideProof ?? {}) };
+    candidate.sourceVerified = true;
+    candidate.sourceVerifiedHash = NIMIQ_TX_HASH;
+    candidate.sourceVerifiedEvidence = verifiedSource();
+    expect(isPublishableGlobalProof(candidate, config)).toBe(false);
+    expect(toPublicProof(candidate, config)).toBeNull();
   });
 
   it("round-trips stable cursors and rejects malformed pagination input", () => {

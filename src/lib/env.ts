@@ -201,8 +201,15 @@ const envSchema = z.object({
     .string()
     .default("")
     .refine((v) => v === "" || /^https:\/\/[^\s]+$/i.test(v), { message: "must be empty or an https URL" }),
-  /** Nimiq network the RPC above serves. Used to refuse cross-network balances. */
+  /** Nimiq network the balance RPC above serves. Used to refuse cross-network balances. */
   THENCE_NIMIQ_NETWORK: z.enum(["mainnet", "testnet"]).default("mainnet"),
+  /** Separate trusted Nimiq RPC for source-payment proof; empty keeps it unavailable. */
+  THENCE_NIMIQ_PROOF_RPC_URL: z
+    .string()
+    .default("")
+    .refine((v) => v === "" || /^https:\/\/[^\s]+$/i.test(v), { message: "must be empty or an https URL" }),
+  /** Minimum trusted-node confirmation depth for source evidence. */
+  THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS: z.coerce.number().int().positive().default(6),
   /** Trusted application origin for absolute share links, e.g. https://pay.thence.example. Empty = relative links only. */
   THENCE_APP_ORIGIN: z
     .string()
@@ -303,6 +310,8 @@ export function validateEnv(source: Record<string, string | undefined> = process
     THENCE_SETTLEMENT_FINALITY_JSON: source["THENCE_SETTLEMENT_FINALITY_JSON"],
     THENCE_NIMIQ_RPC_URL: source["THENCE_NIMIQ_RPC_URL"],
     THENCE_NIMIQ_NETWORK: source["THENCE_NIMIQ_NETWORK"],
+    THENCE_NIMIQ_PROOF_RPC_URL: source["THENCE_NIMIQ_PROOF_RPC_URL"],
+    THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS: source["THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS"],
     THENCE_REQUEST_DEFAULT_TTL_SECONDS: source["THENCE_REQUEST_DEFAULT_TTL_SECONDS"],
     THENCE_REQUEST_MAX_TTL_SECONDS: source["THENCE_REQUEST_MAX_TTL_SECONDS"],
     THENCE_REQUESTS_READ_RATE_PER_MINUTE: source["THENCE_REQUESTS_READ_RATE_PER_MINUTE"],

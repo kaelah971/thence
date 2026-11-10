@@ -2,14 +2,15 @@
  * A3c.1 — read-only global proof-of-payments publication.
  *
  * This module exposes only already-committed delivery evidence. It never
- * changes transfer state, re-verifies a payment by trusting provider data, or
- * publishes the NIM source side as proven: Nimiq Pay remains the approval
- * boundary and this backend has no independent NIM debit verifier.
+ * changes transfer state or trusts Nimiq Pay's host response as proof. Source
+ * rows are publishable only after the server-side independent NIM verifier has
+ * recorded its result during reconciliation.
  */
 import { and, desc, eq, isNotNull, lt, or, sql, type SQL } from "drizzle-orm";
-import { transferProofs, transfers } from "@/db/schema";
+import { transferProofs, transferTransitions, transfers } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { DEFAULT_FINALITY_POLICY, explorerTxUrl } from "@/lib/settlement";
+import { isValidNimiqAddress } from "@/lib/nimiq";
 import { TRUSTED_ROUTE_TOKEN_IDENTITIES } from "@/lib/satora";
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -20,11 +21,13 @@ const ATOMIC_RE = /^[0-9]+$/;
 export const PUBLIC_PROOF_DEFAULT_LIMIT = 20;
 export const PUBLIC_PROOF_MAX_LIMIT = 50;
 export const PUBLIC_PROOF_DECIMALS = 6;
+export const PUBLIC_PROOF_NIM_DECIMALS = 5;
 export const PUBLIC_PROOF_ASSET = "USDC" as const;
 
 export type PublicProofNetwork = "Polygon" | "Arbitrum";
 export type PublicProofChainId = 137 | 42161;
-export type PublicProofSourceEvidence = "NOT_RECORDED" | "IDENTIFIER_UNVERIFIED";
+export type PublicProofSourceNetwork = "mainnet" | "testnet";
+export type PublicProofSourceEvidence = "VERIFIED";
 
 export interface PublicProofPublicationConfig {
   routeTokens: Record<string, string>;
@@ -34,6 +37,105 @@ export interface PublicProofPublicationConfig {
 export interface PublicProofRow {
   proof: typeof transferProofs.$inferSelect;
   transfer: typeof transfers.$inferSelect;
+  /** Set by the publication query from an internal verified-source audit row. */
+  sourceVerified?: boolean;
+  /** The source hash recorded by that same internal audit row. */
+  sourceVerifiedHash?: string | null;
+  /** Full verified source fields selected from that same audit row. */
+  sourceVerifiedEvidence?: unknown;
+}
+
+/**
+ * The source verifier writes a non-secret VERIFIED marker into the same
+ * transaction as the handoff transition. The publication query also requires
+ * that marker, while this boundary independently checks the stored hash shape.
+ * A host hash without that marker remains only an unverified identifier.
+ */
+export function getIndependentNimiqSourceProof(row: PublicProofRow): { transactionHash: string } | null {
+  const transactionHash = row.proof.nimiqTxHash?.trim().toLowerCase().replace(/^0x/, "");
+  const markerHash = row.sourceVerifiedHash === undefined
+    ? transactionHash
+    : row.sourceVerifiedHash?.trim().toLowerCase().replace(/^0x/, "");
+  if (
+    row.sourceVerified !== true ||
+    !transactionHash ||
+    !/^[0-9a-f]{64}$/.test(transactionHash) ||
+    markerHash !== transactionHash
+  ) {
+    return null;
+  }
+  return { transactionHash };
+}
+
+interface VerifiedNimiqSourcePublication {
+  network: PublicProofSourceNetwork;
+  sender: string;
+  amountLuna: string;
+  feeLuna: string;
+  totalDebitLuna: string;
+  transactionHash: string;
+  blockNumber: string;
+  confirmations: number;
+  verifiedAt: string;
+}
+
+function decimalString(value: unknown, allowZero: boolean): string | null {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  if (!allowZero && BigInt(value) === 0n) return null;
+  return value;
+}
+
+function sourceExplorerTxUrl(network: PublicProofSourceNetwork, transactionHash: string): string {
+  const explorer = network === "mainnet" ? "https://nimiq.watch" : "https://testnet.nimiq.watch";
+  return `${explorer}/#${transactionHash}`;
+}
+
+function verifiedNimiqSourceFor(row: PublicProofRow, transactionHash: string): VerifiedNimiqSourcePublication | null {
+  const raw = row.sourceVerifiedEvidence;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const normalizedHash = typeof value["transactionHash"] === "string"
+    ? value["transactionHash"].trim().toLowerCase().replace(/^0x/, "")
+    : "";
+  const sender = typeof value["sender"] === "string" ? value["sender"] : "";
+  const network = value["network"];
+  const amountLuna = decimalString(value["amountLuna"], false);
+  const feeLuna = decimalString(value["feeLuna"], true);
+  const totalDebitLuna = decimalString(value["totalDebitLuna"], false);
+  const blockNumber = decimalString(value["blockNumber"], true);
+  const confirmationsRaw = decimalString(value["confirmations"], true);
+  const verifiedAt = value["verifiedAt"];
+  if (
+    normalizedHash !== transactionHash ||
+    !/^[0-9a-f]{64}$/.test(normalizedHash) ||
+    !isValidNimiqAddress(sender) ||
+    (network !== "mainnet" && network !== "testnet") ||
+    amountLuna === null ||
+    feeLuna === null ||
+    totalDebitLuna === null ||
+    BigInt(totalDebitLuna) !== BigInt(amountLuna) + BigInt(feeLuna) ||
+    blockNumber === null ||
+    confirmationsRaw === null ||
+    BigInt(confirmationsRaw) < 1n ||
+    BigInt(confirmationsRaw) > BigInt(Number.MAX_SAFE_INTEGER) ||
+    BigInt(blockNumber) > BigInt(Number.MAX_SAFE_INTEGER) ||
+    typeof verifiedAt !== "string" ||
+    Number.isNaN(new Date(verifiedAt).getTime()) ||
+    new Date(verifiedAt).toISOString() !== verifiedAt
+  ) {
+    return null;
+  }
+  return {
+    network,
+    sender,
+    amountLuna,
+    feeLuna,
+    totalDebitLuna,
+    transactionHash: normalizedHash,
+    blockNumber,
+    confirmations: Number(confirmationsRaw),
+    verifiedAt,
+  };
 }
 
 export interface PublicProofView {
@@ -57,13 +159,24 @@ export interface PublicProofView {
   };
   verification: {
     destination: "VERIFIED";
-    source: "NOT_VERIFIED";
-    overall: "DESTINATION_ONLY";
+    source: "VERIFIED";
+    overall: "VERIFIED";
   };
   source: {
     asset: "NIM";
+    network: PublicProofSourceNetwork;
+    sender: string;
+    amountLuna: string;
+    feeLuna: string;
+    totalDebitLuna: string;
+    decimals: typeof PUBLIC_PROOF_NIM_DECIMALS;
+    transactionHash: string;
+    blockNumber: string;
+    confirmations: number;
+    verifiedAt: string;
+    explorerTxUrl: string;
     evidence: PublicProofSourceEvidence;
-    verification: "NOT_VERIFIED";
+    verification: "VERIFIED";
     note: string;
   };
 }
@@ -184,6 +297,11 @@ function routeIdentityFor(row: PublicProofRow): { routeId: "usdc-polygon" | "usd
  * writers already enforce these facts.
  */
 export function isPublishableGlobalProof(row: PublicProofRow, config: PublicProofPublicationConfig): boolean {
+  // A3c.1 may not publish destination-only records. The optional hash in the
+  // legacy proof row is usable only when reconciliation recorded independent
+  // source verification in the same transaction as the handoff transition.
+  const sourceProof = getIndependentNimiqSourceProof(row);
+  if (sourceProof === null || verifiedNimiqSourceFor(row, sourceProof.transactionHash) === null) return false;
   const identity = routeIdentityFor(row);
   const proof = row.proof;
   if (!identity || row.transfer.status !== "DELIVERED") return false;
@@ -230,7 +348,9 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
   const txHash = proof.evmTxHash!;
   const verifiedAt = proof.verifiedAt!;
   const policy = finalityPolicyFor(identity.chainId, config.finalityPolicies)!;
-  const sourceEvidence: PublicProofSourceEvidence = proof.nimiqTxHash?.trim() ? "IDENTIFIER_UNVERIFIED" : "NOT_RECORDED";
+  const sourceHash = getIndependentNimiqSourceProof(row)!;
+  const source = verifiedNimiqSourceFor(row, sourceHash.transactionHash)!;
+  const sourceEvidence: PublicProofSourceEvidence = "VERIFIED";
   return {
     proofId: proof.id,
     status: "DELIVERED",
@@ -252,14 +372,25 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
     },
     verification: {
       destination: "VERIFIED",
-      source: "NOT_VERIFIED",
-      overall: "DESTINATION_ONLY",
+      source: "VERIFIED",
+      overall: "VERIFIED",
     },
     source: {
       asset: "NIM",
+      network: source.network,
+      sender: source.sender,
+      amountLuna: source.amountLuna,
+      feeLuna: source.feeLuna,
+      totalDebitLuna: source.totalDebitLuna,
+      decimals: PUBLIC_PROOF_NIM_DECIMALS,
+      transactionHash: source.transactionHash,
+      blockNumber: source.blockNumber,
+      confirmations: source.confirmations,
+      verifiedAt: source.verifiedAt,
+      explorerTxUrl: sourceExplorerTxUrl(source.network, source.transactionHash),
       evidence: sourceEvidence,
-      verification: "NOT_VERIFIED",
-      note: "The Nimiq Pay debit is not independently verified by this public proof; no NIM amount, wallet, or transaction is published.",
+      verification: "VERIFIED",
+      note: "The NIM HTLC transaction sender, amount, network and confirmation depth were independently verified and bound to this delivery; payment hashes and HTLC internals are not published.",
     },
   };
 }
@@ -269,7 +400,49 @@ export function toPublicProof(row: PublicProofRow, config: PublicProofPublicatio
   return publicProofFromRow(row, config);
 }
 
+function sourceVerifiedEvidenceSql(): SQL {
+  return sql`(
+    SELECT jsonb_build_object(
+      'transactionHash', ${transferTransitions.evidence}->>'nimiqSourceTxHash',
+      'sender', ${transferTransitions.evidence}->>'nimiqSourceSenderAddress',
+      'amountLuna', ${transferTransitions.evidence}->>'nimiqSourceAmountLuna',
+      'feeLuna', ${transferTransitions.evidence}->>'nimiqSourceFeeLuna',
+      'totalDebitLuna', ${transferTransitions.evidence}->>'nimiqSourceTotalDebitLuna',
+      'blockNumber', ${transferTransitions.evidence}->>'nimiqSourceBlockNumber',
+      'confirmations', ${transferTransitions.evidence}->>'nimiqSourceConfirmations',
+      'network', ${transferTransitions.evidence}->>'nimiqSourceNetwork',
+      'verifiedAt', ${transferTransitions.evidence}->>'nimiqSourceVerifiedAt'
+    )
+    FROM ${transferTransitions}
+    WHERE ${transferTransitions.transferId} = ${transfers.id}
+      AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+      AND lower(regexp_replace(lower(${transferTransitions.evidence}->>'nimiqSourceTxHash'), '^0x', '')) =
+        lower(regexp_replace(lower(${transferProofs.nimiqTxHash}), '^0x', ''))
+    ORDER BY ${transferTransitions.createdAt} DESC
+    LIMIT 1
+  )`;
+}
+
 function publicationCondition(config: PublicProofPublicationConfig): SQL {
+  // Keep the database query fail-closed too. Only rows with a reconciliation
+  // audit marker produced by the independent verifier are candidates; the
+  // serializer still re-checks the hash and every destination invariant.
+  const sourceVerificationReady = sql`EXISTS (
+    SELECT 1
+    FROM ${transferTransitions}
+    WHERE ${transferTransitions.transferId} = ${transfers.id}
+      AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+      AND ${transferTransitions.evidence}->>'nimiqSourceSenderAddress' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceAmountLuna' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceFeeLuna' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceTotalDebitLuna' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceBlockNumber' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceConfirmations' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceNetwork' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceVerifiedAt' IS NOT NULL
+      AND lower(regexp_replace(lower(${transferTransitions.evidence}->>'nimiqSourceTxHash'), '^0x', '')) =
+        lower(regexp_replace(lower(${transferProofs.nimiqTxHash}), '^0x', ''))
+  )`;
   const polygonToken = trustedTokenFor("usdc-polygon", config);
   const polygonPolicy = finalityPolicyFor(137, config.finalityPolicies);
   const arbitrumToken = trustedTokenFor("usdc-arbitrum", config);
@@ -320,6 +493,7 @@ function publicationCondition(config: PublicProofPublicationConfig): SQL {
     sql`lower(${transferProofs.recipient}) = lower(${transfers.destination})`,
     sql`(${transferProofs.verifiedAmountAtomic})::numeric >= (${transfers.targetAmountAtomic})::numeric`,
     routeCondition,
+    sourceVerificationReady,
   )!;
 }
 
@@ -339,7 +513,29 @@ export async function listPublicProofs(
   const conditions: SQL[] = [publicationCondition(config)];
   if (query.cursor) conditions.push(cursorCondition(query.cursor));
   const rows = await db
-    .select({ proof: transferProofs, transfer: transfers })
+    .select({
+      proof: transferProofs,
+      transfer: transfers,
+      sourceVerified: sql<boolean>`EXISTS (
+        SELECT 1
+        FROM ${transferTransitions}
+        WHERE ${transferTransitions.transferId} = ${transfers.id}
+          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
+            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
+      )`,
+      sourceVerifiedHash: sql<string | null>`(
+        SELECT ${transferTransitions.evidence}->>'nimiqSourceTxHash'
+        FROM ${transferTransitions}
+        WHERE ${transferTransitions.transferId} = ${transfers.id}
+          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
+            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
+        ORDER BY ${transferTransitions.createdAt} DESC
+        LIMIT 1
+      )`,
+      sourceVerifiedEvidence: sourceVerifiedEvidenceSql(),
+    })
     .from(transferProofs)
     .innerJoin(transfers, eq(transferProofs.transferId, transfers.id))
     .where(and(...conditions))
@@ -365,7 +561,29 @@ export async function getPublicProof(
 ): Promise<PublicProofView | null> {
   if (!UUID_RE.test(proofId)) return null;
   const rows = await getDb()
-    .select({ proof: transferProofs, transfer: transfers })
+    .select({
+      proof: transferProofs,
+      transfer: transfers,
+      sourceVerified: sql<boolean>`EXISTS (
+        SELECT 1
+        FROM ${transferTransitions}
+        WHERE ${transferTransitions.transferId} = ${transfers.id}
+          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
+            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
+      )`,
+      sourceVerifiedHash: sql<string | null>`(
+        SELECT ${transferTransitions.evidence}->>'nimiqSourceTxHash'
+        FROM ${transferTransitions}
+        WHERE ${transferTransitions.transferId} = ${transfers.id}
+          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
+            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
+        ORDER BY ${transferTransitions.createdAt} DESC
+        LIMIT 1
+      )`,
+      sourceVerifiedEvidence: sourceVerifiedEvidenceSql(),
+    })
     .from(transferProofs)
     .innerJoin(transfers, eq(transferProofs.transferId, transfers.id))
     .where(and(eq(transferProofs.id, proofId), publicationCondition(config)))

@@ -41,6 +41,15 @@ describe("environment validation (B0)", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("requires a separate HTTPS Nimiq source-proof RPC when configured", () => {
+    const base = {
+      NODE_ENV: "test" as const,
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/thence",
+    };
+    expect(validateEnv({ ...base, THENCE_NIMIQ_PROOF_RPC_URL: "https://nim.example/rpc" }).ok).toBe(true);
+    expect(validateEnv({ ...base, THENCE_NIMIQ_PROOF_RPC_URL: "http://nim.example/rpc" }).ok).toBe(false);
+  });
+
   it("accepts verified token map + parses enabled routes", () => {
     const result = validateEnv({
       NODE_ENV: "test",

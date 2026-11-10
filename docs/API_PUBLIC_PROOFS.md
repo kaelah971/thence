@@ -16,6 +16,15 @@ historical-publication policies are approved. It is intentionally server-only
 and is not a `NEXT_PUBLIC_*` value. Anonymous reads are bounded by
 `THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE` and the shared anonymous ceiling.
 
+The implementation has a source-verification hard-stop: the endpoints must
+not publish destination-only rows even if an operator accidentally sets the
+publication flag. A row is eligible only after reconciliation independently
+verifies the Nimiq HTLC transaction against the configured trusted Nimiq RPC,
+binds its payment hash to the server-verified swap attachment, and records the
+source marker in the same handoff transition. Missing RPC configuration,
+provider disagreement, duplicate attribution, or ambiguous history keeps the
+row unpublished.
+
 When disabled, the endpoints return `404 PUBLIC_PROOFS_DISABLED` and do not
 open a database connection.
 
@@ -28,47 +37,43 @@ GET /api/proofs?limit=20&cursor=<opaque-cursor>
 `limit` is an integer from 1 to 50. Results are ordered newest verified
 settlement first, with a stable `(verifiedAt, proofId)` cursor.
 
-Sanitized example:
+A published item reports both independently verified legs. The destination
+contains the exact USDC amount in atomic units, recipient wallet, network,
+transaction hash and explorer link. The source contains the exact native NIM
+amount in luna (`decimals: 5`), authenticated sender wallet, Nimiq network,
+transaction hash and explorer link, plus fee/total-debit fields and trusted
+confirmation depth. Payment hashes, invoices, preimages, HTLC internals,
+Satora identifiers, owner/session ids and labels remain redacted.
+
+Example shape (values are illustrative):
 
 ```json
 {
-  "proofs": [
-    {
-      "proofId": "11111111-1111-4111-8111-111111111111",
-      "status": "DELIVERED",
-      "destination": {
-        "asset": "USDC",
-        "network": "Polygon",
-        "chainId": 137,
-        "tokenContract": "0x1111111111111111111111111111111111111111",
-        "recipient": "0x2222222222222222222222222222222222222222",
-        "requestedAmountAtomic": "300000",
-        "verifiedAmountAtomic": "300000",
-        "decimals": 6,
-        "transactionHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "blockNumber": "123456",
-        "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "finalityLevel": "confirmations-256",
-        "verifiedAt": "2026-11-10T12:10:00.000Z",
-        "explorerTxUrl": "https://polygonscan.com/tx/0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "verification": {
-        "destination": "VERIFIED",
-        "source": "NOT_VERIFIED",
-        "overall": "DESTINATION_ONLY"
-      },
-      "source": {
-        "asset": "NIM",
-        "evidence": "NOT_RECORDED",
-        "verification": "NOT_VERIFIED",
-        "note": "The Nimiq Pay debit is not independently verified by this public proof; no NIM amount, wallet, or transaction is published."
-      }
-    }
-  ],
-  "pagination": {
-    "limit": 20,
-    "nextCursor": null,
-    "hasMore": false
+  "proofId": "…",
+  "status": "DELIVERED",
+  "source": {
+    "asset": "NIM",
+    "network": "mainnet",
+    "sender": "NQ…",
+    "amountLuna": "100000",
+    "feeLuna": "100",
+    "totalDebitLuna": "100100",
+    "decimals": 5,
+    "transactionHash": "…",
+    "blockNumber": "…",
+    "confirmations": 6,
+    "explorerTxUrl": "https://nimiq.watch/#…",
+    "evidence": "VERIFIED",
+    "verification": "VERIFIED"
+  },
+  "destination": {
+    "asset": "USDC",
+    "network": "Polygon",
+    "recipient": "0x…",
+    "verifiedAmountAtomic": "300000",
+    "decimals": 6,
+    "transactionHash": "0x…",
+    "explorerTxUrl": "https://polygonscan.com/tx/0x…"
   }
 }
 ```
@@ -86,6 +91,11 @@ and non-public proof ids all return `404 NOT_FOUND`.
 
 A row is publishable only when all of the following hold:
 
+- an independent Nimiq verifier has proven the exact source transaction is a
+  successful native-NIM HTLC creation whose derived recipient, actual
+  transaction sender and encoded HTLC sender match the authenticated wallet,
+  including its exact amount, payment-hash binding, network finality and unique
+  binding to this transfer;
 - transfer status is `DELIVERED`;
 - the route is USDC on Polygon or Arbitrum and the proof chain matches it;
 - evidence source is the independently matched ERC20 destination transfer;
@@ -99,15 +109,27 @@ A row is publishable only when all of the following hold:
   requires `finalized`; Polygon uses the configured/default confirmation
   policy.
 
-Historical verified Polygon rows are not restricted by creation date. They
-remain subject to the gate and the current publication trust configuration.
+Historical Polygon rows are not restricted by creation date, but they are
+publishable only when exact independent NIM source evidence has also been
+recovered and bound. They remain subject to the gate and current publication
+trust configuration.
 
 ## Deliberate limitations
 
-The public contract does not publish recipient labels, owner/session ids,
-request or idempotency keys, invoices, payment hashes, preimages, Satora swap
-ids, credentials, quoted Lightning sats, or NIM amounts/wallets/transactions.
-A proof therefore establishes **verified destination settlement**, not an
-independently verified full NIM-to-USDC debit path. An optional stored NIM
-transaction identifier is classified as `IDENTIFIER_UNVERIFIED` and is never
-returned.
+The public contract publishes only the verified proof fields needed by an
+approved proof UI: source/destination assets, networks, wallet addresses,
+amounts, transaction hashes, block/finality metadata and explorer links. It
+does not publish recipient labels, owner/session ids, request or idempotency
+keys, invoices, Lightning payment hashes, preimages, HTLC internals, Satora
+swap ids, credentials or quoted Lightning sats. A host-returned Nimiq
+transaction identifier is not source proof and is never sufficient for
+publication. Source verification is required for every published row;
+destination-only publication remains blocked.
+
+Previously completed Polygon rows do not receive source proof automatically.
+The live handoff path can bind a source hash only when the authenticated
+handoff report supplies the exact identity and the trusted RPC verifies it.
+Historical recovery requires an exact operator-record transaction hash and a
+separate controlled verification/import procedure; missing, multiple or
+ambiguous records remain unpublished. No historical production coverage is
+claimed by this PR.
