@@ -61,6 +61,7 @@ export const SHARDS: Record<string, string[]> = {
     "a3a-arbitrum-payment-lifecycle",
     "a3b-arbitrum-failure-recovery",
     "a3c1-global-proofs",
+    "nimiq-source",
     "p6-server-reconciler",
     "f41-prepare-flow",
     "f41-recovery-vault",
