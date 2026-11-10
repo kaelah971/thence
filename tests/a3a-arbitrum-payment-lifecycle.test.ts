@@ -346,8 +346,8 @@ beforeAll(async () => {
   resetSatoraCachesForTests();
   installProvider();
   const clientInstance = await getSatoraClient();
-  quoteSpy = vi.spyOn(clientInstance, "getQuote").mockImplementation((async (request: { targetAmount?: bigint; targetChain?: number; targetToken?: string }) => {
-    expect(request.targetChain).toBe(ARBITRUM_CHAIN_ID);
+  quoteSpy = vi.spyOn(clientInstance, "getQuote").mockImplementation((async (request: { targetAmount?: bigint; targetChain?: string; targetToken?: string }) => {
+    expect(request.targetChain).toBe(String(ARBITRUM_CHAIN_ID));
     expect(request.targetToken?.toLowerCase()).toBe(NATIVE_USDC);
     const target = request.targetAmount as bigint;
     expect(target.toString()).toBe(TARGET_AMOUNT);
@@ -399,7 +399,7 @@ afterAll(async () => {
 describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated database)", () => {
   it("resolves native USDC and completes quote → handoff → finalized HTLC → claim → settlement receipt → DELIVERED", async () => {
     const route = await resolveRoute("USDC", "Arbitrum");
-    expect(route).toMatchObject({ chainId: ARBITRUM_CHAIN_ID, tokenAddress: NATIVE_USDC, tokenDecimals: 6 });
+    expect(route).toMatchObject({ chainId: String(ARBITRUM_CHAIN_ID), tokenAddress: NATIVE_USDC, tokenDecimals: 6 });
 
     const p = await createAuthorizedPayment("happy");
     await fundPayment(p);
