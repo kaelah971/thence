@@ -137,6 +137,10 @@ const envSchema = z.object({
       message: "DATABASE_URL must be a postgresql:// connection string",
     }),
   APP_VERSION: z.string().default("0.1.0-b0"),
+  /** Server-only global proof publication gate. Missing/0 keeps the feed dark. */
+  THENCE_PUBLIC_PROOFS_ENABLED: z.enum(["0", "1"]).default("0"),
+  /** Anonymous global-proof read rate limit per minute per client. */
+  THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE: z.coerce.number().int().positive().default(120),
   /** Comma-separated list of enabled route ids, e.g. "usdt-polygon,usdc-base". Empty = none enabled. */
   THENCE_ENABLED_ROUTES: z.string().default(""),
   /** Verified token addresses per route id (see above). Empty = none verified. */
@@ -275,6 +279,8 @@ export function validateEnv(source: Record<string, string | undefined> = process
     NODE_ENV: source["NODE_ENV"],
     DATABASE_URL: source["DATABASE_URL"],
     APP_VERSION: source["APP_VERSION"],
+    THENCE_PUBLIC_PROOFS_ENABLED: source["THENCE_PUBLIC_PROOFS_ENABLED"],
+    THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE: source["THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE"],
     THENCE_ENABLED_ROUTES: source["THENCE_ENABLED_ROUTES"],
     THENCE_ROUTE_TOKENS_JSON: source["THENCE_ROUTE_TOKENS_JSON"],
     THENCE_QUOTE_TTL_SECONDS: source["THENCE_QUOTE_TTL_SECONDS"],

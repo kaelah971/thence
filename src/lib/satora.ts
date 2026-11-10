@@ -32,13 +32,13 @@ const REFERENCE_TTL_MS = 60_000;
 /** Canonical EVM chain ids (public protocol constants, also the SDK `Chain` type). */
 const CHAIN_IDS: Record<string, Chain> = { Ethereum: "1", Polygon: "137", Arbitrum: "42161", Base: "8453" };
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-interface TrustedRouteTokenIdentity {
+export interface TrustedRouteTokenIdentity {
   address: string;
   chainId: Chain;
   decimals: number;
 }
 /** Independent trust anchor for Circle native USDC on Arbitrum One. */
-const TRUSTED_ROUTE_TOKEN_IDENTITIES: Partial<Record<RouteId, TrustedRouteTokenIdentity>> = {
+export const TRUSTED_ROUTE_TOKEN_IDENTITIES: Partial<Record<RouteId, TrustedRouteTokenIdentity>> = {
   "usdc-arbitrum": {
     address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     chainId: "42161",
