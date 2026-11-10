@@ -59,6 +59,7 @@ export const SHARDS: Record<string, string[]> = {
     "p5-locking-audit",
     "p3-claim-intent",
     "a3a-arbitrum-payment-lifecycle",
+    "a3b-arbitrum-failure-recovery",
     "p6-server-reconciler",
     "f41-prepare-flow",
     "f41-recovery-vault",
