@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { BalanceState } from "@/ui/lib/balance";
+import { nimUsdcPreview } from "@/ui/lib/conversion";
 import { formatLuna, shortNimiqAddress } from "@/ui/lib/luna";
 import type { WalletConnection } from "@/ui/lib/wallet";
 import { Icon } from "./Icon";
@@ -113,6 +114,11 @@ interface NimFaceProps {
 
 function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFaceProps): React.JSX.Element {
   const connected = wallet.status === "connected" ? wallet : null;
+  const [convWanted, setConvOpen] = useState(false);
+  // The panel belongs to the front card only.
+  const convOpen = convWanted && isFront;
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelId = `nim-usdc-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const head = (
     <div className={styles.head}>
       <CardIdentity asset="NIM" sub="Nimiq" />
@@ -169,7 +175,23 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
     <CardSurface asset="NIM">
       {head}
       <div className={styles.body} aria-busy={balance.status === "loading"} aria-live="polite">
-        <p className={styles.label}>{NIM_CARD_LABEL}</p>
+        <div className={styles.labelRow}>
+          <p className={styles.label}>{NIM_CARD_LABEL}</p>
+          {isFront && (
+            <button
+              ref={toggleRef}
+              type="button"
+              className={styles.convToggle}
+              aria-expanded={convOpen}
+              aria-controls={panelId}
+              onClick={() => setConvOpen((open) => !open)}
+            >
+              <span aria-hidden="true">≈</span> USDC
+              <Icon name="chevron-down" size={14} strokeWidth={2.4} />
+              <span className="sr-only"> value of your NIM</span>
+            </button>
+          )}
+        </div>
         {balance.status === "loading" ? (
           <span className={styles.amount}>
             <span className={styles.skeleton} />
@@ -205,7 +227,66 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
         <span>{sourceLabel}</span>
         {network && <span>{network}</span>}
       </div>
+      {isFront && (
+        <ConversionPanel
+          id={panelId}
+          open={convOpen}
+          balance={balance}
+          onClose={() => {
+            setConvOpen(false);
+            toggleRef.current?.focus();
+          }}
+        />
+      )}
     </CardSurface>
+  );
+}
+
+/**
+ * A3c.2 — expandable conversion preview inside the NIM card. It overlays the
+ * card (fixed size, nothing reflows) and states plainly that no trusted
+ * NIM→USDC rate exists, instead of inventing one. Never a quote.
+ */
+function ConversionPanel({ id, open, balance, onClose }: { id: string; open: boolean; balance: BalanceState; onClose: () => void }): React.JSX.Element {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const preview = nimUsdcPreview(balance);
+  useEffect(() => {
+    if (open) closeRef.current?.focus();
+  }, [open]);
+  return (
+    <div
+      id={id}
+      role="region"
+      aria-label="USDC value of your NIM"
+      className={styles.convPanel}
+      data-open={open}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          onClose();
+        }
+      }}
+    >
+      <div className={styles.convHead}>
+        <p className={styles.convTitle}>USDC value</p>
+        <button ref={closeRef} type="button" className={styles.convClose} onClick={onClose} aria-label="Hide USDC value">
+          <Icon name="chevron-down" size={16} strokeWidth={2.4} />
+        </button>
+      </div>
+      <dl className={styles.convRows}>
+        <div>
+          <dt>NIM balance</dt>
+          <dd className="tabular">
+            {preview.status === "rate-unavailable" ? `${preview.nim.text} NIM` : preview.status === "loading" ? "Loading…" : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>Estimated USDC</dt>
+          <dd data-muted="true">Unavailable</dd>
+        </div>
+      </dl>
+      {preview.status !== "loading" && <p className={styles.convNote}>{preview.message}</p>}
+    </div>
   );
 }
 

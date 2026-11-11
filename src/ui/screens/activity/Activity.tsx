@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { ButtonLink, Button } from "@/ui/components/Button";
 import { Icon } from "@/ui/components/Icon";
 import { AssetMark } from "@/ui/components/PaymentCard";
@@ -32,6 +32,7 @@ import { invalidateData } from "@/ui/lib/resource";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { usePaymentProgress } from "@/ui/screens/send/SettlementProgress";
 import styles from "./activity.module.css";
+import { ProofFeed } from "./ProofFeed";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -41,7 +42,56 @@ const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
   { value: "archived", label: "Archived" },
 ];
 
+type ActivityView = "mine" | "proofs";
+
+const VIEWS: ReadonlyArray<{ value: ActivityView; title: string; sub: string; icon: "user" | "globe" }> = [
+  { value: "mine", title: "My activity", sub: "Your payments", icon: "user" },
+  { value: "proofs", title: "Proof feed", sub: "Global payments", icon: "globe" },
+];
+
+/** A3c.2: My activity | Proof feed — a two-option radio group styled as the approved segmented toggle. */
+function ViewToggle({ value, onChange }: { value: ActivityView; onChange: (next: ActivityView) => void }): React.JSX.Element {
+  const index = Math.max(0, VIEWS.findIndex((v) => v.value === value));
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const nextIndex =
+      event.key === "Home" ? 0 : event.key === "End" ? VIEWS.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + VIEWS.length) % VIEWS.length;
+    const next = VIEWS[nextIndex];
+    if (!next) return;
+    onChange(next.value);
+    const group = event.currentTarget;
+    requestAnimationFrame(() => group.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus());
+  };
+  return (
+    <div role="radiogroup" aria-label="Activity view" className={styles.viewToggle} onKeyDown={onKeyDown}>
+      <span aria-hidden="true" className={styles.viewThumb} style={{ transform: `translateX(${index * 100}%)` }} />
+      {VIEWS.map((view) => {
+        const selected = view.value === value;
+        return (
+          <button
+            key={view.value}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            tabIndex={selected ? 0 : -1}
+            className={styles.viewOption}
+            onClick={() => onChange(view.value)}
+          >
+            <Icon name={view.icon} size={22} strokeWidth={1.8} />
+            <span className={styles.viewText}>
+              <span className={styles.viewTitle}>{view.title}</span>
+              <span className={styles.viewSub}>{view.sub}</span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function Activity(): React.JSX.Element {
+  const [view, setView] = useState<ActivityView>("mine");
   const data = useActivityData();
   const session = useSession();
   const ownerUserId = session.status === "valid" ? session.me.user.id : null;
@@ -73,7 +123,7 @@ export function Activity(): React.JSX.Element {
       <section className={shell.darkTop}>
         <span className={shell.glow} aria-hidden="true" />
         <h1 className={shell.title}>Activity</h1>
-        <p className={styles.lede}>Every payment, from approval to delivery.</p>
+        <p className={styles.lede}>Track your payments and see delivered proof.</p>
         <div className={styles.newPayment}>
           <ButtonLink href={NEW_PAYMENT_HREF} variant="mint" size="md" icon="arrow-up-right">
             New payment
@@ -90,74 +140,81 @@ export function Activity(): React.JSX.Element {
             <p className={styles.summaryText}>Delivered only appears once it&apos;s confirmed on their network.</p>
           </div>
         </div>
+        <ViewToggle value={view} onChange={setView} />
       </section>
 
       <section className={`${shell.paper} th-light`}>
         <span className={shell.paperHandle} aria-hidden="true" />
-        {preview && (
-          <div className={styles.previewRow}>
-            <PreviewTag>Preview payments · fictional, nothing was sent</PreviewTag>
-          </div>
-        )}
-        {!noPaymentsAtAll && <FilterChips label="Filter payments" options={FILTERS} value={filter} onChange={setFilter} />}
+        {view === "proofs" ? (
+          <ProofFeed onShowMine={() => setView("mine")} />
+        ) : (
+          <>
+            {preview && (
+              <div className={styles.previewRow}>
+                <PreviewTag>Preview payments · fictional, nothing was sent</PreviewTag>
+              </div>
+            )}
+            {!noPaymentsAtAll && <FilterChips label="Filter payments" options={FILTERS} value={filter} onChange={setFilter} />}
 
-        {data.status === "loading" && <RowSkeletons count={4} />}
-        {data.status === "error" && (
-          <EmptyState
-            icon="alert"
-            title="Couldn't load your activity"
-            body={data.message}
-            action={
-              <Button variant="soft" size="md" icon="refresh" onClick={data.retry}>
-                Try again
-              </Button>
-            }
-          />
-        )}
-        {(data.status === "disconnected" || noPaymentsAtAll) && (
-          <EmptyState
-            icon="activity"
-            title="No payments yet"
-            body="Payments you send show up here, with each step until they're delivered."
-            action={
-              <ButtonLink href={NEW_PAYMENT_HREF} variant="ink" size="md" icon="arrow-up-right">
-                Send money
-              </ButtonLink>
-            }
-          />
-        )}
-        {data.status === "ready" &&
-          !noPaymentsAtAll &&
-          (groups.length === 0 ? (
-            <EmptyState
-              icon="filter"
-              title="Nothing here"
-              body="No payments match this filter."
-              action={
-                <Button variant="soft" size="md" onClick={() => setFilter("all")}>
-                  Show all payments
-                </Button>
-              }
-            />
-          ) : (
-            <div aria-busy={data.refreshing}>
-              {groups.map((group) => (
-                <section key={group.day} className={styles.group} aria-label={group.day}>
-                  <h2 className={styles.day}>{group.day}</h2>
-                  {group.items.map((item) => (
-                    <ActivityRow key={item.id} item={item} showDay={false} onSelect={() => setSelected(item)} />
-                  ))}
-                </section>
-              ))}
-              {data.hasMore && (
-                <div className={styles.more}>
-                  <Button variant="soft" size="md" onClick={data.loadMore}>
-                    Show older payments
+            {data.status === "loading" && <RowSkeletons count={4} />}
+            {data.status === "error" && (
+              <EmptyState
+                icon="alert"
+                title="Couldn't load your activity"
+                body={data.message}
+                action={
+                  <Button variant="soft" size="md" icon="refresh" onClick={data.retry}>
+                    Try again
                   </Button>
+                }
+              />
+            )}
+            {(data.status === "disconnected" || noPaymentsAtAll) && (
+              <EmptyState
+                icon="activity"
+                title="No payments yet"
+                body="Payments you send show up here, with each step until they're delivered."
+                action={
+                  <ButtonLink href={NEW_PAYMENT_HREF} variant="ink" size="md" icon="arrow-up-right">
+                    Send money
+                  </ButtonLink>
+                }
+              />
+            )}
+            {data.status === "ready" &&
+              !noPaymentsAtAll &&
+              (groups.length === 0 ? (
+                <EmptyState
+                  icon="filter"
+                  title="Nothing here"
+                  body="No payments match this filter."
+                  action={
+                    <Button variant="soft" size="md" onClick={() => setFilter("all")}>
+                      Show all payments
+                    </Button>
+                  }
+                />
+              ) : (
+                <div aria-busy={data.refreshing}>
+                  {groups.map((group) => (
+                    <section key={group.day} className={styles.group} aria-label={group.day}>
+                      <h2 className={styles.day}>{group.day}</h2>
+                      {group.items.map((item) => (
+                        <ActivityRow key={item.id} item={item} showDay={false} onSelect={() => setSelected(item)} />
+                      ))}
+                    </section>
+                  ))}
+                  {data.hasMore && (
+                    <div className={styles.more}>
+                      <Button variant="soft" size="md" onClick={data.loadMore}>
+                        Show older payments
+                      </Button>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
+              ))}
+          </>
+        )}
       </section>
 
       <Sheet open={selected !== null} onClose={() => setSelected(null)} title="Payment details">
