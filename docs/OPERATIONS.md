@@ -15,6 +15,7 @@ no live money movement. Statuses: **VERIFIED**, **CONFIGURATION_REQUIRED**,
 | `THENCE_EVM_RPCS_JSON` | empty (fail-closed) or trusted | Trusted HTTPS RPCs per chain (CONFIGURATION_REQUIRED) |
 | Finality policy | defaults | Reviewed per chain (CONFIGURATION_REQUIRED) |
 | `THENCE_NIMIQ_RPC_URL` (F6, hardened F8.5) | empty, or a trusted Nimiq JSON-RPC | Trusted HTTPS Nimiq node for the read-only Home balance when the installed Nimiq Pay can't answer `getBalance`. Empty = honest "unavailable" (CONFIGURATION_REQUIRED). F8.5: server fallback retries transient 429/5xx/timeouts (bounded, honors capped Retry-After) and caches successes 60s in memory (failures never cached); failure classes log as static `thence balance fallback: rpc_*` codes (no addresses/URLs/bodies). F8.6: the server total is basic PLUS active Nimiq Pay-managed HTLC vaults funded by the session address (discovered from its history, read live, capped, cached with the balance); Nimiq Pay parks wallet funds in HTLC contracts, so a basic-only read mistakes managed funds for an empty wallet. Recipient-side locks are excluded as unilaterally unspendable; unknown vault coverage is flagged, never silently zeroed. A public rate-limited RPC behind shared serverless egress remains the residual risk — a trusted operator-owned node is the durable fallback (CONFIGURATION_REQUIRED) |
+| `THENCE_NIMIQ_PROOF_RPC_URL` + `THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS` (A3c.1) | empty / no source proof | Separate trusted HTTPS Nimiq node; source proof requires the configured trusted-node confirmation depth. Review that depth as the Nimiq finality policy. Empty URL fails closed, and never enables public publication by itself (CONFIGURATION_REQUIRED) |
 | Edge rate limiting / WAF | not needed | Required (HOST_INTEGRATION_PENDING, §3) |
 | Nimiq Pay host | stubbed/absent | Real host integration (HOST_INTEGRATION_PENDING) |
 | Funded settlement proof | mocks only | Real mainnet claim verification (E2E_PENDING) |
@@ -107,7 +108,9 @@ as verified.
   Pool errors log a static line only. Rate-limit counters store hashed
   challenges/tokens, never raw values.
 - `Cache-Control: no-store` on auth-gated reads, receipts, resume, and
-  public verification views. Public endpoints return terms only.
+  public verification views. Public proof endpoints return only independently
+  verified source/destination proof fields; secrets, payment hashes, invoices,
+  HTLC internals, Satora identifiers and session metadata remain redacted.
 
 ## 7. Readiness checks
 

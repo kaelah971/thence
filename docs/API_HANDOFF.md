@@ -26,6 +26,7 @@ swap per transfer, rejects second swaps, and never auto-creates anything.
 | GET | `/api/transfers/:id/attempt` | cookie (owner) | Resume contract: latest attempt + bound swap summary (no secrets). 404 when none |
 | POST | `/api/transfers/:id/attach` | cookie (owner) | `{ attemptToken, expectedQuoteRevision?, satoraSwapId, recoveryAcknowledged: true }` → verifies the swap read-only, binds it, advances QUOTED → SWAP_CREATED. Idempotent replays return stored facts |
 | POST | `/api/transfers/:id/authorize-handoff` | cookie (owner) | `{ attemptToken }` → revalidates live swap (still pending, invoice live) + repricing + ack, records one authorization, advances SWAP_CREATED → AWAITING_NIM_APPROVAL. Does NOT call Nimiq Pay |
+| POST | `/api/transfers/:id/handoff-result` | cookie (owner) | `{ outcome: cancelled\|initiated\|unknown, diagnostics?, sourceTxHash? }` → records the bounded host outcome. `sourceTxHash` is only an untrusted Nimiq hint; the server independently verifies it against the authenticated wallet, bound Lightning payment hash, trusted Nimiq RPC, and configured confirmation-finality policy. |
 
 All POSTs: same-origin, 8 KB body cap, DB-backed `transfers-write` throttle.
 
@@ -53,7 +54,15 @@ provider outcomes (timeout/down) return 503 and change nothing.
 ## Handoff boundary (B4.3+)
 
 After authorization the frontend must: read back durable recovery state,
-call Nimiq Pay `payLightningInvoice` itself, then observe provider status.
+call Nimiq Pay `payLightningInvoice` itself, then report only the bounded
+`cancelled`/`initiated`/`unknown` outcome. If the host returns a 32-byte hash,
+it may send it as `sourceTxHash`; that identifier is never proof on its own.
+The server reads the separate trusted Nimiq proof node independently and
+stores source proof only when the exact transaction hash, successful execution,
+actual transaction sender, authenticated HTLC sender, derived HTLC recipient,
+SHA-256 payment hash, positive NIM amount, native-NIM structure, network and
+configured finality checks pass; an unverified host hint never becomes source
+evidence or public proof. Then observe provider status.
 The backend will attach settlement evidence and receipts in later milestones.
 `Delivered` remains impossible without destination evidence; unknown
 outcomes must enter reconciliation, never failure.

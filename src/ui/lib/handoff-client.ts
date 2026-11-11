@@ -22,7 +22,11 @@ export interface HandoffReport {
   deduplicated: boolean;
 }
 
-type Opts = Pick<ApiOptions, "signal" | "fetch"> & { diagnostics?: PaymentDiagnostics | undefined };
+type Opts = Pick<ApiOptions, "signal" | "fetch"> & {
+  diagnostics?: PaymentDiagnostics | undefined;
+  /** Host-reported hash only; the backend verifies it independently. */
+  sourceTxHash?: string | undefined;
+};
 
 /** Map a host result onto the only outcomes the backend accepts. */
 export function mapHostResultToServerOutcome(result: HostPaymentResult): ServerHandoffOutcome {
@@ -45,12 +49,23 @@ export async function reportHandoffResult(
   if (outcome !== "cancelled" && outcome !== "initiated" && outcome !== "unknown") {
     throw new Error("Invalid handoff outcome.");
   }
-  const { diagnostics, ...requestOpts } = opts;
+  const { diagnostics, sourceTxHash, ...requestOpts } = opts;
+  if (sourceTxHash !== undefined && !/^(?:0x)?[0-9a-fA-F]{64}$/.test(sourceTxHash)) {
+    throw new Error("Invalid source transaction hash.");
+  }
+  if (outcome === "cancelled" && sourceTxHash !== undefined) {
+    throw new Error("A cancelled handoff cannot include a source transaction hash.");
+  }
+  const body = {
+    outcome,
+    ...(diagnostics ? { diagnostics } : {}),
+    ...(sourceTxHash ? { sourceTxHash } : {}),
+  };
   try {
     return await apiRequest<{ handoff: HandoffReport }>(`/api/transfers/${encodeURIComponent(transferId)}/handoff-result`, {
       ...requestOpts,
       method: "POST",
-      body: diagnostics ? { outcome, diagnostics } : { outcome },
+      body,
     });
   } finally {
     // P1: back from the Nimiq Pay host (any outcome, even a lost report):

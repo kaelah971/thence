@@ -32,6 +32,8 @@ interface HandoffRecord {
   invokedAt: string;
   outcomeReported: boolean;
   reportedOutcome: ServerHandoffOutcome | null;
+  /** Host hash hint; never treated as proof by the browser. */
+  sourceTxHash?: string | null;
 }
 
 const HANDOFF_KEY = "thence.f4.2.handoff.v1";
@@ -68,6 +70,7 @@ export function loadHandoffRecord(transferId: string, ownerUserId: string): Hand
         parsed.reportedOutcome === "cancelled" || parsed.reportedOutcome === "initiated" || parsed.reportedOutcome === "unknown"
           ? parsed.reportedOutcome
           : null,
+      sourceTxHash: typeof parsed.sourceTxHash === "string" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(parsed.sourceTxHash) ? parsed.sourceTxHash : null,
     };
   } catch {
     return null;
@@ -262,6 +265,7 @@ export function useHandoff(): {
         invokedAt: new Date().toISOString(),
         outcomeReported: false,
         reportedOutcome: null,
+        sourceTxHash: null,
       });
 
       let paymentDiagnostics: PaymentDiagnostics | null = null;
@@ -271,6 +275,20 @@ export function useHandoff(): {
         },
       });
       const outcome = mapHostResultToServerOutcome(result);
+      const sourceTxHash = result.kind === "initiated" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(result.hash) ? result.hash : undefined;
+      if (sourceTxHash) {
+        // Preserve the host hint before the report request can be lost; it is
+        // still untrusted and is only re-submitted for server verification.
+        saveHandoffRecord({
+          transferId: input.transferId,
+          ownerUserId: input.ownerUserId,
+          invoice: input.authorizedInvoice,
+          invokedAt: new Date().toISOString(),
+          outcomeReported: false,
+          reportedOutcome: null,
+          sourceTxHash,
+        });
+      }
       if (result.kind === "cancelled") {
         const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined });
         saveHandoffRecord({
@@ -280,6 +298,7 @@ export function useHandoff(): {
           invokedAt: new Date().toISOString(),
           outcomeReported: reported.ok,
           reportedOutcome: reported.ok ? outcome : null,
+          sourceTxHash: null,
         });
         // Terminal cancellation: the interrupted-payment pointer is now stale.
         if (reported.ok) clearPending(input.ownerUserId, input.transferId);
@@ -291,7 +310,16 @@ export function useHandoff(): {
         return;
       }
       if (result.kind === "initiated") {
-        const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined });
+        const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined, sourceTxHash });
+        saveHandoffRecord({
+          transferId: input.transferId,
+          ownerUserId: input.ownerUserId,
+          invoice: input.authorizedInvoice,
+          invokedAt: new Date().toISOString(),
+          outcomeReported: reported.ok,
+          reportedOutcome: reported.ok ? outcome : null,
+          sourceTxHash: sourceTxHash ?? null,
+        });
         if (!reported.ok) {
           // Native call succeeded but the report timed out: outcome unknown
           // until the server confirms. Never retry the native payment.
@@ -310,6 +338,7 @@ export function useHandoff(): {
         invokedAt: new Date().toISOString(),
         outcomeReported: reported.ok,
         reportedOutcome: reported.ok ? "unknown" : null,
+        sourceTxHash: null,
       });
       setState({
         phase: reported.ok ? "checking" : "checking",
@@ -337,7 +366,7 @@ export function useHandoff(): {
     const decided = decideResumeAction(current.data.transfer.status, record);
     if (decided.action === "report-unknown") {
       // Report unknown once for an unreported invocation; idempotent server-side.
-      await reportHandoffResult(transferId, "unknown").catch(() => undefined);
+      await reportHandoffResult(transferId, "unknown", { sourceTxHash: record?.sourceTxHash ?? undefined }).catch(() => undefined);
     }
     switch (decided.phase) {
       case "checking":

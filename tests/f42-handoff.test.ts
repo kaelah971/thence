@@ -254,6 +254,18 @@ describe("safe result handling: only the backend contract outcomes", () => {
     expect(res.ok && res.data.handoff.status).toBe("LIGHTNING_HANDOFF");
   });
 
+  it("forwards a valid host source hash only as a hint", async () => {
+    let requestBody: unknown = null;
+    const f = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ handoff: { transferId: "t-1", status: "LIGHTNING_HANDOFF", deduplicated: false } }), { status: 200 });
+    }) as typeof fetch;
+    await reportHandoffResult("t-1", "initiated", { fetch: f, sourceTxHash: "0x" + "11".repeat(32) });
+    expect(requestBody).toEqual({ outcome: "initiated", sourceTxHash: "0x" + "11".repeat(32) });
+    await expect(reportHandoffResult("t-1", "initiated", { fetch: f, sourceTxHash: "bad" })).rejects.toThrow(/source transaction hash/i);
+    await expect(reportHandoffResult("t-1", "cancelled", { fetch: f, sourceTxHash: "11".repeat(32) })).rejects.toThrow(/cancelled/i);
+  });
+
   it("forwards only the bounded diagnostics alongside the normalized outcome", async () => {
     let requestBody: unknown = null;
     const f = (async (_input: RequestInfo | URL, init?: RequestInit) => {

@@ -137,6 +137,10 @@ const envSchema = z.object({
       message: "DATABASE_URL must be a postgresql:// connection string",
     }),
   APP_VERSION: z.string().default("0.1.0-b0"),
+  /** Server-only global proof publication gate. Missing/0 keeps the feed dark. */
+  THENCE_PUBLIC_PROOFS_ENABLED: z.enum(["0", "1"]).default("0"),
+  /** Anonymous global-proof read rate limit per minute per client. */
+  THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE: z.coerce.number().int().positive().default(120),
   /** Comma-separated list of enabled route ids, e.g. "usdt-polygon,usdc-base". Empty = none enabled. */
   THENCE_ENABLED_ROUTES: z.string().default(""),
   /** Verified token addresses per route id (see above). Empty = none verified. */
@@ -197,8 +201,15 @@ const envSchema = z.object({
     .string()
     .default("")
     .refine((v) => v === "" || /^https:\/\/[^\s]+$/i.test(v), { message: "must be empty or an https URL" }),
-  /** Nimiq network the RPC above serves. Used to refuse cross-network balances. */
+  /** Nimiq network the balance RPC above serves. Used to refuse cross-network balances. */
   THENCE_NIMIQ_NETWORK: z.enum(["mainnet", "testnet"]).default("mainnet"),
+  /** Separate trusted Nimiq RPC for source-payment proof; empty keeps it unavailable. */
+  THENCE_NIMIQ_PROOF_RPC_URL: z
+    .string()
+    .default("")
+    .refine((v) => v === "" || /^https:\/\/[^\s]+$/i.test(v), { message: "must be empty or an https URL" }),
+  /** Minimum trusted-node confirmation depth for source evidence. */
+  THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS: z.coerce.number().int().positive().default(6),
   /** Trusted application origin for absolute share links, e.g. https://pay.thence.example. Empty = relative links only. */
   THENCE_APP_ORIGIN: z
     .string()
@@ -275,6 +286,8 @@ export function validateEnv(source: Record<string, string | undefined> = process
     NODE_ENV: source["NODE_ENV"],
     DATABASE_URL: source["DATABASE_URL"],
     APP_VERSION: source["APP_VERSION"],
+    THENCE_PUBLIC_PROOFS_ENABLED: source["THENCE_PUBLIC_PROOFS_ENABLED"],
+    THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE: source["THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE"],
     THENCE_ENABLED_ROUTES: source["THENCE_ENABLED_ROUTES"],
     THENCE_ROUTE_TOKENS_JSON: source["THENCE_ROUTE_TOKENS_JSON"],
     THENCE_QUOTE_TTL_SECONDS: source["THENCE_QUOTE_TTL_SECONDS"],
@@ -297,6 +310,8 @@ export function validateEnv(source: Record<string, string | undefined> = process
     THENCE_SETTLEMENT_FINALITY_JSON: source["THENCE_SETTLEMENT_FINALITY_JSON"],
     THENCE_NIMIQ_RPC_URL: source["THENCE_NIMIQ_RPC_URL"],
     THENCE_NIMIQ_NETWORK: source["THENCE_NIMIQ_NETWORK"],
+    THENCE_NIMIQ_PROOF_RPC_URL: source["THENCE_NIMIQ_PROOF_RPC_URL"],
+    THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS: source["THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS"],
     THENCE_REQUEST_DEFAULT_TTL_SECONDS: source["THENCE_REQUEST_DEFAULT_TTL_SECONDS"],
     THENCE_REQUEST_MAX_TTL_SECONDS: source["THENCE_REQUEST_MAX_TTL_SECONDS"],
     THENCE_REQUESTS_READ_RATE_PER_MINUTE: source["THENCE_REQUESTS_READ_RATE_PER_MINUTE"],

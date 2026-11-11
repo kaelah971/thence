@@ -23,7 +23,7 @@
  *   retirement (the server verifies pre-handoff or terminal expired evidence),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
@@ -32,7 +32,9 @@ import {
   paymentRequests,
   reconciliationObservations,
   swapAttachments,
+  transferProofs,
   transfers,
+  users,
 } from "@/db/schema";
 import { canTransition, isTerminal, transition } from "@/domain/transfers";
 import type { TransferStatus } from "@/domain/transfers";
@@ -40,10 +42,17 @@ import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { verifyHtlcFunding, verifyHtlcRefund, type HtlcFundingResult, type HtlcRefundResult } from "@/lib/settlement";
-import { recordPath } from "@/lib/transitions";
+import { recordPath, recordTransition } from "@/lib/transitions";
 import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
+import { getEnv } from "@/lib/env";
+import {
+  isNimiqSourceHashUnattributed,
+  verifyNimiqSourceTransaction,
+  type VerifiedNimiqSource,
+} from "@/lib/nimiq-source";
 
 type Db = ReturnType<typeof getDb>;
+type TxLike = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 const MAIN_LINE: TransferStatus[] = [
   "AWAITING_NIM_APPROVAL",
@@ -852,6 +861,129 @@ async function hasPriorMovement(db: DbClient, transferId: string): Promise<boole
   return priorMovement.length > 0;
 }
 
+const SOURCE_TX_HASH_RE = /^(?:0x)?[0-9a-fA-F]{64}$/;
+
+function normalizeSourceTxHash(value: string | undefined): string | null {
+  if (!value || !SOURCE_TX_HASH_RE.test(value)) return null;
+  return value.replace(/^0x/i, "").toLowerCase();
+}
+
+type SourceEvidenceRead = {
+  transactionHash: string;
+  evidence: VerifiedNimiqSource | null;
+  failureCode: string | null;
+};
+
+/**
+ * Read-only source evidence for a host-returned hash. The host hash is a
+ * hint only; the trusted Nimiq node and the bound Satora payment hash decide
+ * whether it becomes evidence. Failure never blocks the ordinary handoff
+ * outcome or advances payment state.
+ */
+async function gatherNimiqSourceEvidence(
+  userId: string,
+  transferId: string,
+  sourceTxHash: string | undefined,
+): Promise<SourceEvidenceRead | null> {
+  const transactionHash = normalizeSourceTxHash(sourceTxHash);
+  if (!transactionHash) return null;
+  try {
+    const db = getDb();
+    const transferRows = await db
+      .select({ ownerUserId: transfers.ownerUserId })
+      .from(transfers)
+      .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+      .limit(1);
+    if (!transferRows[0]) return { transactionHash, evidence: null, failureCode: "NOT_FOUND" };
+    const ownerRows = await db.select({ nimiqAddress: users.nimiqAddress }).from(users).where(eq(users.id, userId)).limit(1);
+    const ownerAddress = ownerRows[0]?.nimiqAddress;
+    const attachment = (await db.select().from(swapAttachments).where(eq(swapAttachments.transferId, transferId)).limit(1))[0];
+    if (!ownerAddress || !attachment) return { transactionHash, evidence: null, failureCode: "SOURCE_BINDING_UNAVAILABLE" };
+
+    const env = getEnv();
+    // The payment hash is taken from the server-verified attachment, never
+    // from the host's swapId/hash result or a fresh provider response. This
+    // keeps the source-to-transfer binding stable across provider drift.
+    const verified = await verifyNimiqSourceTransaction({
+      txHash: transactionHash,
+      ownerAddress,
+      lightningPaymentHash: attachment.paymentHash,
+      config: {
+        url: env.THENCE_NIMIQ_PROOF_RPC_URL,
+        network: env.THENCE_NIMIQ_NETWORK,
+        minConfirmations: env.THENCE_NIMIQ_PROOF_MIN_CONFIRMATIONS,
+      },
+    });
+    return verified.ok
+      ? { transactionHash, evidence: verified.evidence, failureCode: null }
+      : { transactionHash, evidence: null, failureCode: verified.code };
+  } catch {
+    // Source proof is additive observability. An invalid/missing proof config
+    // must not turn a successful native handoff report into a payment error.
+    return { transactionHash, evidence: null, failureCode: "SOURCE_VERIFICATION_UNAVAILABLE" };
+  }
+}
+
+function sourceAuditEvidence(source: SourceEvidenceRead | null): Record<string, unknown> {
+  if (!source) return {};
+  if (!source.evidence) {
+    return {
+      nimiqSourceVerification: "UNVERIFIED",
+      nimiqSourceTxHash: source.transactionHash,
+      nimiqSourceFailure: source.failureCode,
+    };
+  }
+  return {
+    nimiqSourceVerification: "VERIFIED",
+    nimiqSourceTxHash: source.evidence.transactionHash,
+    nimiqSourceSenderAddress: source.evidence.senderAddress,
+    nimiqSourceAmountLuna: source.evidence.amountLuna,
+    nimiqSourceFeeLuna: source.evidence.feeLuna,
+    nimiqSourceTotalDebitLuna: source.evidence.totalDebitLuna,
+    nimiqSourceBlockNumber: source.evidence.blockNumber,
+    nimiqSourceConfirmations: source.evidence.confirmations,
+    nimiqSourceNetwork: source.evidence.network,
+    nimiqSourceVerifiedAt: source.evidence.verifiedAt,
+  };
+}
+
+/** Store only the host hash as a conservative hint; it is never source proof. */
+async function persistNimiqSourceHint(tx: TxLike, transferId: string, sourceTxHash: string): Promise<boolean> {
+  const existing = await tx
+    .select({ nimiqTxHash: transferProofs.nimiqTxHash })
+    .from(transferProofs)
+    .where(eq(transferProofs.transferId, transferId))
+    .limit(1);
+  const rawCurrent = existing[0]?.nimiqTxHash?.trim() ?? null;
+  const current = rawCurrent ? normalizeSourceTxHash(rawCurrent) : null;
+  if (rawCurrent !== null && current !== sourceTxHash) return false;
+  await tx
+    .insert(transferProofs)
+    .values({ transferId, nimiqTxHash: sourceTxHash })
+    .onConflictDoUpdate({ target: transferProofs.transferId, set: { nimiqTxHash: sourceTxHash } });
+  return true;
+}
+
+async function bindVerifiedNimiqSource(tx: TxLike, transferId: string, evidence: VerifiedNimiqSource): Promise<boolean> {
+  // Advisory locking closes the check-then-write race because the schema must
+  // remain unchanged for this additive proof path.
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`nimiq-source:${evidence.transactionHash}`}))`);
+  const owners = await tx
+    .select({ transferId: transferProofs.transferId, nimiqTxHash: transferProofs.nimiqTxHash })
+    .from(transferProofs)
+    .where(isNotNull(transferProofs.nimiqTxHash));
+  if (
+    !isNimiqSourceHashUnattributed(
+      evidence.transactionHash,
+      transferId,
+      owners.map((row) => ({ transferId: row.transferId, transactionHash: row.nimiqTxHash })),
+    )
+  ) {
+    return false;
+  }
+  return persistNimiqSourceHint(tx, transferId, evidence.transactionHash);
+}
+
 /** P5: cancellation evidence is gathered with no lock held and no writes. */
 type CancelEvidence = {
   /** Transfer status the evidence was gathered for (commit requires it unchanged). */
@@ -903,11 +1035,17 @@ export const handoffOutcomeSchema = z
     // Client diagnostics are observability only. They never participate in
     // transition decisions or prove funding/settlement.
     diagnostics: handoffDiagnosticsSchema.optional(),
+    /** Host-returned Nimiq hash; server treats it as an untrusted hint. */
+    sourceTxHash: z.string().regex(SOURCE_TX_HASH_RE, "sourceTxHash must be a 32-byte hex hash.").optional(),
   })
   .strict()
   .refine((value) => value.diagnostics === undefined || value.diagnostics.normalizedOutcome === value.outcome, {
     path: ["diagnostics", "normalizedOutcome"],
     message: "Diagnostics outcome must match the reported outcome.",
+  })
+  .refine((value) => value.outcome !== "cancelled" || value.sourceTxHash === undefined, {
+    path: ["sourceTxHash"],
+    message: "A cancelled handoff cannot include a source transaction hint.",
   });
 
 /**
@@ -930,6 +1068,10 @@ export async function reportHandoffOutcome(
     throw new AuthError(400, "BAD_BODY", parsed.error.issues[0]?.message ?? "Invalid outcome.");
   }
   const outcome = parsed.data.outcome;
+  const sourceHintHash = normalizeSourceTxHash(parsed.data.sourceTxHash);
+  // Source verification is best-effort and read-only. It can never make the
+  // handoff report fail or advance payment state by itself.
+  const sourceRead = sourceHintHash ? await gatherNimiqSourceEvidence(userId, transferId, sourceHintHash) : null;
   const db = getDb();
   const ownerScope = and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId));
 
@@ -952,7 +1094,32 @@ export async function reportHandoffOutcome(
     const rows = await tx.select().from(transfers).where(ownerScope).limit(1);
     const transfer = rows[0];
     if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
+    let sourceForAudit: SourceEvidenceRead | null = null;
+    const acceptSourceEvidence = async (): Promise<void> => {
+      sourceForAudit = sourceRead;
+      if (!sourceHintHash) return;
+      if (sourceRead?.evidence) {
+        const bound = await bindVerifiedNimiqSource(tx, transfer.id, sourceRead.evidence);
+        if (!bound) {
+          sourceForAudit = { ...sourceRead, evidence: null, failureCode: "DUPLICATE_SOURCE_TRANSACTION" };
+        }
+      } else {
+        await persistNimiqSourceHint(tx, transfer.id, sourceHintHash);
+      }
+    };
     const current = transfer.status as TransferStatus;
+    const recordLateSourceEvidence = async (): Promise<void> => {
+      if (!sourceForAudit) return;
+      await recordTransition(tx, {
+        transferId: transfer.id,
+        from: current,
+        to: current,
+        actor: "owner",
+        actorUserId: userId,
+        reasonCode: "SOURCE_EVIDENCE_RECORDED",
+        evidence: { clientOutcome: outcome, ...sourceAuditEvidence(sourceForAudit) },
+      });
+    };
     // P5: every status change is audited in this same transaction.
     const applyPath = async (path: TransferStatus[], reasonCode: string, evidence: Record<string, unknown> = {}): Promise<TransferStatus> => {
       let state = current;
@@ -962,7 +1129,13 @@ export async function reportHandoffOutcome(
       await tx.update(transfers).set({ status: state, updatedAt: new Date() }).where(eq(transfers.id, transfer.id));
       await recordPath(
         tx,
-        { transferId: transfer.id, actor: "owner", actorUserId: userId, reasonCode, evidence: { clientOutcome: outcome, ...evidence } },
+        {
+          transferId: transfer.id,
+          actor: "owner",
+          actorUserId: userId,
+          reasonCode,
+          evidence: { clientOutcome: outcome, ...evidence, ...sourceAuditEvidence(sourceForAudit) },
+        },
         current,
         path,
       );
@@ -970,14 +1143,21 @@ export async function reportHandoffOutcome(
     };
     if (outcome === "initiated") {
       if (current !== "AWAITING_NIM_APPROVAL") {
-        if (current === "LIGHTNING_HANDOFF") return { transferId, status: current, deduplicated: true };
+        if (current === "LIGHTNING_HANDOFF") {
+          await acceptSourceEvidence();
+          await recordLateSourceEvidence();
+          return { transferId, status: current, deduplicated: true };
+        }
         throw new AuthError(409, "NOT_REPORTABLE", "Handoff initiation can only be reported while awaiting approval.");
       }
+      await acceptSourceEvidence();
       const next = await applyPath(["LIGHTNING_HANDOFF"], "CLIENT_REPORTED_INITIATED");
       return { transferId, status: next, deduplicated: false };
     }
     if (outcome === "unknown") {
       if (current === "OUTCOME_UNKNOWN" || current === "RECONCILING") {
+        await acceptSourceEvidence();
+        await recordLateSourceEvidence();
         return { transferId, status: current, deduplicated: true };
       }
       const start: TransferStatus[] =
@@ -987,6 +1167,7 @@ export async function reportHandoffOutcome(
             ? ["OUTCOME_UNKNOWN", "RECONCILING"]
             : [];
       if (start.length === 0) throw new AuthError(409, "NOT_REPORTABLE", "Unknown outcomes can only be reported for unresolved handoffs.");
+      await acceptSourceEvidence();
       const next = await applyPath(start, "CLIENT_REPORTED_UNKNOWN");
       return { transferId, status: next, deduplicated: false };
     }

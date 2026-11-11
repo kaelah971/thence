@@ -500,8 +500,9 @@ export const reconciliationObservations = pgTable(
  * reconciler and the evidence-gated terminal resolution. Each row records
  * who moved the transfer, from what, to what, why, and the non-secret
  * evidence relied on (provider status, tx-id presence, chain scan window and
- * result). Never stores invoices, preimages, credentials or addresses beyond
- * public contract identifiers.
+ * result). Never stores invoices, preimages or credentials. The gated source
+ * proof path may also retain the independently verified public Nimiq sender,
+ * amount, network, hash and finality fields needed by the proof API.
  *
  * A transfer can enter a terminal status at most once (partial unique
  * index), which makes terminal resolution idempotent under concurrency even
