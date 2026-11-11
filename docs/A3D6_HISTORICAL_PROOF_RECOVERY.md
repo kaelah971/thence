@@ -61,33 +61,52 @@ npx tsx scripts/recover-historical-proofs.ts --apply \
 
 ## Release checklist (redacted)
 
-Each production step requires separate owner approval.
+Each numbered step needs explicit owner approval. Stop on any unexpected
+result. Arbitrum stays disabled and publication stays off until step 9.
 
-1. [ ] Review and merge PR #64 and this PR (CI-equivalent local run: typecheck,
-       lint, build, full tests).
-2. [ ] Deploy the merged commit to Hermes with the existing versioned
-       procedure; confirm `/api/health` and `/api/proofs` → `404
-       PUBLIC_PROOFS_DISABLED`.
-3. [ ] Apply migration `0018` to production (owner-run,
-       `THENCE_MIGRATE_PRODUCTION=I_UNDERSTAND npm run db:migrate` with the
-       owner credential). Verify the table, the two partial unique indexes and
-       both triggers exist.
-4. [ ] Production dry run from a clean checkout of the deployed commit
-       (read-only): both cases must report `READY` with
-       `paymentHashMatch: full-256-bit`, `HTLC_OWNER_SIGNATURE`,
-       finalized on both Polygon RPCs.
-5. [ ] Production apply with `--operator-ref` and `--confirm NOV6,NOV7`;
-       both report `INSERTED` and `proofHashFilled: true`; re-run reports
-       `ALREADY_RECOVERED`.
-6. [ ] With the gate still off, confirm via a read-only query that both rows
-       satisfy the publication condition (or run the feed query locally
-       against production read-only).
-7. [ ] Owner decision: set `THENCE_PUBLIC_PROOFS_ENABLED=1` (hash-verified env
-       install) and restart only the web service; confirm two proofs render
-       with the qualified finality text and no private fields.
-8. [ ] Keep Arbitrum disabled; Polygon unchanged.
+1. **CI** — PR #65 `staging-build` green (build incl. release-shard check,
+   lint, integration shards, e2e). The shared test project already carries
+   migration `0018`; its CI guard requires migration count = journal length.
+2. **Merge order** — merge #65 into `feat/a3d2-nimiq-finality`, then #64 into
+   `main` as one push. Merging #64 alone would leave `main` at 18 journal
+   entries against a 19-migration test project and fail the CI guard.
+   Vercel auto-deploys `main`; that is safe with publication off because the
+   proof routes return 404 before touching the database.
+3. **Production migration (owner)** — as the owner role, from a clean checkout
+   of the merged commit:
+   `THENCE_MIGRATE_PRODUCTION=I_UNDERSTAND npm run db:migrate`. Additive only;
+   the running app never queries the table while the gate is off. Verify
+   read-only: the table (empty), two partial unique indexes, two triggers,
+   19 tracked migrations, and
+   `has_table_privilege('thence_app', 'transfer_source_evidence', 'SELECT')`
+   true (granted by the existing default privileges).
+4. **Hermes deploy** — existing versioned procedure; restart only
+   `thence-web-production` right after a reconciler run. Verify the build id,
+   `/api/health` 200 with the database reachable, `/api/proofs` →
+   `404 PUBLIC_PROOFS_DISABLED`, Polygon live and quoteable, Arbitrum
+   disabled, reconciler `errors:{}`.
+5. **Production dry run (read-only)** — clean checkout of the deployed commit,
+   `DATABASE_URL` = production `thence_app` URL injected in-process:
+   `npx tsx scripts/recover-historical-proofs.ts`. Both cases `READY` with
+   `paymentHashMatch: full-256-bit`, `HTLC_OWNER_SIGNATURE`, finalized on both
+   Polygon RPCs.
+6. **Authorized backfill** — same checkout and role:
+   `--apply --operator-ref <approval-id> --confirm NOV6,NOV7`. Both
+   `INSERTED` with `proofHashFilled: true`; an immediate re-run reports
+   `ALREADY_RECOVERED` for both.
+7. **Verify (read-only)** — exactly two `VERIFIED` evidence rows and no
+   `REJECTED`; both `transfer_proofs.nimiq_tx_hash` equal the allowlisted
+   hashes; no transfer status or transition changed; the feed query with the
+   production config returns exactly the two proofs (run locally, gate
+   untouched).
+8. **Review the rendered proofs** — locally against production read-only:
+   genuine NIM/USDC hashes and amounts, explorer links, method block and
+   qualified finality text; no payment hash, invoice, swap id, label or owner
+   id.
+9. **Publication (owner decision)** — set `THENCE_PUBLIC_PROOFS_ENABLED=1` via
+   the hash-verified env install, restart only the web service, and confirm
+   `/api/proofs` lists the two proofs through Cloudflare.
 
 Rollback: unset the publication flag (proofs disappear immediately). Evidence
-rows are append-only by design; a wrongly recovered case would be superseded by
-a separately approved `REJECTED` record and code that excludes it, never by
-deletion.
+is append-only; a wrongly recovered case is revoked by a separately approved
+`REJECTED` record, which removes it from the feed without deleting history.
