@@ -59,3 +59,105 @@ export const PREVIEW_TRANSFERS: readonly PreviewTransfer[] = [
 export function previewRecipient(id: string): PreviewRecipient | undefined {
   return PREVIEW_RECIPIENTS.find((r) => r.id === id);
 }
+
+/* ---------- A3c.2 proof feed (preview only) ---------- */
+
+/**
+ * PREVIEW proof cards for the development preview route ONLY.
+ *
+ * Deliberately non-genuine: zero-padded wallet addresses and transaction
+ * hashes, invalid-looking Nimiq groups ("PREV IEW0") and NO explorer links,
+ * so they can never be mistaken for, or linked to, a real payment. The live
+ * Proof Feed renders only server-published, independently verified rows;
+ * these fixtures are reachable only while preview mode is on (never in a
+ * production build) and every screen labels them "Preview".
+ */
+export interface PreviewProof extends PreviewBrand {
+  proofId: string;
+  status: "DELIVERED";
+  destination: {
+    asset: "USDC";
+    network: "Polygon" | "Arbitrum";
+    chainId: 137 | 42161;
+    tokenContract: string;
+    recipient: string;
+    requestedAmountAtomic: string;
+    verifiedAmountAtomic: string;
+    decimals: 6;
+    transactionHash: string;
+    blockNumber: string;
+    blockHash: string;
+    finalityLevel: string;
+    verifiedAt: string;
+    explorerTxUrl: string;
+  };
+  verification: { destination: "VERIFIED"; source: "VERIFIED"; overall: "VERIFIED" };
+  source: {
+    asset: "NIM";
+    network: "mainnet" | "testnet";
+    sender: string;
+    amountLuna: string;
+    feeLuna: string;
+    totalDebitLuna: string;
+    decimals: 5;
+    transactionHash: string;
+    blockNumber: string;
+    confirmations: number;
+    verifiedAt: string;
+    explorerTxUrl: string;
+    evidence: "VERIFIED";
+    verification: "VERIFIED";
+    note: string;
+  };
+}
+
+function previewProof(n: number, minutesAgo: number, nimLuna: number, usdcAtomic: number): PreviewProof {
+  const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const tail = String(n).padStart(4, "0");
+  const hex = (prefix: string) => `${prefix}${"0".repeat(60)}${tail}`;
+  return {
+    preview: true,
+    proofId: `00000000-0000-4000-8000-00000000${tail}`,
+    status: "DELIVERED",
+    destination: {
+      asset: "USDC",
+      network: "Polygon",
+      chainId: 137,
+      tokenContract: `0x${"0".repeat(36)}${tail}`,
+      recipient: `0x${"0".repeat(36)}a${tail.slice(1)}`,
+      requestedAmountAtomic: String(usdcAtomic),
+      verifiedAmountAtomic: String(usdcAtomic),
+      decimals: 6,
+      transactionHash: hex("0x"),
+      blockNumber: "0",
+      blockHash: hex("0x"),
+      finalityLevel: "finalized",
+      verifiedAt: at,
+      explorerTxUrl: "",
+    },
+    verification: { destination: "VERIFIED", source: "VERIFIED", overall: "VERIFIED" },
+    source: {
+      asset: "NIM",
+      network: "mainnet",
+      sender: `NQ00 PREV IEW0 0000 0000 0000 0000 0000 ${tail}`,
+      amountLuna: String(nimLuna),
+      feeLuna: "0",
+      totalDebitLuna: String(nimLuna),
+      decimals: 5,
+      transactionHash: hex(""),
+      blockNumber: "0",
+      confirmations: 0,
+      verifiedAt: at,
+      explorerTxUrl: "",
+      evidence: "VERIFIED",
+      verification: "VERIFIED",
+      note: "Preview fixture — not a real payment.",
+    },
+  };
+}
+
+export const PREVIEW_PROOFS: readonly PreviewProof[] = [
+  previewProof(1, 42, 250_000, 300_000),
+  previewProof(2, 190, 500_000, 600_000),
+  previewProof(3, 60 * 26, 1_000_000, 1_200_000),
+];

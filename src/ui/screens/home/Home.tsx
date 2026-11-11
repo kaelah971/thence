@@ -99,7 +99,7 @@ export function Home(): React.JSX.Element {
         <div className={styles.sendAs}>
           <div className={styles.sendAsRow}>
             <div>
-              <p className={styles.sendAsLabel}>Send value as</p>
+              <p className={styles.sendAsLabel}>Send NIM as</p>
               <button type="button" className={styles.sendAsButton} onClick={() => setPickerOpen(true)} aria-haspopup="dialog">
                 <AssetMark asset={destination.asset} size={24} />
                 <span>{destination.label}</span>
@@ -151,7 +151,7 @@ export function Home(): React.JSX.Element {
         )}
       </section>
 
-      <Sheet open={pickerOpen} onClose={() => setPickerOpen(false)} title="Send value as">
+      <Sheet open={pickerOpen} onClose={() => setPickerOpen(false)} title="Send NIM as">
         <DestinationPicker
           label="Choose what to estimate your NIM in"
           value={routeId}

@@ -363,6 +363,160 @@
   visibility: hidden;
 }
 
+/* ---------- A3c.2 NIM → USDC conversion preview (inside the NIM card) ---------- */
+.labelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.convToggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  margin-right: -6px;
+  padding: 0 8px 0 11px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 800;
+  white-space: nowrap;
+  transition:
+    transform var(--dur-press) var(--ease-press),
+    background-color var(--dur-fast) ease;
+}
+
+/* 44px touch target without enlarging the chip. */
+.convToggle::before {
+  content: "";
+  position: absolute;
+  inset: -7px -4px;
+}
+
+.convToggle:active {
+  transform: scale(0.96);
+}
+
+.convToggle svg {
+  transition: transform var(--dur-base) var(--ease-spring);
+}
+
+.convToggle[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.convToggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.convPanel {
+  position: absolute;
+  inset: 8px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(12px, 3.6vw, 16px);
+  border-radius: calc(var(--r-xl) - 6px);
+  background: linear-gradient(160deg, #0b3527 0%, #061a14 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 12px 30px -10px rgba(0, 0, 0, 0.5);
+  color: var(--on-ink);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px) scale(0.98);
+  transform-origin: 50% 100%;
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 280ms var(--ease-spring),
+    visibility 0s linear 280ms;
+}
+
+.convPanel[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 280ms var(--ease-spring),
+    visibility 0s;
+}
+
+.convHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.convTitle {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.convClose {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin: -8px -8px -8px 0;
+  border-radius: 50%;
+  color: inherit;
+  transform: rotate(180deg);
+}
+
+.convClose:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.convRows {
+  display: grid;
+  margin: 8px 0 0;
+}
+
+.convRows > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.8125rem;
+}
+
+.convRows dt {
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+.convRows dd {
+  margin: 0;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.convRows dd[data-muted="true"] {
+  opacity: 0.6;
+}
+
+.convNote {
+  margin-top: auto;
+  padding-top: 6px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  opacity: 0.7;
+}
+
 /* Local copies: CSS Modules scope animation names, so the global th-* keyframes don't resolve here. */
 @keyframes fadeIn {
   from {
@@ -393,5 +547,15 @@
 
   .skeleton::after {
     animation: none;
+  }
+
+  .convPanel,
+  .convPanel[data-open="true"] {
+    transform: none;
+    transition: opacity 120ms linear, visibility 0s;
+  }
+
+  .convToggle svg {
+    transition: none;
   }
 }
