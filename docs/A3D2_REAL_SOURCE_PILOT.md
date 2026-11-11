@@ -103,8 +103,11 @@ failure code.
 A successful report must include internally: exact hash match, successful
 execution, mainnet identity, native NIM HTLC structure, sender/refund-sender
 binding, payment-hash binding, derived HTLC recipient, value/fee, confirmation
-threshold, justified macroblock, and unique attribution. It must not write
-payment state or publish a proof.
+threshold, justified macroblock, and unique attribution. For an HTLC-funded
+source, the report must also include a Core-valid EarlyResolve proof whose
+sender signature derives to the authenticated owner; the encoded HTLC sender
+address alone is not sufficient. It must not write payment state or publish a
+proof.
 
 ## 5. Operator evidence collection guide — one historical payment
 
@@ -132,9 +135,12 @@ Collection sequence:
    attachment. Copy the internal transfer id, bound Lightning payment hash,
    owner-address binding, and any exact amount. Do not collect invoice or
    preimage material.
-3. Confirm the wallet sender equals the authenticated Thence owner address and
-   that the case is uniquely attributable. If there are zero or multiple
-   candidate hashes, stop with `NO_EXACT_HASH` or `AMBIGUOUS_HASH`.
+3. Confirm the wallet sender equals the authenticated Thence owner address for
+   a basic-account source. If the source is funded by an HTLC, require the
+   exact Core EarlyResolve proof and verify its sender signature derives to
+   that owner; never infer the mapping from the encoded address, amount, or
+   labels. In either case, confirm unique attribution. If there are zero or
+   multiple candidate hashes, stop with `NO_EXACT_HASH` or `AMBIGUOUS_HASH`.
 4. Run the manifest read-only against the approved RPC. Verify the exact hash,
    successful native-NIM HTLC creation, sender/refund-sender, payment-hash
    binding, amount/fee, mainnet network, confirmations, next justified macro
@@ -159,6 +165,11 @@ hash for a native-NIM case. No host payment was invoked here.
 
 Changed on dedicated branch `feat/a3d2-nimiq-finality`:
 
+- parse authoritative 82-byte Albatross HTLC creation data with a safe u64 timeout;
+- derive contract-creation recipients from the full Core transaction content,
+  including the Albatross sender-data vector;
+- require a cryptographically valid owner signature for HTLC-funded source
+  attribution;
 - require justified Albatross macroblock finality in `src/lib/nimiq-source.ts`;
 - record the finalizing macroblock in internal source evidence;
 - require that evidence at public-proof serialization/query boundaries;

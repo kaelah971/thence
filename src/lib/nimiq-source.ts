@@ -8,13 +8,22 @@
  * - it is on the configured Nimiq network, has configured confirmations, and
  *   is covered by the next justified Albatross macro block;
  * - it is a native NIM HTLC creation, not an unrelated transaction/asset;
- * - the HTLC's refund sender is the authenticated wallet address; and
+ * - the HTLC's refund sender is the authenticated wallet address; for an
+ *   HTLC-funded source, Core's EarlyResolve owner signature proves that
+ *   relationship instead of trusting the encoded address alone; and
  * - the HTLC's SHA-256 payment hash is the bound Satora Lightning hash.
  *
  * No payment, swap, claim or refund is initiated here. A missing/ambiguous
  * fact returns a non-proof result; callers must keep the source unverified.
  */
-import { blake2b256, nimiqBase32Decode, normalizeNimiqAddress, toUserFriendlyAddress } from "@/lib/nimiq";
+import {
+  blake2b256,
+  deriveNimiqAddress,
+  nimiqBase32Decode,
+  normalizeNimiqAddress,
+  toUserFriendlyAddress,
+  verifyEd25519Raw,
+} from "@/lib/nimiq";
 
 export const NIMIQ_SOURCE_RPC_TIMEOUT_MS = 8_000;
 export const NIMIQ_SOURCE_TX_HASH_RE = /^(?:0x)?[0-9a-fA-F]{64}$/;
@@ -26,8 +35,12 @@ export const NIMIQ_HTLC_ACCOUNT_TYPE = 2;
 export const NIMIQ_CONTRACT_CREATION_FLAG = 1;
 /** SHA-256 discriminator written by Nimiq Pay's Lightning HTLC builder. */
 export const NIMIQ_SHA256_HASH_ALGORITHM = 3;
-/** Core-rs HTLC creation data length: 20 + 20 + 1 + 32 + 1 + 4 bytes. */
-export const NIMIQ_HTLC_CREATION_DATA_BYTES = 78;
+/**
+ * Core-rs Albatross HTLC creation data length:
+ * 20 sender + 20 recipient + 1 algorithm + 32 hash root + 1 hash count +
+ * 8-byte big-endian u64 timeout.
+ */
+export const NIMIQ_HTLC_CREATION_DATA_BYTES = 82;
 /** Albatross finality policy: one macro block closes each 60-block batch. */
 export const NIMIQ_BLOCKS_PER_BATCH = 60;
 /** Official Albatross genesis heights used to locate the finalizing macro block. */
@@ -55,9 +68,10 @@ export interface NimiqSourceVerificationInput {
 export interface VerifiedNimiqSource {
   asset: "NIM";
   transactionHash: string;
-  /** Actual transaction sender, independently matched to the authenticated wallet. */
+  /** Actual transaction sender, independently matched to the authenticated wallet or its authenticated HTLC owner proof. */
   senderAddress: string;
   ownerAddress: string;
+  senderBinding: "DIRECT" | "HTLC_OWNER_SIGNATURE";
   amountLuna: string;
   feeLuna: string;
   totalDebitLuna: string;
@@ -196,7 +210,7 @@ function hasExpectedNetwork(value: unknown, network: NimiqSourceNetwork): boolea
 function hexBytes(value: unknown): Uint8Array | null {
   if (typeof value !== "string") return null;
   const clean = value.replace(/^0x/i, "");
-  if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(clean)) return null;
+  if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) return null;
   return Uint8Array.from(Buffer.from(clean, "hex"));
 }
 
@@ -205,23 +219,29 @@ interface HtlcCreationData {
   recipient: string;
   hashRoot: string;
   hashCount: number;
-  timeout: number;
+  /** Core-rs Albatross `u64` timeout, retained as a decimal string. */
+  timeout: string;
+}
+
+function readBigEndian(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
 }
 
 function parseHtlcCreationData(value: unknown): HtlcCreationData | null {
   const bytes = hexBytes(value);
-  // Core-rs serializes timeout as a big-endian u32:
-  // 20 sender + 20 recipient + 1 algorithm + 32 hash + 1 count + 4 timeout.
+  // Core-rs Albatross serializes CreationTransactionData as:
+  // 20 sender + 20 recipient + 1 algorithm + 32 hash + 1 count + 8-byte u64 timeout.
   if (!bytes || bytes.length !== NIMIQ_HTLC_CREATION_DATA_BYTES) return null;
   const sender = toUserFriendlyAddress(bytes.slice(0, 20));
   const recipient = toUserFriendlyAddress(bytes.slice(20, 40));
   const algorithm = bytes[40];
   const hashRoot = Buffer.from(bytes.slice(41, 73)).toString("hex");
   const hashCount = bytes[73];
-  const timeoutBytes = Buffer.from(bytes.slice(74, 78));
-  const timeout = timeoutBytes.readUInt32BE(0);
-  if (algorithm !== NIMIQ_SHA256_HASH_ALGORITHM || hashCount === undefined || hashCount < 1 || timeout <= 0) return null;
-  return { sender, recipient, hashRoot, hashCount, timeout };
+  const timeout = readBigEndian(bytes.slice(74, 82));
+  if (algorithm !== NIMIQ_SHA256_HASH_ALGORITHM || hashCount === undefined || hashCount < 1 || timeout <= 0n) return null;
+  return { sender, recipient, hashRoot, hashCount, timeout: timeout.toString() };
 }
 
 function addressBytes(address: string): Uint8Array | null {
@@ -239,27 +259,44 @@ function pushBigEndian(output: number[], value: bigint, byteLength: number): voi
   }
 }
 
-/**
- * Core-rs derives a contract-creation recipient by hashing the transaction
- * content with the recipient field replaced by 20 zero bytes. This check is
- * important: the zero address is only the derivation seed, never the on-chain
- * HTLC recipient.
- */
-export function deriveNimiqHtlcCreationAddress(input: {
+/** postcard's unsigned variable-length integer encoding used for Vec<u8>. */
+function pushUnsignedVarInt(output: number[], value: number): void {
+  let remaining = value;
+  do {
+    const lower = remaining % 128;
+    remaining = Math.floor(remaining / 128);
+    output.push(lower | (remaining > 0 ? 0x80 : 0));
+  } while (remaining > 0);
+}
+
+interface NimiqTransactionContentInput {
   data: Uint8Array;
   senderAddress: string;
   senderType: number;
+  recipient: Uint8Array;
   recipientType: number;
   value: bigint;
   fee: bigint;
   validityStartHeight: number;
   networkId: number;
   flags: number;
-}): string | null {
+  /** Albatross serializes sender_data as a postcard Vec<u8>. */
+  senderData?: Uint8Array;
+}
+
+/**
+ * Serialize the exact Core-rs `Transaction::serialize_content` bytes. The
+ * recipient is supplied by the caller because contract creation hashes the
+ * same content with a zero recipient, while signatures use the actual one.
+ */
+function serializeNimiqTransactionContent(input: NimiqTransactionContentInput): Uint8Array | null {
   const sender = addressBytes(input.senderAddress);
+  const senderData = input.senderData ?? new Uint8Array(0);
   if (
     !sender ||
+    input.recipient.length !== 20 ||
     input.data.length > 0xffff ||
+    !Number.isSafeInteger(senderData.length) ||
     !Number.isSafeInteger(input.senderType) ||
     !Number.isSafeInteger(input.recipientType) ||
     input.senderType < 0 ||
@@ -282,9 +319,9 @@ export function deriveNimiqHtlcCreationAddress(input: {
   ) {
     return null;
   }
+
   const content: number[] = [input.data.length >>> 8, input.data.length & 0xff, ...input.data];
-  content.push(...sender, input.senderType);
-  content.push(...new Uint8Array(20), input.recipientType);
+  content.push(...sender, input.senderType, ...input.recipient, input.recipientType);
   pushBigEndian(content, input.value, 8);
   pushBigEndian(content, input.fee, 8);
   content.push(
@@ -295,7 +332,86 @@ export function deriveNimiqHtlcCreationAddress(input: {
     input.networkId,
     input.flags,
   );
-  return toUserFriendlyAddress(blake2b256(Uint8Array.from(content)).subarray(0, 20));
+  // Core-rs omits sender_data only for PoW networks. The verifier accepts
+  // Albatross mainnet/testnet only, both of which include this length byte.
+  if (input.networkId === 5 || input.networkId === 24) {
+    pushUnsignedVarInt(content, senderData.length);
+    content.push(...senderData);
+  }
+  return Uint8Array.from(content);
+}
+
+/**
+ * Core-rs derives a contract-creation recipient by hashing the transaction
+ * content with the recipient field replaced by 20 zero bytes. This check is
+ * important: the zero address is only the derivation seed, never the on-chain
+ * HTLC recipient.
+ */
+export function deriveNimiqHtlcCreationAddress(input: {
+  data: Uint8Array;
+  senderAddress: string;
+  senderType: number;
+  recipientType: number;
+  value: bigint;
+  fee: bigint;
+  validityStartHeight: number;
+  networkId: number;
+  flags: number;
+  senderData?: Uint8Array;
+}): string | null {
+  const content = serializeNimiqTransactionContent({
+    ...input,
+    recipient: new Uint8Array(20),
+  });
+  return content ? toUserFriendlyAddress(blake2b256(content).subarray(0, 20)) : null;
+}
+
+const NIMIQ_ED25519_SIGNATURE_PROOF_BYTES = 1 + 32 + 1 + 64;
+const NIMIQ_EARLY_RESOLVE_PROOF_BYTES = 1 + (2 * NIMIQ_ED25519_SIGNATURE_PROOF_BYTES);
+
+interface Ed25519SignatureProof {
+  publicKey: Uint8Array;
+  signature: Uint8Array;
+  end: number;
+}
+
+/**
+ * Parse only the simple Ed25519/no-merkle-path SignatureProof form. Core also
+ * supports ES256, merkle paths, and WebAuthn fields; unsupported forms stay
+ * untrusted rather than being approximated here.
+ */
+function parseSimpleEd25519SignatureProof(bytes: Uint8Array, offset: number): Ed25519SignatureProof | null {
+  const end = offset + NIMIQ_ED25519_SIGNATURE_PROOF_BYTES;
+  if (end > bytes.length || bytes[offset] !== 0 || bytes[offset + 33] !== 0) return null;
+  const publicKey = bytes.slice(offset + 1, offset + 33);
+  const signature = bytes.slice(offset + 34, end);
+  if (publicKey.every((byte) => byte === 0)) return null;
+  return { publicKey, signature, end };
+}
+
+/**
+ * Authenticate an HTLC-funded source transaction without treating the encoded
+ * refund address alone as an ownership mapping. Albatross EarlyResolve proofs
+ * serialize the recipient signature first and the original HTLC sender's
+ * signature second. Both signatures must verify over the exact transaction
+ * content, and the latter public key must derive to the authenticated owner.
+ */
+function hasAuthenticatedHtlcOwnerProof(
+  proof: Uint8Array | null,
+  transactionContent: Uint8Array | null,
+  ownerAddress: string,
+): boolean {
+  if (!proof || !transactionContent || proof.length !== NIMIQ_EARLY_RESOLVE_PROOF_BYTES || proof[0] !== 1) return false;
+  const recipientProof = parseSimpleEd25519SignatureProof(proof, 1);
+  const senderProof = recipientProof ? parseSimpleEd25519SignatureProof(proof, recipientProof.end) : null;
+  if (!recipientProof || !senderProof || senderProof.end !== proof.length) return false;
+  if (
+    !verifyEd25519Raw(recipientProof.publicKey, transactionContent, recipientProof.signature) ||
+    !verifyEd25519Raw(senderProof.publicKey, transactionContent, senderProof.signature)
+  ) {
+    return false;
+  }
+  return deriveNimiqAddress(Buffer.from(senderProof.publicKey).toString("hex")) === ownerAddress;
 }
 
 function rpcResult(payload: unknown): unknown | null {
@@ -430,8 +546,15 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
   const networkId = safeNumber(record["networkId"] ?? record["network_id"], true);
   const sender = cleanAddress(record["from"] ?? record["sender"]);
   const recipient = cleanAddress(record["to"] ?? record["recipient"]);
+  const recipientData = hexBytes(record["recipientData"] ?? record["recipient_data"]);
+  const senderDataValue = record["senderData"] ?? record["sender_data"];
+  const senderData = senderDataValue === undefined ? null : hexBytes(senderDataValue);
   const htlc = parseHtlcCreationData(record["recipientData"] ?? record["recipient_data"]);
   const optionalAsset = record["asset"];
+  if (senderData === null) return fail("PROVIDER_MALFORMED");
+  // Core's basic and HTLC outgoing verifiers reject sender_data for these
+  // account types. Do not derive or authenticate a non-canonical transaction.
+  if (senderData.length !== 0) return fail("WRONG_ASSET");
   if (
     (optionalAsset !== undefined && (typeof optionalAsset !== "string" || optionalAsset.toUpperCase() !== "NIM")) ||
     (fromType !== NIMIQ_BASIC_ACCOUNT_TYPE && fromType !== NIMIQ_HTLC_ACCOUNT_TYPE) ||
@@ -439,13 +562,18 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
     flags !== NIMIQ_CONTRACT_CREATION_FLAG ||
     sender === null ||
     recipient === null ||
+    recipientData === null ||
     htlc === null
   ) {
     return fail("WRONG_ASSET");
   }
-  // Both the value-debiting transaction sender and the HTLC's encoded refund
-  // sender must match the authenticated wallet binding.
-  if (sender !== ownerAddress || htlc.sender !== ownerAddress) return fail("WRONG_SENDER");
+  // A basic-account funding transaction must be sent by the authenticated
+  // owner. An HTLC-funded transaction may only use the encoded refund sender
+  // after Core's EarlyResolve owner signature independently authenticates that
+  // HTLC-to-owner relationship; the address in creation data alone is not
+  // sufficient evidence and never relaxes WRONG_SENDER.
+  if (htlc.sender !== ownerAddress) return fail("WRONG_SENDER");
+  if (fromType === NIMIQ_BASIC_ACCOUNT_TYPE && sender !== ownerAddress) return fail("WRONG_SENDER");
   if (htlc.hashRoot !== lightningPaymentHash || htlc.hashCount !== 1) {
     return fail("PAYMENT_HASH_MISMATCH");
   }
@@ -454,8 +582,28 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
   const fee = integer(record["fee"], true);
   if (amount === null || fee === null) return fail("INVALID_AMOUNT");
   if (validityStartHeight === null || networkId === null) return fail("PROVIDER_MALFORMED");
+  const recipientBytes = addressBytes(recipient);
+  if (!recipientBytes) return fail("WRONG_ASSET");
+  if (fromType === NIMIQ_HTLC_ACCOUNT_TYPE) {
+    const transactionContent = serializeNimiqTransactionContent({
+      data: recipientData,
+      senderAddress: sender,
+      senderType: fromType,
+      recipient: recipientBytes,
+      recipientType: toType,
+      value: amount,
+      fee,
+      validityStartHeight,
+      networkId,
+      flags,
+      senderData,
+    });
+    if (!hasAuthenticatedHtlcOwnerProof(hexBytes(record["proof"]), transactionContent, ownerAddress)) {
+      return fail("WRONG_SENDER");
+    }
+  }
   const expectedRecipient = deriveNimiqHtlcCreationAddress({
-    data: hexBytes(record["recipientData"] ?? record["recipient_data"])!,
+    data: recipientData,
     senderAddress: sender,
     senderType: fromType,
     recipientType: toType,
@@ -464,6 +612,7 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
     validityStartHeight,
     networkId,
     flags,
+    senderData,
   });
   if (expectedRecipient === null || expectedRecipient !== recipient) return fail("WRONG_ASSET");
   if (input.expectedAmountLuna !== undefined) {
@@ -479,6 +628,7 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
       transactionHash: txHash,
       senderAddress: sender,
       ownerAddress,
+      senderBinding: fromType === NIMIQ_HTLC_ACCOUNT_TYPE ? "HTLC_OWNER_SIGNATURE" : "DIRECT",
       amountLuna: amount.toString(),
       feeLuna: fee.toString(),
       totalDebitLuna: (amount + fee).toString(),
@@ -488,7 +638,7 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
       network: input.config.network,
       lightningPaymentHash,
       htlcRecipient: htlc.recipient,
-      htlcTimeout: String(htlc.timeout),
+      htlcTimeout: htlc.timeout,
       verifiedAt: new Date().toISOString(),
     },
   };
