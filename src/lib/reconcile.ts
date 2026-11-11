@@ -942,6 +942,7 @@ function sourceAuditEvidence(source: SourceEvidenceRead | null): Record<string, 
     nimiqSourceTotalDebitLuna: source.evidence.totalDebitLuna,
     nimiqSourceBlockNumber: source.evidence.blockNumber,
     nimiqSourceConfirmations: source.evidence.confirmations,
+    nimiqSourceFinalizedByMacroBlock: source.evidence.finalizedByMacroBlock,
     nimiqSourceNetwork: source.evidence.network,
     nimiqSourceVerifiedAt: source.evidence.verifiedAt,
   };

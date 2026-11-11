@@ -41,8 +41,9 @@ A published item reports both independently verified legs. The destination
 contains the exact USDC amount in atomic units, recipient wallet, network,
 transaction hash and explorer link. The source contains the exact native NIM
 amount in luna (`decimals: 5`), authenticated sender wallet, Nimiq network,
-transaction hash and explorer link, plus fee/total-debit fields and trusted
-confirmation depth. Payment hashes, invoices, preimages, HTLC internals,
+transaction hash and explorer link, plus fee/total-debit fields, trusted
+confirmation depth and justified macro-block finality. Payment hashes, invoices,
+preimages, HTLC internals,
 Satora identifiers, owner/session ids and labels remain redacted.
 
 Example shape (values are illustrative):
@@ -94,8 +95,8 @@ A row is publishable only when all of the following hold:
 - an independent Nimiq verifier has proven the exact source transaction is a
   successful native-NIM HTLC creation whose derived recipient, actual
   transaction sender and encoded HTLC sender match the authenticated wallet,
-  including its exact amount, payment-hash binding, network finality and unique
-  binding to this transfer;
+  including its exact amount, payment-hash binding, confirmation threshold,
+  justified Albatross macro-block finality and unique binding to this transfer;
 - transfer status is `DELIVERED`;
 - the route is USDC on Polygon or Arbitrum and the proof chain matches it;
 - evidence source is the independently matched ERC20 destination transfer;

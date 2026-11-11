@@ -60,9 +60,9 @@ it may send it as `sourceTxHash`; that identifier is never proof on its own.
 The server reads the separate trusted Nimiq proof node independently and
 stores source proof only when the exact transaction hash, successful execution,
 actual transaction sender, authenticated HTLC sender, derived HTLC recipient,
-SHA-256 payment hash, positive NIM amount, native-NIM structure, network and
-configured finality checks pass; an unverified host hint never becomes source
-evidence or public proof. Then observe provider status.
+SHA-256 payment hash, positive NIM amount, native-NIM structure, network,
+confirmation threshold, and the next justified Albatross macro block all pass;
+an unverified host hint never becomes source evidence or public proof. Then observe provider status.
 The backend will attach settlement evidence and receipts in later milestones.
 `Delivered` remains impossible without destination evidence; unknown
 outcomes must enter reconciliation, never failure.

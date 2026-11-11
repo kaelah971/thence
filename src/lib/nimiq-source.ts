@@ -5,7 +5,8 @@
  * identifier. This module upgrades that identifier only after a trusted
  * Nimiq node proves the exact native NIM HTLC-creation transaction:
  * - the transaction is the requested hash and executed successfully;
- * - it is on the configured Nimiq network and has configured confirmation finality;
+ * - it is on the configured Nimiq network, has configured confirmations, and
+ *   is covered by the next justified Albatross macro block;
  * - it is a native NIM HTLC creation, not an unrelated transaction/asset;
  * - the HTLC's refund sender is the authenticated wallet address; and
  * - the HTLC's SHA-256 payment hash is the bound Satora Lightning hash.
@@ -27,6 +28,11 @@ export const NIMIQ_CONTRACT_CREATION_FLAG = 1;
 export const NIMIQ_SHA256_HASH_ALGORITHM = 3;
 /** Core-rs HTLC creation data length: 20 + 20 + 1 + 32 + 1 + 4 bytes. */
 export const NIMIQ_HTLC_CREATION_DATA_BYTES = 78;
+/** Albatross finality policy: one macro block closes each 60-block batch. */
+export const NIMIQ_BLOCKS_PER_BATCH = 60;
+/** Official Albatross genesis heights used to locate the finalizing macro block. */
+export const NIMIQ_MAINNET_GENESIS_BLOCK = 3_456_000;
+export const NIMIQ_TESTNET_GENESIS_BLOCK = 3_032_010;
 
 export type NimiqSourceNetwork = "mainnet" | "testnet";
 
@@ -57,6 +63,8 @@ export interface VerifiedNimiqSource {
   totalDebitLuna: string;
   blockNumber: number;
   confirmations: number;
+  /** Macro block whose Tendermint justification finalizes the transaction batch. */
+  finalizedByMacroBlock: number;
   network: NimiqSourceNetwork;
   lightningPaymentHash: string;
   htlcRecipient: string;
@@ -315,6 +323,33 @@ function transactionRecord(value: unknown): Record<string, unknown> | null {
   return outer;
 }
 
+function macroBlockNumberFor(blockNumber: number, network: NimiqSourceNetwork): number | null {
+  const genesis = network === "mainnet" ? NIMIQ_MAINNET_GENESIS_BLOCK : NIMIQ_TESTNET_GENESIS_BLOCK;
+  if (!Number.isSafeInteger(blockNumber) || blockNumber < genesis) return null;
+  const relative = blockNumber - genesis;
+  const offset = relative % NIMIQ_BLOCKS_PER_BATCH;
+  const macroBlock = blockNumber + (NIMIQ_BLOCKS_PER_BATCH - offset);
+  return Number.isSafeInteger(macroBlock) ? macroBlock : null;
+}
+
+/** Minimal shape check for the RPC's serialized Tendermint macro justification. */
+function hasMacroJustification(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const justification = value as Record<string, unknown>;
+  const round = safeNumber(justification["round"], true);
+  const signature = justification["sig"];
+  if (!signature || typeof signature !== "object" || Array.isArray(signature) || round === null) return false;
+  const multiSignature = signature as Record<string, unknown>;
+  const signers = multiSignature["signers"];
+  const encodedSignature = multiSignature["signature"];
+  const hasSignatureBytes = typeof encodedSignature === "string"
+    ? encodedSignature.length > 0
+    : Array.isArray(encodedSignature)
+      ? encodedSignature.length > 0
+      : Boolean(encodedSignature && typeof encodedSignature === "object" && Object.keys(encodedSignature).length > 0);
+  return Array.isArray(signers) && signers.length > 0 && hasSignatureBytes;
+}
+
 /**
  * Verify one host-reported hash against a trusted Nimiq JSON-RPC node.
  * This is read-only and returns no partial proof on any mismatch.
@@ -365,6 +400,28 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
   const blockNumber = safeNumber(record["blockNumber"], true);
   if (confirmations === null || blockNumber === null || confirmations < input.config.minConfirmations) {
     return fail("INSUFFICIENT_FINALITY");
+  }
+  // Albatross confirmations are head-distance only. A transaction is final
+  // only after the next macro block carries a Tendermint justification for its
+  // batch; six confirmations alone are never treated as macro finality.
+  const finalizedByMacroBlock = macroBlockNumberFor(blockNumber, input.config.network);
+  if (finalizedByMacroBlock === null) return fail("PROVIDER_MALFORMED");
+  let macroResult: unknown | null;
+  try {
+    macroResult = await call("getBlockByNumber", [finalizedByMacroBlock, false]);
+  } catch {
+    return fail("PROVIDER_UNAVAILABLE");
+  }
+  const macro = transactionRecord(macroResult);
+  if (!macro) return fail("INSUFFICIENT_FINALITY");
+  const observedMacroNumber = safeNumber(macro["number"], true);
+  if (
+    observedMacroNumber !== finalizedByMacroBlock ||
+    macro["type"] !== "macro" ||
+    !hasExpectedNetwork(macro["network"], input.config.network) ||
+    !hasMacroJustification(macro["justification"])
+  ) {
+    return fail("PROVIDER_MALFORMED");
   }
   const fromType = safeNumber(record["fromType"] ?? record["senderType"], true);
   const toType = safeNumber(record["toType"] ?? record["recipientType"], true);
@@ -427,6 +484,7 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
       totalDebitLuna: (amount + fee).toString(),
       blockNumber,
       confirmations,
+      finalizedByMacroBlock,
       network: input.config.network,
       lightningPaymentHash,
       htlcRecipient: htlc.recipient,

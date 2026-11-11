@@ -76,6 +76,8 @@ interface VerifiedNimiqSourcePublication {
   transactionHash: string;
   blockNumber: string;
   confirmations: number;
+  /** Internal finality evidence; not exposed in the public proof view. */
+  macroBlockNumber: string;
   verifiedAt: string;
 }
 
@@ -104,6 +106,7 @@ function verifiedNimiqSourceFor(row: PublicProofRow, transactionHash: string): V
   const totalDebitLuna = decimalString(value["totalDebitLuna"], false);
   const blockNumber = decimalString(value["blockNumber"], true);
   const confirmationsRaw = decimalString(value["confirmations"], true);
+  const macroBlockNumber = decimalString(value["macroBlockNumber"], true);
   const verifiedAt = value["verifiedAt"];
   if (
     normalizedHash !== transactionHash ||
@@ -116,6 +119,8 @@ function verifiedNimiqSourceFor(row: PublicProofRow, transactionHash: string): V
     BigInt(totalDebitLuna) !== BigInt(amountLuna) + BigInt(feeLuna) ||
     blockNumber === null ||
     confirmationsRaw === null ||
+    macroBlockNumber === null ||
+    BigInt(macroBlockNumber) < BigInt(blockNumber) ||
     BigInt(confirmationsRaw) < 1n ||
     BigInt(confirmationsRaw) > BigInt(Number.MAX_SAFE_INTEGER) ||
     BigInt(blockNumber) > BigInt(Number.MAX_SAFE_INTEGER) ||
@@ -134,6 +139,7 @@ function verifiedNimiqSourceFor(row: PublicProofRow, transactionHash: string): V
     transactionHash: normalizedHash,
     blockNumber,
     confirmations: Number(confirmationsRaw),
+    macroBlockNumber,
     verifiedAt,
   };
 }
@@ -394,7 +400,7 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
       explorerTxUrl: sourceExplorerTxUrl(source.network, source.transactionHash),
       evidence: sourceEvidence,
       verification: "VERIFIED",
-      note: "The NIM HTLC transaction sender, amount, network and confirmation depth were independently verified and bound to this delivery; payment hashes and HTLC internals are not published.",
+      note: "The NIM HTLC transaction sender, amount, network, confirmation depth and justified macro-block finality were independently verified and bound to this delivery; payment hashes and HTLC internals are not published.",
     },
   };
 }
@@ -414,6 +420,7 @@ function sourceVerifiedEvidenceSql(): SQL {
       'totalDebitLuna', ${transferTransitions.evidence}->>'nimiqSourceTotalDebitLuna',
       'blockNumber', ${transferTransitions.evidence}->>'nimiqSourceBlockNumber',
       'confirmations', ${transferTransitions.evidence}->>'nimiqSourceConfirmations',
+      'macroBlockNumber', ${transferTransitions.evidence}->>'nimiqSourceFinalizedByMacroBlock',
       'network', ${transferTransitions.evidence}->>'nimiqSourceNetwork',
       'verifiedAt', ${transferTransitions.evidence}->>'nimiqSourceVerifiedAt'
     )
@@ -443,6 +450,7 @@ function publicationCondition(config: PublicProofPublicationConfig): SQL {
       AND ${transferTransitions.evidence}->>'nimiqSourceTotalDebitLuna' IS NOT NULL
       AND ${transferTransitions.evidence}->>'nimiqSourceBlockNumber' IS NOT NULL
       AND ${transferTransitions.evidence}->>'nimiqSourceConfirmations' IS NOT NULL
+      AND ${transferTransitions.evidence}->>'nimiqSourceFinalizedByMacroBlock' IS NOT NULL
       AND ${transferTransitions.evidence}->>'nimiqSourceNetwork' IS NOT NULL
       AND ${transferTransitions.evidence}->>'nimiqSourceVerifiedAt' IS NOT NULL
       AND lower(regexp_replace(lower(${transferTransitions.evidence}->>'nimiqSourceTxHash'), '^0x', '')) =
