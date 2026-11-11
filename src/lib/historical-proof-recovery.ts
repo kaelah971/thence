@@ -21,6 +21,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "@/db/schema";
 import { swapAttachments, transferProofs, transferSourceEvidence, transfers, users } from "@/db/schema";
 import { TRANSFER_EVENT_TOPIC } from "@/lib/settlement";
+import { lockTransfer } from "@/lib/handoff";
 import { normalizeNimiqSourceHash, verifyNimiqSourceTransaction, type VerifiedNimiqSource } from "@/lib/nimiq-source";
 
 type Db = NodePgDatabase<typeof schema>;
@@ -402,7 +403,7 @@ function buildEvidence(src: VerifiedNimiqSource, dst: PolygonObservation[], exp:
 /* Attribution checks (database)                                       */
 /* ------------------------------------------------------------------ */
 
-export type AttributionState = "UNATTRIBUTED" | "ALREADY_RECOVERED" | "DUPLICATE_SOURCE" | "CONFLICTING_SOURCE";
+export type AttributionState = "UNATTRIBUTED" | "ALREADY_RECOVERED" | "REVOKED" | "DUPLICATE_SOURCE" | "CONFLICTING_SOURCE";
 
 export async function checkAttribution(db: DbLike, transferId: string, sourceHash: string): Promise<AttributionState> {
   const hash = lowerHex(sourceHash);
@@ -432,7 +433,14 @@ export async function checkAttribution(db: DbLike, transferId: string, sourceHas
     if (e.nimiqTxHash !== hash) return "CONFLICTING_SOURCE";
     already = true;
   }
-  return already ? "ALREADY_RECOVERED" : "UNATTRIBUTED";
+  if (!already) return "UNATTRIBUTED";
+  // Mirrors the publication query: a REJECTED record at/after VERIFIED revokes it.
+  const revoked = (await db.execute(sql`
+    SELECT 1 FROM transfer_source_evidence v
+    JOIN transfer_source_evidence r ON r.transfer_id = v.transfer_id AND r.verdict = 'REJECTED' AND r.created_at >= v.created_at
+    WHERE v.transfer_id = ${transferId}::uuid AND v.verdict = 'VERIFIED'
+    LIMIT 1`)) as unknown as { rows: unknown[] };
+  return revoked.rows.length > 0 ? "REVOKED" : "ALREADY_RECOVERED";
 }
 
 /* ------------------------------------------------------------------ */
@@ -460,7 +468,9 @@ export async function planRecovery(db: DbLike, c: HistoricalRecoveryCase, now = 
   if (!sourceHash) return blocked(["SOURCE_HASH_MALFORMED"], record.transferId);
 
   const attribution = await checkAttribution(db, record.transferId, sourceHash);
-  if (attribution === "DUPLICATE_SOURCE" || attribution === "CONFLICTING_SOURCE") return blocked([attribution], record.transferId);
+  if (attribution === "DUPLICATE_SOURCE" || attribution === "CONFLICTING_SOURCE" || attribution === "REVOKED") {
+    return blocked([attribution], record.transferId);
+  }
 
   const source = await verifyNimiqSourceTransaction({
     txHash: sourceHash,
@@ -523,6 +533,9 @@ export async function applyRecovery(
   const hash = plan.evidence.source.transactionHash;
   const transferId = plan.transferId;
   return db.transaction(async (tx) => {
+    // Same lock order as the live binder (reconcile.ts): transfer lock first,
+    // then the source-hash lock, so the two writers serialize without deadlock.
+    await lockTransfer(tx, transferId);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`nimiq-source:${hash}`}))`);
     const locked = await tx
       .select({ status: transfers.status })

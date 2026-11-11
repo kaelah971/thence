@@ -28,12 +28,18 @@ import {
   type PolygonExpectation,
 } from "@/lib/historical-proof-recovery";
 import { getPublicProof, isPublishableGlobalProof, listPublicProofs, publicProofConfig, toPublicProof, type PublicProofRow } from "@/lib/global-proofs";
+import { toUserFriendlyAddress } from "@/lib/nimiq";
 import { LIVE } from "./helpers";
 
 const FIX = join(__dirname, "fixtures", "a3d6");
 const load = (name: string): Record<string, any> => JSON.parse(readFileSync(join(FIX, name), "utf8"));
-const OWNER = "NQ47 VGR3 VVK0 R49X 98YG CNDY NST3 6CR5 BCKQ";
-const OTHER_OWNER = "NQ32 7HKC C30M X9NJ AURD EDSG 98H5 UX0R UEQB";
+// The authenticated owner is the HTLC refund sender encoded in the public NOV6
+// creation data (bytes 0–19); no wallet literal is kept in the repository.
+const OWNER = toUserFriendlyAddress(
+  Buffer.from(((load("nimiq-tx-nov6.json").result.data ?? load("nimiq-tx-nov6.json").result) as { recipientData: string }).recipientData, "hex").subarray(0, 20),
+);
+// Synthetic, valid-checksum address that owns nothing on chain.
+const OTHER_OWNER = toUserFriendlyAddress(new Uint8Array(20).fill(0x11));
 
 type CaseKey = "nov6" | "nov7";
 const fx = (k: CaseKey) => {
@@ -362,7 +368,8 @@ describe.skipIf(!LIVE)("A3d.6 recovery plan/apply (isolated database, rolled bac
       const redacted = JSON.stringify(redactPlan(plan));
       expect(redacted).not.toContain(NOV6.hashRoot);
       expect(redacted).not.toContain(transferId);
-      expect(redacted).not.toContain("VGR3");
+      expect(redacted).not.toContain(OWNER);
+      expect(redacted).not.toContain(OWNER.split(" ")[1]!);
 
       const applied = await applyRecovery(tx, plan, META);
       expect(applied).toEqual({ caseId: "NOV6", outcome: "INSERTED", proofHashFilled: true });
@@ -408,6 +415,7 @@ describe.skipIf(!LIVE)("A3d.6 recovery plan/apply (isolated database, rolled bac
       });
       expect((await listPublicProofs(query, prodLikeConfig, tx)).proofs.map((p) => p.proofId)).not.toContain(proof!.id);
       expect(await getPublicProof(proof!.id, prodLikeConfig, tx)).toBeNull();
+      expect(await planRecovery(tx, NOV6.c)).toMatchObject({ status: "BLOCKED", reasons: ["REVOKED"] });
     });
   });
 
