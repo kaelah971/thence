@@ -41,8 +41,9 @@ A published item reports both independently verified legs. The destination
 contains the exact USDC amount in atomic units, recipient wallet, network,
 transaction hash and explorer link. The source contains the exact native NIM
 amount in luna (`decimals: 5`), authenticated sender wallet, Nimiq network,
-transaction hash and explorer link, plus fee/total-debit fields, trusted
-confirmation depth and justified macro-block finality. Payment hashes, invoices,
+transaction hash and explorer link, plus fee/total-debit fields and trusted
+confirmation depth. Each item also carries a `method` block naming how both legs
+were checked and qualified finality wording (see below). Payment hashes, invoices,
 preimages, HTLC internals,
 Satora identifiers, owner/session ids and labels remain redacted.
 
@@ -75,9 +76,23 @@ Example shape (values are illustrative):
     "decimals": 6,
     "transactionHash": "0x…",
     "explorerTxUrl": "https://polygonscan.com/tx/0x…"
+  },
+  "method": {
+    "kind": "historical-recovery",
+    "sourceRpc": "Nimiq Watch open RPC (rpc.nimiqwatch.com)",
+    "destinationRpcs": ["PublicNode (polygon-bor-rpc.publicnode.com)", "dRPC (polygon.drpc.org)"],
+    "sourceFinality": "Included in a Nimiq batch whose closing macro block the RPC returned with a Tendermint justification; the aggregate validator signature was not independently verified.",
+    "destinationFinality": "At or below Polygon’s finalized block, with the same block hash, on two independent RPC operators."
   }
 }
 ```
+
+`method.kind` is `reconciliation` (checked by the live payment path against
+Thence’s configured nodes; `sourceRpc` is `null`, `destinationRpcs` empty) or
+`historical-recovery` (A3d.6 operator recovery under the named public-RPC trust
+policy). Nimiq finality is always qualified: macro-block inclusion and a present
+justification are checked, but the aggregate BLS signature is not independently
+verified, so the RPC operator remains the trust boundary for Nimiq finality.
 
 ## Detail
 
@@ -95,8 +110,11 @@ A row is publishable only when all of the following hold:
 - an independent Nimiq verifier has proven the exact source transaction is a
   successful native-NIM HTLC creation whose derived recipient, actual
   transaction sender and encoded HTLC sender match the authenticated wallet,
-  including its exact amount, payment-hash binding, confirmation threshold,
-  justified Albatross macro-block finality and unique binding to this transfer;
+  including its exact amount, full 256-bit payment-hash binding, confirmation
+  threshold, macro-block inclusion (justification present; aggregate signature
+  not independently verified) and unique binding to this transfer, recorded
+  either by the live reconciliation marker or by an append-only
+  `transfer_source_evidence` VERIFIED row;
 - transfer status is `DELIVERED`;
 - the route is USDC on Polygon or Arbitrum and the proof chain matches it;
 - evidence source is the independently matched ERC20 destination transfer;
@@ -108,7 +126,10 @@ A row is publishable only when all of the following hold:
   never USDC.e;
 - the independently verified NIM source is on mainnet. Testnet source evidence
   is never published alongside a mainnet Polygon or Arbitrum destination;
-- the stored finality level meets the applicable settlement policy. Arbitrum
+- the stored finality level meets the applicable settlement policy, or — for
+  historical recovery only — the recovery’s dual-RPC `finalized` re-check
+  matches the stored proof’s transaction, block, block hash, recipient, token
+  and amount exactly (the stored proof row is never rewritten). Arbitrum
   requires `finalized`; Polygon uses the configured/default confirmation
   policy.
 

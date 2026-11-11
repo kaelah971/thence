@@ -1,0 +1,8 @@
+{
+ "jsonrpc": "2.0",
+ "id": 1,
+ "result": {
+  "number": "0x5ca5a1a",
+  "hash": "0x880e3ae530d2f6763cc13ccd6c8b6a8869536d09b109af7cdf563891d48dbd21"
+ }
+}

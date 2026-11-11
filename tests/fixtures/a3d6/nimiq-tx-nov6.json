@@ -1,0 +1,34 @@
+{
+ "jsonrpc": "2.0",
+ "result": {
+  "data": {
+   "hash": "d234c7623ce9c60da88235263dd13d77f9858ba32c8b376f5dff07c4fce6b213",
+   "blockNumber": 66213564,
+   "timestamp": 1794000527393,
+   "confirmations": 427753,
+   "size": 348,
+   "relatedAddresses": [
+    "NQ32 7HKC C30M X9NJ AURD EDSG 98H5 UX0R UEQB",
+    "NQ26 CBDC KPN2 0SX8 907X 4QBP D28L TAMT FFUS",
+    "NQ38 RHJC Q4EV XH06 CGAF 3TG4 RVTU 9G9N UMUQ",
+    "NQ56 VE9K PV0Y TK4T QBMY 8E9G B85J QR6M MSHL",
+    "NQ47 VGR3 VVK0 R49X 98YG CNDY NST3 6CR5 BCKQ"
+   ],
+   "from": "NQ26 CBDC KPN2 0SX8 907X 4QBP D28L TAMT FFUS",
+   "fromType": 2,
+   "to": "NQ38 RHJC Q4EV XH06 CGAF 3TG4 RVTU 9G9N UMUQ",
+   "toType": 2,
+   "value": 114389614,
+   "fee": 0,
+   "senderData": "",
+   "recipientData": "ec323ef660c913e4a3f0659bfb6b63333255b278eb933bf41fdcc9bc2ebf439305a0b2c64d5aea340373d885bc1111bf0a2cafa23db7c634111fbc9eb34ee93a92c9778588b9a2303401000001a1bf6c4410",
+   "flags": 1,
+   "validityStartHeight": 66213561,
+   "proof": "010012636363d6bbaa599bef8997a2c8e20dd6464b635aba3e6fd8fafc55a58dba3a00f7baa01d521a1b9119407e85f833e14956aeeaf6d6cd861770ffdf91a45822464fef187fd36890a37aac587a09335c37b6062eab44fe30b710d00c8d36c38b09001bcb44dc15c8c9d2ff3bb091ed0914a6bdbf64d6e7f25f835efa4c37128ccf9900882727b9ee015849402074c0443f335378f7a453546a5c4ad1924d6fa8c8cea27c7bcc9462c1a05c6bfef95f445b1dab7bae1958a3f7c8e667b6ad2ae6010e0a",
+   "networkId": 24,
+   "executionResult": true
+  },
+  "metadata": null
+ },
+ "id": 1
+}

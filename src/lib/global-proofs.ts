@@ -7,7 +7,7 @@
  * recorded its result during reconciliation.
  */
 import { and, desc, eq, isNotNull, lt, or, sql, type SQL } from "drizzle-orm";
-import { transferProofs, transferTransitions, transfers } from "@/db/schema";
+import { transferProofs, transferSourceEvidence, transferTransitions, transfers } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { DEFAULT_FINALITY_POLICY, explorerTxUrl } from "@/lib/settlement";
 import { isValidNimiqAddress } from "@/lib/nimiq";
@@ -43,6 +43,71 @@ export interface PublicProofRow {
   sourceVerifiedHash?: string | null;
   /** Full verified source fields selected from that same audit row. */
   sourceVerifiedEvidence?: unknown;
+  /**
+   * Which append-only record supplied the source verification: the live
+   * reconciliation marker, or A3d.6 historical recovery evidence.
+   */
+  sourceRecordKind?: "reconciliation" | "historical-recovery" | null;
+  /** Recovery evidence's independent destination re-check (historical-recovery only). */
+  recoveredDestination?: unknown;
+}
+
+export interface PublicProofMethod {
+  kind: "reconciliation" | "historical-recovery";
+  /** Named RPC operator for the NIM check; null = Thence's configured Nimiq node. */
+  sourceRpc: string | null;
+  /** Named RPC operators for the Polygon re-check; empty = Thence's configured RPC. */
+  destinationRpcs: string[];
+  sourceFinality: string;
+  destinationFinality: string;
+}
+
+/** Qualified claim: macro-block inclusion is checked; the aggregate BLS signature is not. */
+export const PUBLIC_PROOF_SOURCE_FINALITY_CLAIM =
+  "Included in a Nimiq batch whose closing macro block the RPC returned with a Tendermint justification; the aggregate validator signature was not independently verified.";
+
+interface RecoveredDestination {
+  finalityLevel: string;
+  rpcOperators: string[];
+  sourceRpc: string;
+}
+
+/**
+ * Historical recovery re-checked the receipt on two RPC operators. Its
+ * finality is usable only if every recorded destination fact equals the
+ * stored proof row exactly; the stored proof row itself is never rewritten.
+ */
+function recoveredDestinationFor(row: PublicProofRow): RecoveredDestination | null {
+  if (row.sourceRecordKind !== "historical-recovery") return null;
+  const raw = row.recoveredDestination;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const d = value["destination"];
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  const dest = d as Record<string, unknown>;
+  const proof = row.proof;
+  const rpcs = dest["rpcOperators"];
+  const sourceRpc = value["sourceRpc"];
+  if (
+    dest["chainId"] !== 137 ||
+    typeof dest["transactionHash"] !== "string" ||
+    dest["transactionHash"] !== proof.evmTxHash?.toLowerCase() ||
+    dest["blockHash"] !== proof.blockHash?.toLowerCase() ||
+    dest["blockNumber"] !== String(proof.blockNumber) ||
+    dest["recipient"] !== proof.recipient?.toLowerCase() ||
+    dest["tokenContract"] !== proof.tokenContract?.toLowerCase() ||
+    dest["amountAtomic"] !== proof.verifiedAmountAtomic ||
+    dest["finalityLevel"] !== "finalized" ||
+    !Array.isArray(rpcs) ||
+    rpcs.length < 2 ||
+    !rpcs.every((r) => typeof r === "string" && r.length > 0 && r.length <= 80) ||
+    typeof sourceRpc !== "string" ||
+    sourceRpc.length === 0 ||
+    sourceRpc.length > 80
+  ) {
+    return null;
+  }
+  return { finalityLevel: "finalized", rpcOperators: rpcs as string[], sourceRpc };
 }
 
 /**
@@ -168,6 +233,7 @@ export interface PublicProofView {
     source: "VERIFIED";
     overall: "VERIFIED";
   };
+  method: PublicProofMethod;
   source: {
     asset: "NIM";
     network: PublicProofSourceNetwork;
@@ -343,12 +409,48 @@ export function isPublishableGlobalProof(row: PublicProofRow, config: PublicProo
   }
   const expectedToken = trustedTokenFor(identity.routeId, config);
   const policy = finalityPolicyFor(identity.chainId, config.finalityPolicies);
+  if (row.sourceRecordKind === "historical-recovery" && recoveredDestinationFor(row) === null) return false;
   return (
     expectedToken !== null &&
     proof.tokenContract.toLowerCase() === expectedToken &&
     policy !== null &&
-    proof.finalityLevel === finalityLevelFor(policy)
+    publishedFinalityLevel(row, policy) !== null
   );
+}
+
+/**
+ * The finality level a row may publish under the current policy: the stored
+ * proof's level, or — for historical recovery — the dual-RPC finalized
+ * re-check when it matches the stored proof exactly.
+ */
+function publishedFinalityLevel(row: PublicProofRow, policy: { mode: "finalized" | "confirmations"; confirmations: number }): string | null {
+  const required = finalityLevelFor(policy);
+  if (row.proof.finalityLevel === required) return required;
+  const recovered = recoveredDestinationFor(row);
+  return recovered !== null && recovered.finalityLevel === required ? required : null;
+}
+
+function methodFor(row: PublicProofRow, finalityLevel: string): PublicProofMethod {
+  const recovered = recoveredDestinationFor(row);
+  if (recovered) {
+    return {
+      kind: "historical-recovery",
+      sourceRpc: recovered.sourceRpc,
+      destinationRpcs: recovered.rpcOperators,
+      sourceFinality: PUBLIC_PROOF_SOURCE_FINALITY_CLAIM,
+      destinationFinality: "At or below Polygon's finalized block, with the same block hash, on two independent RPC operators.",
+    };
+  }
+  return {
+    kind: "reconciliation",
+    sourceRpc: null,
+    destinationRpcs: [],
+    sourceFinality: PUBLIC_PROOF_SOURCE_FINALITY_CLAIM,
+    destinationFinality:
+      finalityLevel === "finalized"
+        ? "At or below the finalized block reported by Thence's configured RPC."
+        : `${finalityLevel.replace("confirmations-", "")} confirmations on Thence's configured RPC.`,
+  };
 }
 
 function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationConfig): PublicProofView | null {
@@ -361,6 +463,7 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
   const sourceHash = getIndependentNimiqSourceProof(row)!;
   const source = verifiedNimiqSourceFor(row, sourceHash.transactionHash)!;
   const sourceEvidence: PublicProofSourceEvidence = "VERIFIED";
+  const finalityLevel = publishedFinalityLevel(row, policy)!;
   return {
     proofId: proof.id,
     status: "DELIVERED",
@@ -376,7 +479,7 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
       transactionHash: txHash.toLowerCase(),
       blockNumber: String(proof.blockNumber),
       blockHash: proof.blockHash!.toLowerCase(),
-      finalityLevel: proof.finalityLevel!,
+      finalityLevel,
       verifiedAt: verifiedAt.toISOString(),
       explorerTxUrl: explorerTxUrl(identity.chainId, txHash),
     },
@@ -385,6 +488,7 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
       source: "VERIFIED",
       overall: "VERIFIED",
     },
+    method: methodFor(row, finalityLevel),
     source: {
       asset: "NIM",
       network: source.network,
@@ -400,7 +504,7 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
       explorerTxUrl: sourceExplorerTxUrl(source.network, source.transactionHash),
       evidence: sourceEvidence,
       verification: "VERIFIED",
-      note: "The NIM HTLC transaction sender, amount, network, confirmation depth and justified macro-block finality were independently verified and bound to this delivery; payment hashes and HTLC internals are not published.",
+      note: "The NIM HTLC transaction's network, amount, sender owner binding and macro-block inclusion were checked and its lock hash matched this delivery's swap in full; the macro block's aggregate validator signature was not independently verified. Payment hashes and HTLC internals are not published.",
     },
   };
 }
@@ -410,58 +514,146 @@ export function toPublicProof(row: PublicProofRow, config: PublicProofPublicatio
   return publicProofFromRow(row, config);
 }
 
-function sourceVerifiedEvidenceSql(): SQL {
-  return sql`(
-    SELECT jsonb_build_object(
-      'transactionHash', ${transferTransitions.evidence}->>'nimiqSourceTxHash',
-      'sender', ${transferTransitions.evidence}->>'nimiqSourceSenderAddress',
-      'amountLuna', ${transferTransitions.evidence}->>'nimiqSourceAmountLuna',
-      'feeLuna', ${transferTransitions.evidence}->>'nimiqSourceFeeLuna',
-      'totalDebitLuna', ${transferTransitions.evidence}->>'nimiqSourceTotalDebitLuna',
-      'blockNumber', ${transferTransitions.evidence}->>'nimiqSourceBlockNumber',
-      'confirmations', ${transferTransitions.evidence}->>'nimiqSourceConfirmations',
-      'macroBlockNumber', ${transferTransitions.evidence}->>'nimiqSourceFinalizedByMacroBlock',
-      'network', ${transferTransitions.evidence}->>'nimiqSourceNetwork',
-      'verifiedAt', ${transferTransitions.evidence}->>'nimiqSourceVerifiedAt'
-    )
-    FROM ${transferTransitions}
-    WHERE ${transferTransitions.transferId} = ${transfers.id}
+/** Normalized proof source hash (lowercase, no 0x). */
+function proofSourceHashSql(): SQL {
+  return sql`lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', '', 'i'))`;
+}
+
+/** Live path: reconciliation transition marker with the exact proof hash. */
+function transitionMarkerMatchSql(): SQL {
+  return sql`${transferTransitions.transferId} = ${transfers.id}
       AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
-      AND lower(regexp_replace(lower(${transferTransitions.evidence}->>'nimiqSourceTxHash'), '^0x', '')) =
-        lower(regexp_replace(lower(${transferProofs.nimiqTxHash}), '^0x', ''))
-    ORDER BY ${transferTransitions.createdAt} DESC
-    LIMIT 1
+      AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '', 'i')) = ${proofSourceHashSql()}`;
+}
+
+/** A3d.6 path: append-only VERIFIED recovery evidence with the exact proof hash. */
+function recoveryEvidenceMatchSql(): SQL {
+  // An appended REJECTED record (same or later time) revokes publication
+  // without ever deleting or rewriting history.
+  return sql`${transferSourceEvidence.transferId} = ${transfers.id}
+      AND ${transferSourceEvidence.verdict} = 'VERIFIED'
+      AND ${transferSourceEvidence.nimiqTxHash} = ${proofSourceHashSql()}
+      AND NOT EXISTS (
+        SELECT 1 FROM transfer_source_evidence revoked
+        WHERE revoked.transfer_id = ${transferSourceEvidence.transferId}
+          AND revoked.verdict = 'REJECTED'
+          AND revoked.created_at >= ${transferSourceEvidence.createdAt}
+      )`;
+}
+
+function sourceVerifiedEvidenceSql(): SQL {
+  const e = transferTransitions.evidence;
+  const r = sql`${transferSourceEvidence.evidence}->'source'`;
+  return sql`COALESCE(
+    (SELECT jsonb_build_object(
+      'transactionHash', ${e}->>'nimiqSourceTxHash',
+      'sender', ${e}->>'nimiqSourceSenderAddress',
+      'amountLuna', ${e}->>'nimiqSourceAmountLuna',
+      'feeLuna', ${e}->>'nimiqSourceFeeLuna',
+      'totalDebitLuna', ${e}->>'nimiqSourceTotalDebitLuna',
+      'blockNumber', ${e}->>'nimiqSourceBlockNumber',
+      'confirmations', ${e}->>'nimiqSourceConfirmations',
+      'macroBlockNumber', ${e}->>'nimiqSourceFinalizedByMacroBlock',
+      'network', ${e}->>'nimiqSourceNetwork',
+      'verifiedAt', ${e}->>'nimiqSourceVerifiedAt'
+    ) FROM ${transferTransitions} WHERE ${transitionMarkerMatchSql()}
+    ORDER BY ${transferTransitions.createdAt} DESC LIMIT 1),
+    (SELECT jsonb_build_object(
+      'transactionHash', ${r}->>'transactionHash',
+      'sender', ${r}->>'sender',
+      'amountLuna', ${r}->>'amountLuna',
+      'feeLuna', ${r}->>'feeLuna',
+      'totalDebitLuna', ${r}->>'totalDebitLuna',
+      'blockNumber', ${r}->>'blockNumber',
+      'confirmations', ${r}->>'confirmations',
+      'macroBlockNumber', ${r}->>'macroBlockNumber',
+      'network', ${r}->>'network',
+      'verifiedAt', ${r}->>'verifiedAt'
+    ) FROM ${transferSourceEvidence} WHERE ${recoveryEvidenceMatchSql()} LIMIT 1)
+  )`;
+}
+
+/** Shared projection for list and detail reads (identical publication inputs). */
+function publicProofSelection() {
+  const transitionExists = sql`EXISTS (SELECT 1 FROM ${transferTransitions} WHERE ${transitionMarkerMatchSql()})`;
+  const recoveryExists = sql`EXISTS (SELECT 1 FROM ${transferSourceEvidence} WHERE ${recoveryEvidenceMatchSql()})`;
+  return {
+    proof: transferProofs,
+    transfer: transfers,
+    sourceVerified: sql<boolean>`(${transitionExists} OR ${recoveryExists})`,
+    sourceVerifiedHash: sql<string | null>`COALESCE(
+      (SELECT ${transferTransitions.evidence}->>'nimiqSourceTxHash' FROM ${transferTransitions}
+        WHERE ${transitionMarkerMatchSql()} ORDER BY ${transferTransitions.createdAt} DESC LIMIT 1),
+      (SELECT ${transferSourceEvidence.nimiqTxHash} FROM ${transferSourceEvidence} WHERE ${recoveryEvidenceMatchSql()} LIMIT 1)
+    )`,
+    sourceVerifiedEvidence: sourceVerifiedEvidenceSql(),
+    sourceRecordKind: sql<"reconciliation" | "historical-recovery" | null>`CASE
+      WHEN ${transitionExists} THEN 'reconciliation'
+      WHEN ${recoveryExists} THEN 'historical-recovery'
+      ELSE NULL END`,
+    recoveredDestination: sql<unknown>`(SELECT jsonb_build_object(
+        'destination', ${transferSourceEvidence.evidence}->'destination',
+        'sourceRpc', ${transferSourceEvidence.evidence}->'source'->>'rpcOperator')
+      FROM ${transferSourceEvidence} WHERE ${recoveryEvidenceMatchSql()} LIMIT 1)`,
+  };
+}
+
+/** Recovery evidence whose dual-RPC destination re-check matches this proof row exactly. */
+function recoveredFinalitySql(level: string): SQL {
+  const d = sql`${transferSourceEvidence.evidence}->'destination'`;
+  return sql`EXISTS (
+    SELECT 1 FROM ${transferSourceEvidence}
+    WHERE ${recoveryEvidenceMatchSql()}
+      AND ${d}->>'finalityLevel' = ${level}
+      AND ${d}->>'transactionHash' = lower(${transferProofs.evmTxHash})
+      AND ${d}->>'blockHash' = lower(${transferProofs.blockHash})
   )`;
 }
 
 function publicationCondition(config: PublicProofPublicationConfig): SQL {
-  // Keep the database query fail-closed too. Only rows with a reconciliation
-  // audit marker produced by the independent verifier are candidates; the
-  // serializer still re-checks the hash and every destination invariant.
-  const sourceVerificationReady = sql`EXISTS (
+  // Keep the database query fail-closed too. Only rows with an append-only
+  // record produced by the independent verifier (live reconciliation marker
+  // or A3d.6 recovery evidence) are candidates; the serializer still
+  // re-checks the hash and every destination invariant.
+  const e = transferTransitions.evidence;
+  const transitionReady = sql`EXISTS (
     SELECT 1
     FROM ${transferTransitions}
-    WHERE ${transferTransitions.transferId} = ${transfers.id}
-      AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
-      AND ${transferTransitions.evidence}->>'nimiqSourceNetwork' = 'mainnet'
-      AND ${transferTransitions.evidence}->>'nimiqSourceSenderAddress' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceAmountLuna' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceFeeLuna' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceTotalDebitLuna' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceBlockNumber' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceConfirmations' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceFinalizedByMacroBlock' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceNetwork' IS NOT NULL
-      AND ${transferTransitions.evidence}->>'nimiqSourceVerifiedAt' IS NOT NULL
-      AND lower(regexp_replace(lower(${transferTransitions.evidence}->>'nimiqSourceTxHash'), '^0x', '')) =
-        lower(regexp_replace(lower(${transferProofs.nimiqTxHash}), '^0x', ''))
+    WHERE ${transitionMarkerMatchSql()}
+      AND ${e}->>'nimiqSourceNetwork' = 'mainnet'
+      AND ${e}->>'nimiqSourceSenderAddress' IS NOT NULL
+      AND ${e}->>'nimiqSourceAmountLuna' IS NOT NULL
+      AND ${e}->>'nimiqSourceFeeLuna' IS NOT NULL
+      AND ${e}->>'nimiqSourceTotalDebitLuna' IS NOT NULL
+      AND ${e}->>'nimiqSourceBlockNumber' IS NOT NULL
+      AND ${e}->>'nimiqSourceConfirmations' IS NOT NULL
+      AND ${e}->>'nimiqSourceFinalizedByMacroBlock' IS NOT NULL
+      AND ${e}->>'nimiqSourceVerifiedAt' IS NOT NULL
   )`;
+  const r = sql`${transferSourceEvidence.evidence}->'source'`;
+  const recoveryReady = sql`EXISTS (
+    SELECT 1
+    FROM ${transferSourceEvidence}
+    WHERE ${recoveryEvidenceMatchSql()}
+      AND ${r}->>'network' = 'mainnet'
+      AND ${r}->>'transactionHash' = ${transferSourceEvidence.nimiqTxHash}
+      AND ${r}->>'sender' IS NOT NULL
+      AND ${r}->>'amountLuna' IS NOT NULL
+      AND ${r}->>'feeLuna' IS NOT NULL
+      AND ${r}->>'totalDebitLuna' IS NOT NULL
+      AND ${r}->>'blockNumber' IS NOT NULL
+      AND ${r}->>'confirmations' IS NOT NULL
+      AND ${r}->>'macroBlockNumber' IS NOT NULL
+      AND ${r}->>'verifiedAt' IS NOT NULL
+  )`;
+  const sourceVerificationReady = sql`(${transitionReady} OR ${recoveryReady})`;
   const polygonToken = trustedTokenFor("usdc-polygon", config);
   const polygonPolicy = finalityPolicyFor(137, config.finalityPolicies);
   const arbitrumToken = trustedTokenFor("usdc-arbitrum", config);
   const arbitrumPolicy = finalityPolicyFor(42161, config.finalityPolicies);
   const routeConditions: SQL[] = [];
   if (polygonToken && polygonPolicy) {
+    const level = finalityLevelFor(polygonPolicy);
     routeConditions.push(
       and(
         eq(transfers.routeId, "usdc-polygon"),
@@ -469,7 +661,7 @@ function publicationCondition(config: PublicProofPublicationConfig): SQL {
         eq(transfers.targetNetwork, "Polygon"),
         eq(transferProofs.chainId, 137),
         sql`lower(${transferProofs.tokenContract}) = ${polygonToken}`,
-        eq(transferProofs.finalityLevel, finalityLevelFor(polygonPolicy)),
+        or(eq(transferProofs.finalityLevel, level), recoveredFinalitySql(level))!,
       )!,
     );
   }
@@ -521,34 +713,12 @@ function cursorCondition(cursor: ProofCursor): SQL {
 export async function listPublicProofs(
   query: PublicProofFeedQuery,
   config: PublicProofPublicationConfig,
+  db: Pick<ReturnType<typeof getDb>, "select"> = getDb(),
 ): Promise<PublicProofFeedResult> {
-  const db = getDb();
   const conditions: SQL[] = [publicationCondition(config)];
   if (query.cursor) conditions.push(cursorCondition(query.cursor));
   const rows = await db
-    .select({
-      proof: transferProofs,
-      transfer: transfers,
-      sourceVerified: sql<boolean>`EXISTS (
-        SELECT 1
-        FROM ${transferTransitions}
-        WHERE ${transferTransitions.transferId} = ${transfers.id}
-          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
-          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
-            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
-      )`,
-      sourceVerifiedHash: sql<string | null>`(
-        SELECT ${transferTransitions.evidence}->>'nimiqSourceTxHash'
-        FROM ${transferTransitions}
-        WHERE ${transferTransitions.transferId} = ${transfers.id}
-          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
-          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
-            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
-        ORDER BY ${transferTransitions.createdAt} DESC
-        LIMIT 1
-      )`,
-      sourceVerifiedEvidence: sourceVerifiedEvidenceSql(),
-    })
+    .select(publicProofSelection())
     .from(transferProofs)
     .innerJoin(transfers, eq(transferProofs.transferId, transfers.id))
     .where(and(...conditions))
@@ -571,32 +741,11 @@ export async function listPublicProofs(
 export async function getPublicProof(
   proofId: string,
   config: PublicProofPublicationConfig,
+  db: Pick<ReturnType<typeof getDb>, "select"> = getDb(),
 ): Promise<PublicProofView | null> {
   if (!UUID_RE.test(proofId)) return null;
-  const rows = await getDb()
-    .select({
-      proof: transferProofs,
-      transfer: transfers,
-      sourceVerified: sql<boolean>`EXISTS (
-        SELECT 1
-        FROM ${transferTransitions}
-        WHERE ${transferTransitions.transferId} = ${transfers.id}
-          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
-          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
-            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
-      )`,
-      sourceVerifiedHash: sql<string | null>`(
-        SELECT ${transferTransitions.evidence}->>'nimiqSourceTxHash'
-        FROM ${transferTransitions}
-        WHERE ${transferTransitions.transferId} = ${transfers.id}
-          AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
-          AND lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '')) =
-            lower(regexp_replace(${transferProofs.nimiqTxHash}, '^0x', ''))
-        ORDER BY ${transferTransitions.createdAt} DESC
-        LIMIT 1
-      )`,
-      sourceVerifiedEvidence: sourceVerifiedEvidenceSql(),
-    })
+  const rows = await db
+    .select(publicProofSelection())
     .from(transferProofs)
     .innerJoin(transfers, eq(transferProofs.transferId, transfers.id))
     .where(and(eq(transferProofs.id, proofId), publicationCondition(config)))
