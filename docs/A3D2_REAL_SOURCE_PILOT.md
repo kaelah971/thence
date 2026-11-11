@@ -106,7 +106,44 @@ binding, payment-hash binding, derived HTLC recipient, value/fee, confirmation
 threshold, justified macroblock, and unique attribution. It must not write
 payment state or publish a proof.
 
-## 5. Future Nimiq Pay readiness
+## 5. Operator evidence collection guide — one historical payment
+
+Collect one case through an authorized operator, without asking the user for
+an invoice, preimage, session token, or other secret. Preserve the exact values
+in the manifest; redact them from reports.
+
+| Manifest field | Required provenance | Do not use |
+| --- | --- | --- |
+| `transferId` | Authenticated Thence transfer/reconciliation record | A public link or guessed row |
+| `sourceTxHash` | The user's Nimiq Pay wallet transaction detail/export, or an authenticated host receipt retained by the operator | Amount, time, destination tx, explorer search, or a provider `swapId` |
+| `ownerNimiqAddress` | Authenticated Thence wallet/session binding, confirmed against the user's wallet | An arbitrary explorer sender |
+| `lightningPaymentHash` | Authenticated Thence swap attachment/provider-verified record | Invoice text, preimage, invoice id, or host hash |
+| `expectedAmountLuna` | Exact Thence or wallet transaction record, if available | A quote conversion or inferred amount |
+| `sourceRecordReference` | Operator-controlled evidence reference and authorization | Unattributed screenshots |
+| `approvedRpcProfile` / `approvedMinConfirmations` | Operator-approved authenticated/history RPC policy | NimiqWatch public RPC or an unapproved six-confirmation rule |
+
+Collection sequence:
+
+1. Obtain the user's wallet export/transaction detail for the already-completed
+   payment and copy the exact Nimiq transaction hash, sender address, and NIM
+   amount. The user supplies wallet identity; the operator must not derive a
+   hash from an explorer or timestamp.
+2. Obtain the matching authenticated Thence transfer record and verified swap
+   attachment. Copy the internal transfer id, bound Lightning payment hash,
+   owner-address binding, and any exact amount. Do not collect invoice or
+   preimage material.
+3. Confirm the wallet sender equals the authenticated Thence owner address and
+   that the case is uniquely attributable. If there are zero or multiple
+   candidate hashes, stop with `NO_EXACT_HASH` or `AMBIGUOUS_HASH`.
+4. Run the manifest read-only against the approved RPC. Verify the exact hash,
+   successful native-NIM HTLC creation, sender/refund-sender, payment-hash
+   binding, amount/fee, mainnet network, confirmations, next justified macro
+   block, and duplicate attribution.
+5. Store only a redacted operator report containing provenance, verifier result,
+   finalizing macro-block number, and failure code or `VERIFIED`. Do not alter
+   payment state or enable publication.
+
+## 6. Future Nimiq Pay readiness
 
 The existing handoff forwards a strict 64-hex `payLightningInvoice().hash` as
 an untrusted `sourceTxHash` hint. The server independently verifies it against
@@ -118,7 +155,7 @@ Remaining uncertainty is real-host semantic confirmation: a live Nimiq Pay host
 must demonstrate that its returned `hash` is the submitted NIM transaction
 hash for a native-NIM case. No host payment was invoked here.
 
-## 6. Code and verification
+## 7. Code and verification
 
 Changed on dedicated branch `feat/a3d2-nimiq-finality`:
 
