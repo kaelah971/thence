@@ -301,7 +301,11 @@ export function isPublishableGlobalProof(row: PublicProofRow, config: PublicProo
   // legacy proof row is usable only when reconciliation recorded independent
   // source verification in the same transaction as the handoff transition.
   const sourceProof = getIndependentNimiqSourceProof(row);
-  if (sourceProof === null || verifiedNimiqSourceFor(row, sourceProof.transactionHash) === null) return false;
+  const sourceEvidence = sourceProof === null ? null : verifiedNimiqSourceFor(row, sourceProof.transactionHash);
+  // Public proofs are production-facing mainnet records. Testnet source
+  // evidence may be useful for controlled verification, but must never be
+  // paired with a mainnet USDC destination and published as a real payment.
+  if (sourceEvidence === null || sourceEvidence.network !== "mainnet") return false;
   const identity = routeIdentityFor(row);
   const proof = row.proof;
   if (!identity || row.transfer.status !== "DELIVERED") return false;
@@ -432,6 +436,7 @@ function publicationCondition(config: PublicProofPublicationConfig): SQL {
     FROM ${transferTransitions}
     WHERE ${transferTransitions.transferId} = ${transfers.id}
       AND ${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'
+      AND ${transferTransitions.evidence}->>'nimiqSourceNetwork' = 'mainnet'
       AND ${transferTransitions.evidence}->>'nimiqSourceSenderAddress' IS NOT NULL
       AND ${transferTransitions.evidence}->>'nimiqSourceAmountLuna' IS NOT NULL
       AND ${transferTransitions.evidence}->>'nimiqSourceFeeLuna' IS NOT NULL

@@ -105,6 +105,8 @@ A row is publishable only when all of the following hold:
 - the token matches the server's approved route token; Arbitrum additionally
   requires Circle native USDC `0xaf88d065e77c8cc2239327c5edb3a432268e5831`,
   never USDC.e;
+- the independently verified NIM source is on mainnet. Testnet source evidence
+  is never published alongside a mainnet Polygon or Arbitrum destination;
 - the stored finality level meets the applicable settlement policy. Arbitrum
   requires `finalized`; Polygon uses the configured/default confirmation
   policy.

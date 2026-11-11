@@ -168,6 +168,17 @@ describe("A3c.1 global proof publication", () => {
     expect(toPublicProof(candidate, config)).toBeNull();
   });
 
+  it("never publishes testnet NIM evidence alongside a mainnet destination", () => {
+    const candidate = {
+      ...row({ proof: { nimiqTxHash: NIMIQ_TX_HASH } }),
+      sourceVerified: true,
+      sourceVerifiedHash: NIMIQ_TX_HASH,
+      sourceVerifiedEvidence: verifiedSource({ network: "testnet" }),
+    };
+    expect(isPublishableGlobalProof(candidate, config)).toBe(false);
+    expect(toPublicProof(candidate, config)).toBeNull();
+  });
+
   it.each([
     [{ transfer: { status: "CLAIMING" } }, "non-delivered transfer"],
     [{ proof: { evidenceSource: "provider_claim_pointer" } }, "provider-only evidence"],
