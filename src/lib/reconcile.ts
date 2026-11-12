@@ -894,7 +894,19 @@ type SourceEvidenceRead = {
   transactionHash: string;
   evidence: VerifiedNimiqSource | null;
   failureCode: string | null;
+  /** Host of the RPC that produced a VERIFIED result (public disclosure; never the full URL). */
+  rpcHost?: string | null;
 };
+
+/** Hostname only: a URL path or query may carry provider credentials and is never recorded. */
+function rpcHostOf(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return /^[a-z0-9.-]{1,253}$/.test(host) ? host : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Read-only source evidence for a host-returned hash. The host hash is a
@@ -937,7 +949,7 @@ async function gatherNimiqSourceEvidence(
       },
     });
     return verified.ok
-      ? { transactionHash, evidence: verified.evidence, failureCode: null }
+      ? { transactionHash, evidence: verified.evidence, failureCode: null, rpcHost: rpcHostOf(env.THENCE_NIMIQ_PROOF_RPC_URL) }
       : { transactionHash, evidence: null, failureCode: verified.code };
   } catch {
     // Source proof is additive observability. An invalid/missing proof config
@@ -969,6 +981,7 @@ function sourceAuditEvidence(source: SourceEvidenceRead | null): Record<string, 
     nimiqSourceFinalizedByMacroBlock: source.evidence.finalizedByMacroBlock,
     nimiqSourceNetwork: source.evidence.network,
     nimiqSourceVerifiedAt: source.evidence.verifiedAt,
+    ...(source.rpcHost ? { nimiqSourceRpcHost: source.rpcHost } : {}),
   };
 }
 

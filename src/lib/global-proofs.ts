@@ -54,7 +54,7 @@ export interface PublicProofRow {
 
 export interface PublicProofMethod {
   kind: "reconciliation" | "historical-recovery";
-  /** Named RPC operator for the NIM check; null = Thence's configured Nimiq node. */
+  /** Named RPC operator for the NIM check; null = not recorded (older live markers). */
   sourceRpc: string | null;
   /** Named RPC operators for the Polygon re-check; empty = Thence's configured RPC. */
   destinationRpcs: string[];
@@ -430,6 +430,22 @@ function publishedFinalityLevel(row: PublicProofRow, policy: { mode: "finalized"
   return recovered !== null && recovered.finalityLevel === required ? required : null;
 }
 
+/**
+ * Public label for the RPC that verified a live NIM source leg, from the host
+ * recorded at verification time. Known third-party operators are named as
+ * such so a proof never implies Thence runs them; any other host is shown by
+ * name only (no operator claim).
+ */
+const THIRD_PARTY_NIMIQ_RPCS: Record<string, string> = {
+  "rpc.nimiqwatch.com": "rpc.nimiqwatch.com (third-party community RPC, not run by Thence)",
+};
+export function liveSourceRpcLabel(rpcHost: unknown): string | null {
+  if (typeof rpcHost !== "string") return null;
+  const host = rpcHost.trim().toLowerCase();
+  if (!/^[a-z0-9.-]{1,80}$/.test(host)) return null;
+  return THIRD_PARTY_NIMIQ_RPCS[host] ?? host;
+}
+
 function methodFor(row: PublicProofRow, finalityLevel: string): PublicProofMethod {
   const recovered = recoveredDestinationFor(row);
   if (recovered) {
@@ -443,7 +459,7 @@ function methodFor(row: PublicProofRow, finalityLevel: string): PublicProofMetho
   }
   return {
     kind: "reconciliation",
-    sourceRpc: null,
+    sourceRpc: liveSourceRpcLabel((row.sourceVerifiedEvidence as Record<string, unknown> | null | undefined)?.["rpcHost"]),
     destinationRpcs: [],
     sourceFinality: PUBLIC_PROOF_SOURCE_FINALITY_CLAIM,
     destinationFinality:
@@ -555,7 +571,8 @@ function sourceVerifiedEvidenceSql(): SQL {
       'confirmations', ${e}->>'nimiqSourceConfirmations',
       'macroBlockNumber', ${e}->>'nimiqSourceFinalizedByMacroBlock',
       'network', ${e}->>'nimiqSourceNetwork',
-      'verifiedAt', ${e}->>'nimiqSourceVerifiedAt'
+      'verifiedAt', ${e}->>'nimiqSourceVerifiedAt',
+      'rpcHost', ${e}->>'nimiqSourceRpcHost'
     ) FROM ${transferTransitions} WHERE ${transitionMarkerMatchSql()}
     ORDER BY ${transferTransitions.createdAt} DESC LIMIT 1),
     (SELECT jsonb_build_object(
