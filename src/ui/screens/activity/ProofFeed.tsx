@@ -153,7 +153,9 @@ export function ProofFeed({ onShowMine }: { onShowMine: () => void }): React.JSX
           <p className={styles.stateTitle}>Proof feed isn&apos;t published yet</p>
           <p className={styles.stateBody}>
             Delivered payments will appear here once Thence starts publishing public proofs. Each one shows the exact NIM sent and
-            USDC received, both independently verified on their networks.
+            USDC received, and how each was checked. The NIM payment is read from a named Nimiq RPC (NimiqWatch for recovered
+            payments), and Thence relies on that RPC for Nimiq finality. The USDC delivery is read from Polygon; for recovered
+            payments, two separate RPC providers must agree.
           </p>
           <div className={styles.stateAction}>
             <Button variant="soft" size="md" icon="user" onClick={onShowMine}>
@@ -397,12 +399,45 @@ function ProofDetail({ proof, preview }: { proof: ProofView; preview: boolean })
         preview={preview}
       />
 
+      {d.method && !preview && (
+        <section className={styles.leg} aria-label="How this was verified">
+          <p className={styles.legTitle}>
+            <span className={styles.legIcon} aria-hidden="true">
+              <Icon name="shield" size={14} strokeWidth={2.4} />
+            </span>
+            How this was verified
+          </p>
+          <dl className={styles.rows}>
+            <div data-block="true">
+              <dt>Method</dt>
+              <dd>{d.method.kindLabel}</dd>
+            </div>
+            <div data-block="true">
+              <dt>NIM checked via</dt>
+              <dd>{d.method.sourceChecked}</dd>
+            </div>
+            <div data-block="true">
+              <dt>NIM finality</dt>
+              <dd>{d.method.sourceFinality}</dd>
+            </div>
+            <div data-block="true">
+              <dt>USDC checked via</dt>
+              <dd>{d.method.destinationChecked}</dd>
+            </div>
+            <div data-block="true">
+              <dt>USDC finality</dt>
+              <dd>{d.method.destinationFinality}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
+
       <p className={styles.footnote}>
         <Icon name="info" size={14} />
         <span>
           {preview
             ? "Preview fixture. Real proofs link to both blockchain explorers."
-            : "Both transactions were checked independently against each network. Amounts are exact on-chain values, not estimates."}
+            : "Amounts are exact on-chain values, not estimates. Payment hashes and HTLC internals are never published."}
         </span>
       </p>
     </div>

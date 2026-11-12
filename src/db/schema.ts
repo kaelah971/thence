@@ -535,6 +535,58 @@ export const transferTransitions = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* transfer_source_evidence (A3d.6: append-only source proof history)  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Append-only record of independent Nimiq source verification for a transfer.
+ * Written by the operator-only historical recovery command; a database trigger
+ * rejects UPDATE, DELETE and TRUNCATE. At most one VERIFIED row may exist per
+ * transfer and per Nimiq transaction hash (partial unique indexes), so a source
+ * can never be attributed to two transfers. `evidence` is bounded, non-secret
+ * JSON (public chain facts, trust labels); it never stores payment hashes,
+ * invoices, preimages or credentials.
+ */
+export const transferSourceEvidence = pgTable(
+  "transfer_source_evidence",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "restrict" }),
+    /** Normalized lowercase 64-hex Nimiq transaction hash (no 0x). */
+    nimiqTxHash: text("nimiq_tx_hash").notNull(),
+    /** VERIFIED or REJECTED. */
+    verdict: varchar("verdict", { length: 16 }).notNull(),
+    /** Machine-readable failure code; required for REJECTED, absent for VERIFIED. */
+    failureCode: varchar("failure_code", { length: 64 }),
+    evidence: jsonb("evidence").notNull().default(sql`'{}'::jsonb`),
+    /** Verifier build that produced the verdict (git commit). */
+    verifierVersion: varchar("verifier_version", { length: 64 }).notNull(),
+    /** Named RPC operators relied on. */
+    rpcSource: varchar("rpc_source", { length: 256 }).notNull(),
+    /** Named finality policy the verdict was evaluated under. */
+    finalityPolicy: varchar("finality_policy", { length: 64 }).notNull(),
+    /** Operator audit reference (ticket/approval id). Never a credential. */
+    operatorRef: varchar("operator_ref", { length: 128 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("transfer_source_evidence_transfer_idx").on(t.transferId, t.createdAt),
+    uniqueIndex("transfer_source_evidence_verified_transfer_uidx").on(t.transferId).where(sql`${t.verdict} = 'VERIFIED'`),
+    uniqueIndex("transfer_source_evidence_verified_hash_uidx").on(t.nimiqTxHash).where(sql`${t.verdict} = 'VERIFIED'`),
+    check("transfer_source_evidence_hash_format", sql`${t.nimiqTxHash} ~ '^[0-9a-f]{64}$'`),
+    check("transfer_source_evidence_verdict_format", sql`${t.verdict} IN ('VERIFIED', 'REJECTED')`),
+    check(
+      "transfer_source_evidence_failure_consistent",
+      sql`(${t.verdict} = 'VERIFIED' AND ${t.failureCode} IS NULL) OR (${t.verdict} = 'REJECTED' AND ${t.failureCode} IS NOT NULL)`,
+    ),
+    check("transfer_source_evidence_evidence_bounded", sql`jsonb_typeof(${t.evidence}) = 'object' AND pg_column_size(${t.evidence}) <= 8192`),
+    check("transfer_source_evidence_operator_ref_present", sql`length(btrim(${t.operatorRef})) > 0`),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
 /* job_leases (P6: single-runner lease for scheduled jobs)             */
 /* ------------------------------------------------------------------ */
 

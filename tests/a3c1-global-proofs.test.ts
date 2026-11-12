@@ -87,6 +87,7 @@ function verifiedSource(overrides: Record<string, unknown> = {}): Record<string,
     totalDebitLuna: "100100",
     blockNumber: "123",
     confirmations: "12",
+    macroBlockNumber: "180",
     network: "mainnet",
     verifiedAt: "2026-11-10T12:09:00.000Z",
     ...overrides,
@@ -166,6 +167,15 @@ describe("A3c.1 global proof publication", () => {
     };
     expect(isPublishableGlobalProof(candidate, config)).toBe(false);
     expect(toPublicProof(candidate, config)).toBeNull();
+
+    const missingMacro = {
+      ...row({ proof: { nimiqTxHash: NIMIQ_TX_HASH } }),
+      sourceVerified: true,
+      sourceVerifiedHash: NIMIQ_TX_HASH,
+      sourceVerifiedEvidence: verifiedSource({ macroBlockNumber: undefined }),
+    };
+    expect(isPublishableGlobalProof(missingMacro, config)).toBe(false);
+    expect(toPublicProof(missingMacro, config)).toBeNull();
   });
 
   it("never publishes testnet NIM evidence alongside a mainnet destination", () => {
