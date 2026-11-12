@@ -176,6 +176,42 @@ export interface ProofDisplay {
   finalityLabel: string | null;
   tokenContract: string | null;
   note: string | null;
+  /** How each leg was checked, with qualified finality wording; null when absent or malformed. */
+  method: ProofMethodDisplay | null;
+}
+
+export interface ProofMethodDisplay {
+  kindLabel: string;
+  sourceChecked: string;
+  destinationChecked: string;
+  sourceFinality: string;
+  destinationFinality: string;
+}
+
+function boundedText(value: unknown, max = 240): string | null {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= max ? value.trim() : null;
+}
+
+/** Parse the server method block defensively; unknown kinds or oversize text are dropped. */
+export function toMethodDisplay(value: unknown): ProofMethodDisplay | null {
+  const m = record(value);
+  if (!m) return null;
+  const kind = m["kind"];
+  if (kind !== "reconciliation" && kind !== "historical-recovery") return null;
+  const sourceFinality = boundedText(m["sourceFinality"]);
+  const destinationFinality = boundedText(m["destinationFinality"]);
+  if (!sourceFinality || !destinationFinality) return null;
+  const sourceRpc = m["sourceRpc"] === null ? null : boundedText(m["sourceRpc"], 80);
+  const rpcs = Array.isArray(m["destinationRpcs"])
+    ? (m["destinationRpcs"] as unknown[]).map((r) => boundedText(r, 80)).filter((r): r is string => r !== null)
+    : [];
+  return {
+    kindLabel: kind === "historical-recovery" ? "Historical recovery (operator-run, append-only record)" : "Checked when the payment completed",
+    sourceChecked: sourceRpc ?? "Thence’s configured Nimiq node",
+    destinationChecked: rpcs.length > 0 ? rpcs.join(" and ") : "Thence’s configured Polygon RPC",
+    sourceFinality,
+    destinationFinality,
+  };
 }
 
 /** "NQ12 … 9ABC" — first and last group of a user-friendly Nimiq address. */
@@ -236,6 +272,7 @@ export function toProofDisplay(proof: ProofView, now: Date = new Date()): ProofD
     finalityLabel: finalityLabel(destination.finalityLevel),
     tokenContract: typeof destination.tokenContract === "string" && EVM_ADDRESS.test(destination.tokenContract) ? destination.tokenContract : null,
     note: typeof source.note === "string" && source.note.trim().length > 0 ? source.note.trim() : null,
+    method: toMethodDisplay((proof as unknown as Record<string, unknown>)["method"]),
   };
 }
 
