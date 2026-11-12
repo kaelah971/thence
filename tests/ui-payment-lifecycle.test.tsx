@@ -631,6 +631,30 @@ describe("Activity — the two real incident payments", () => {
     expect(screen.getByText(/Thence can't confirm it came back\. It stays open for review\./)).toBeTruthy();
     expect(api.state[STALE.transfer.id]!.status).toBe("RECONCILING");
     expect(screen.queryByText("Payment expired — not delivered")).toBeNull();
+    // R1: the refusal outranks the provider read — no "no money moved" claim, and the do-not-resend warning is back.
+    expect(screen.queryByText("This payment expired before any money moved")).toBeNull();
+    expect(screen.getAllByText(/Checking your payment — do not resend/).length).toBeGreaterThan(0);
+  });
+
+  it("R1: a chain-activity refusal never leaves the sheet claiming that no money moved", async () => {
+    vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
+    api = installFakeApi({ [STALE.transfer.id]: { status: "RECONCILING", providerStatus: "expired", observedAt: STALE.observations[2]!.observed_at } });
+    api.closeOutcome = {
+      kind: "refused",
+      status: 409,
+      error: "CHAIN_ACTIVITY_FOUND",
+      message: "The network shows activity for this payment, so it can't be closed as unfunded.",
+    };
+    await openActivityDetail(/Someone new/);
+    fireEvent.click(screen.getByRole("button", { name: "Check payment status" }));
+    await advance(0);
+    expect(screen.getByText("This payment expired before any money moved")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close expired payment" }));
+    await advance(0);
+    expect(screen.getByText(/The network shows activity for this payment/)).toBeTruthy();
+    expect(screen.queryByText("This payment expired before any money moved")).toBeNull();
+    expect(screen.getAllByText(/Checking your payment — do not resend/).length).toBeGreaterThan(0);
+    expect(api.state[STALE.transfer.id]!.status).toBe("RECONCILING");
   });
 
   it("P4: an already-closed EXPIRED_UNFUNDED payment shows the closed state and no actions", async () => {

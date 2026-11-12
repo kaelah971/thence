@@ -355,6 +355,31 @@ describe.skipIf(!LIVE)("P4 close-expired (isolated test database)", () => {
     expect(await terminalRows(id)).toHaveLength(0);
   });
 
+  it("refuses when provider verification fails: provider down, swap unknown, or a drifted swap identity", async () => {
+    const { id, userId, cookie } = await stuckReconciling("provider-verify");
+    setSatoraFetchersForTests({ getSwap: async () => { throw new Error("provider down"); } });
+    const down = await close(id, cookie, "provider-verify");
+    expect(down.status).toBe(503);
+    expect(down.body["error"]).toBe("PROVIDER_UNAVAILABLE");
+    setSatoraFetchersForTests({ getSwap: async () => { throw Object.assign(new Error("not found"), { code: 404 }); } });
+    expect((await close(id, cookie, "provider-verify")).body["error"]).toBe("PROVIDER_IDENTITY_MISMATCH");
+    installProvider();
+    for (const drift of [
+      { target_amount: "300001" },
+      { target_evm_address: "0x0000000000000000000000000000000000000002" },
+      { hash_lock: `0x${"ee".repeat(32)}` },
+      { direction: "evm_to_lightning" },
+    ]) {
+      swapOverrides = { status: "expired", ...drift };
+      const res = await close(id, cookie, "provider-verify");
+      expect(res.status).toBe(409);
+      expect(res.body["error"]).toBe("PROVIDER_IDENTITY_MISMATCH");
+    }
+    expect(await statusOf(id)).toBe("RECONCILING");
+    expect(await terminalRows(id)).toHaveLength(0);
+    await expect(assertFundingExposure(userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+  });
+
   it("status change and audit row are atomic: a failed audit write keeps the payment open and exposed", async () => {
     const { id, userId, cookie } = await stuckReconciling("atomic");
     // Occupy the terminal-once slot so the resolver's audit insert must fail.

@@ -463,6 +463,11 @@ function TransferDetail({
   // (including an independent chain scan) before closing.
   const canCloseExpired = !preview && item.status === "RECONCILING" && evidenceDisposition === "EXPIRED_UNFUNDED";
   const [closedExpired, setClosedExpired] = useState(false);
+  // The server's re-check outranks the provider read: once a close is refused
+  // (e.g. network activity found), stop saying no money moved and restore the
+  // "do not resend" warning. The button stays so a transient refusal can retry.
+  const [closeRefused, setCloseRefused] = useState(false);
+  const expiredClaimShown = canCloseExpired && !closeRefused;
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>
@@ -489,7 +494,7 @@ function TransferDetail({
         </div>
       )}
 
-      {canCloseExpired && !closedExpired && (
+      {expiredClaimShown && !closedExpired && (
         <Notice tone="info" icon="info" title="This payment expired before any money moved">
           The provider reports this payment expired without being funded. You can close it — Thence checks the provider and the
           network again first, and keeps it open if anything doesn&apos;t match.
@@ -500,7 +505,7 @@ function TransferDetail({
           {EXPIRED_UNFUNDED_BODY}
         </Notice>
       )}
-      {stage === "checking" && !canCloseExpired && !closedExpired && (
+      {stage === "checking" && !expiredClaimShown && !closedExpired && (
         <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
           We can&apos;t confirm the outcome yet. Starting another payment could pay them twice.
         </Notice>
@@ -546,7 +551,11 @@ function TransferDetail({
                   if (result.ok && result.data.resolution.status === "EXPIRED_UNFUNDED") {
                     setClosedExpired(true);
                     setClosedNote("Closed. Nothing reached their network, and the payment is no longer counted as in progress.");
-                  } else if (!result.ok && result.kind === "unauthorized") {
+                    invalidateData();
+                    return;
+                  }
+                  setCloseRefused(true);
+                  if (!result.ok && result.kind === "unauthorized") {
                     setClosedNote("Your session has ended. Sign in again.");
                   } else if (!result.ok && result.message) {
                     setClosedNote(result.message);
