@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { deriveNimiqAddress, toUserFriendlyAddress } from "@/lib/nimiq";
 import {
   isNimiqSourceHashUnattributed,
+  isTransactionNotFoundError,
   selectUnambiguousHistoricalNimiqSourceHash,
   setNimiqSourceRpcTransportForTests,
   verifyNimiqSourceTransaction,
@@ -253,5 +254,32 @@ describe("independent Nimiq source verification", () => {
 
     setNimiqSourceRpcTransportForTests(async () => ({ jsonrpc: "2.0", id: 1, result: { data: { nope: true } } }));
     await expect(verifyNimiqSourceTransaction(input())).resolves.toEqual({ ok: false, code: "PROVIDER_MALFORMED" });
+  });
+  // R1.1: Nimiq's exact "not indexed yet" answer is temporary; nothing else is.
+  it("classifies only the exact not-found error for the requested hash as TRANSACTION_NOT_FOUND", async () => {
+    const notFound = (data: unknown, code: unknown = -32603) => ({ jsonrpc: "2.0", id: 1, error: { code, message: "Internal error", data } });
+    const respond = (payload: unknown) => setNimiqSourceRpcTransportForTests(async () => payload);
+
+    respond(notFound(`Transaction not found: ${TX_HASH}`));
+    await expect(verifyNimiqSourceTransaction(input())).resolves.toEqual({ ok: false, code: "TRANSACTION_NOT_FOUND" });
+    respond(notFound(`Transaction not found: 0x${TX_HASH.toUpperCase()}`));
+    await expect(verifyNimiqSourceTransaction(input())).resolves.toEqual({ ok: false, code: "TRANSACTION_NOT_FOUND" });
+
+    // Everything else stays a permanent PROVIDER_MALFORMED.
+    for (const payload of [
+      notFound(`Transaction not found: ${"22".repeat(32)}`), // a different hash
+      notFound("Internal error"), // other -32603
+      notFound(`Block not found: ${TX_HASH}`),
+      notFound(`Transaction not found: ${TX_HASH} extra`),
+      notFound(undefined), // no data
+      notFound(`Transaction not found: ${TX_HASH}`, -32602), // other code
+      { jsonrpc: "2.0", id: 1, result: { data: null } }, // null result
+    ]) {
+      respond(payload);
+      await expect(verifyNimiqSourceTransaction(input())).resolves.toEqual({ ok: false, code: "PROVIDER_MALFORMED" });
+    }
+    expect(isTransactionNotFoundError(notFound(`Transaction not found: ${TX_HASH}`), `0x${TX_HASH}`)).toBe(true);
+    expect(isTransactionNotFoundError({ result: null }, TX_HASH)).toBe(false);
+    expect(isTransactionNotFoundError(null, TX_HASH)).toBe(false);
   });
 });
