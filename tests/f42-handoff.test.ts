@@ -277,6 +277,7 @@ describe("safe result handling: only the backend contract outcomes", () => {
       diagnostics: {
         providerErrorType: "NETWORK_ERROR",
         providerErrorCode: -32000,
+        providerReason: null,
         durationMs: 60000,
         normalizedOutcome: "unknown",
         hasHash: false,
@@ -288,6 +289,7 @@ describe("safe result handling: only the backend contract outcomes", () => {
       diagnostics: {
         providerErrorType: "NETWORK_ERROR",
         providerErrorCode: -32000,
+        providerReason: null,
         durationMs: 60000,
         normalizedOutcome: "unknown",
         hasHash: false,

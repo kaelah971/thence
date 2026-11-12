@@ -37,9 +37,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     console.info(`thence handoff-result: closed:${result.status}`);
     if (diagnostics) {
       // Diagnostics are deliberately bounded and booleanized. Never log the
-      // invoice, payment hash, swap id, or provider error payload.
+      // invoice, payment hash, swap id, or provider error payload/message;
+      // provider_reason is a schema-validated allowlist code.
       console.info(
-        `thence handoff-diagnostics: outcome:${diagnostics.normalizedOutcome} provider_type:${diagnostics.providerErrorType ?? "none"} provider_code:${diagnostics.providerErrorCode ?? "none"} duration_ms:${diagnostics.durationMs} hash:${diagnostics.hasHash ? 1 : 0} swap:${diagnostics.hasSwapId ? 1 : 0}`,
+        `thence handoff-diagnostics: outcome:${diagnostics.normalizedOutcome} provider_type:${diagnostics.providerErrorType ?? "none"} provider_code:${diagnostics.providerErrorCode ?? "none"} provider_reason:${diagnostics.providerReason ?? "none"} duration_ms:${diagnostics.durationMs} hash:${diagnostics.hasHash ? 1 : 0} swap:${diagnostics.hasSwapId ? 1 : 0}`,
       );
     }
     return NextResponse.json({ handoff: result }, { status: 200 });
