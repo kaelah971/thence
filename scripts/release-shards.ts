@@ -48,7 +48,7 @@ export const SHARDS: Record<string, string[]> = {
     "p7-arbitrum-recovery",
     "payments-mode",
   ],
-  S2: ["reconciliation", "settlement", "f42-handoff", "f812-attach-recovery", "f812-retire-replace"],
+  S2: ["reconciliation", "settlement", "f42-handoff", "f45-nimiq-pay-failure-reasons", "f812-attach-recovery", "f812-retire-replace"],
   S3: [
     "f81-pilot-attempt-limits",
     "f8-pilot-gates",
