@@ -45,6 +45,7 @@ import { verifyHtlcFunding, verifyHtlcRefund, type HtlcFundingResult, type HtlcR
 import { recordPath, recordTransition } from "@/lib/transitions";
 import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
 import { getEnv } from "@/lib/env";
+import { NIMIQ_PAY_FAILURE_REASONS } from "@/lib/nimiq-pay-failure-reasons";
 import {
   isNimiqSourceHashUnattributed,
   verifyNimiqSourceTransaction,
@@ -1025,6 +1026,8 @@ const handoffDiagnosticsSchema = z
   .object({
     providerErrorType: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).nullable(),
     providerErrorCode: z.number().int().min(-2147483648).max(2147483647).nullable(),
+    // Bounded allowlist code only (never free text). Optional: older clients omit it.
+    providerReason: z.enum(NIMIQ_PAY_FAILURE_REASONS).nullable().optional(),
     durationMs: z.number().int().min(0).max(180_000),
     normalizedOutcome: z.enum(["cancelled", "initiated", "unknown"]),
     hasHash: z.boolean(),

@@ -22,6 +22,7 @@
  */
 import { NimiqProviderError, type NimiqProvider } from "@nimiq/mini-app-sdk";
 import { HostUnavailableError, classifyProviderError } from "./nimiq-provider";
+import { classifyNimiqPayFailure, type NimiqPayFailureReason } from "@/lib/nimiq-pay-failure-reasons";
 
 /** Host subset F4.2 needs. `payLightningInvoice` is optional: older hosts lack it. */
 export interface LightningCapableProvider {
@@ -40,6 +41,12 @@ export type HostPaymentResult =
 export interface PaymentDiagnostics {
   providerErrorType: string | null;
   providerErrorCode: number | null;
+  /**
+   * Bounded reason derived from the host message by a strict upstream
+   * allowlist (see nimiq-pay-failure-reasons). Never the message itself.
+   * Observability only: it does not change the result or the recovery path.
+   */
+  providerReason: NimiqPayFailureReason | null;
   durationMs: number;
   normalizedOutcome: "cancelled" | "initiated" | "unknown";
   hasHash: boolean;
@@ -79,10 +86,13 @@ function isLegacyErrorResponse(value: unknown): value is { error: { type: string
   return typeof record["type"] === "string" && typeof record["message"] === "string";
 }
 
-function safeProviderError(error: unknown): Pick<PaymentDiagnostics, "providerErrorType" | "providerErrorCode"> {
+function safeProviderError(error: unknown): Pick<PaymentDiagnostics, "providerErrorType" | "providerErrorCode" | "providerReason"> {
   const providerError = NimiqProviderError.from(error);
   const type = providerError?.type;
   return {
+    // The raw message is read only to pick an allowlisted code; it is never
+    // copied into diagnostics, logs or the report.
+    providerReason: classifyNimiqPayFailure(type, providerError?.message),
     // Provider types are enum-like. Do not log arbitrary SDK error text or
     // data, and do not let a malformed host value become a log injection.
     providerErrorType: typeof type === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(type) ? type : null,
@@ -145,7 +155,7 @@ export async function payAuthorizedInvoice(
   ): HostPaymentResult => {
     if (!emitted) {
       emitted = true;
-      const providerError = error === null ? { providerErrorType: null, providerErrorCode: null } : safeProviderError(error);
+      const providerError = error === null ? { providerErrorType: null, providerErrorCode: null, providerReason: null } : safeProviderError(error);
       const providerDataPresence = error === null ? { hasHash: false, hasSwapId: false } : safeProviderDataPresence(error);
       try {
         opts.onDiagnostics?.({
