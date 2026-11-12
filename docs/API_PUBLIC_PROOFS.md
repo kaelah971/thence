@@ -37,7 +37,7 @@ GET /api/proofs?limit=20&cursor=<opaque-cursor>
 `limit` is an integer from 1 to 50. Results are ordered newest verified
 settlement first, with a stable `(verifiedAt, proofId)` cursor.
 
-A published item reports both independently verified legs. The destination
+A published item reports both verified legs. The destination
 contains the exact USDC amount in atomic units, recipient wallet, network,
 transaction hash and explorer link. The source contains the exact native NIM
 amount in luna (`decimals: 5`), authenticated sender wallet, Nimiq network,

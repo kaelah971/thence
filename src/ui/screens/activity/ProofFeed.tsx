@@ -153,7 +153,9 @@ export function ProofFeed({ onShowMine }: { onShowMine: () => void }): React.JSX
           <p className={styles.stateTitle}>Proof feed isn&apos;t published yet</p>
           <p className={styles.stateBody}>
             Delivered payments will appear here once Thence starts publishing public proofs. Each one shows the exact NIM sent and
-            USDC received, both independently verified on their networks.
+            USDC received, and how each was checked. The NIM payment is read from a named Nimiq RPC (NimiqWatch for recovered
+            payments), and Thence relies on that RPC for Nimiq finality. The USDC delivery is read from Polygon; for recovered
+            payments, two separate RPC providers must agree.
           </p>
           <div className={styles.stateAction}>
             <Button variant="soft" size="md" icon="user" onClick={onShowMine}>
