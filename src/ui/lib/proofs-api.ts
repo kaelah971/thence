@@ -207,7 +207,8 @@ export function toMethodDisplay(value: unknown): ProofMethodDisplay | null {
     : [];
   return {
     kindLabel: kind === "historical-recovery" ? "Historical recovery (operator-run, append-only record)" : "Checked when the payment completed",
-    sourceChecked: sourceRpc ?? "Thence’s configured Nimiq node",
+    // Never imply Thence operates the node when the server did not name it.
+    sourceChecked: sourceRpc ?? "A Nimiq RPC configured by Thence (operator not recorded)",
     destinationChecked: rpcs.length > 0 ? rpcs.join(" and ") : "Thence’s configured Polygon RPC",
     sourceFinality,
     destinationFinality,

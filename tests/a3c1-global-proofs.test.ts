@@ -7,7 +7,9 @@ import {
   getIndependentNimiqSourceProof,
   isPublicProofPublicationEnabled,
   isPublishableGlobalProof,
+  liveSourceRpcLabel,
   parseProofFeedQuery,
+  PUBLIC_PROOF_SOURCE_FINALITY_CLAIM,
   publicProofConfig,
   toPublicProof,
   type PublicProofRow,
@@ -156,6 +158,33 @@ describe("A3c.1 global proof publication", () => {
     expect(serialized).toContain("300000");
     expect(serialized).not.toContain("private-satora-id");
     expect(serialized).not.toContain("ef".repeat(32));
+  });
+
+  it("names the live source RPC recorded at verification time and never implies Thence runs a third-party node", async () => {
+    const live = (rpcHost?: unknown) => ({
+      ...row({ proof: { nimiqTxHash: NIMIQ_TX_HASH } }),
+      sourceVerified: true,
+      sourceVerifiedHash: NIMIQ_TX_HASH,
+      sourceVerifiedEvidence: { ...verifiedSource(), ...(rpcHost === undefined ? {} : { rpcHost }) },
+    });
+    const nimiqWatch = toPublicProof(live("rpc.nimiqwatch.com"), config)!;
+    expect(nimiqWatch.method).toMatchObject({
+      kind: "reconciliation",
+      sourceRpc: "rpc.nimiqwatch.com (third-party community RPC, not run by Thence)",
+      sourceFinality: PUBLIC_PROOF_SOURCE_FINALITY_CLAIM,
+    });
+    // The BLS caveat is preserved verbatim.
+    expect(nimiqWatch.method.sourceFinality).toMatch(/aggregate validator signature was not independently verified/);
+    expect(toPublicProof(live("nimiq.example.org"), config)!.method.sourceRpc).toBe("nimiq.example.org");
+    expect(toPublicProof(live(), config)!.method.sourceRpc).toBeNull();
+    expect(liveSourceRpcLabel("evil host<script>")).toBeNull();
+    expect(liveSourceRpcLabel(42)).toBeNull();
+
+    const { toMethodDisplay } = await import("@/ui/lib/proofs-api");
+    expect(toMethodDisplay(nimiqWatch.method)!.sourceChecked).toBe("rpc.nimiqwatch.com (third-party community RPC, not run by Thence)");
+    const unnamed = toMethodDisplay(toPublicProof(live(), config)!.method)!;
+    expect(unnamed.sourceChecked).toBe("A Nimiq RPC configured by Thence (operator not recorded)");
+    expect(unnamed.sourceChecked).not.toMatch(/Thence.s configured Nimiq node/);
   });
 
   it("fails closed when the verified-source audit marker is missing required proof fields", () => {

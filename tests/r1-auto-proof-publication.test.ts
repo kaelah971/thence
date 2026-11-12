@@ -264,6 +264,8 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
     expect(json).toContain(nimHash);
     expect(json).toContain(p.claimTx);
     expect(json.toLowerCase()).toContain(EVM_A.toLowerCase());
+    // The verifying RPC host is recorded at verification time and disclosed by name (no operator claim for unknown hosts).
+    expect(view!.method.sourceRpc).toBe("nimiq-proof.fixture.invalid");
     // My Activity: the owner's receipt shows the same verified delivery.
     const receipt = await receiptGet(new Request(`http://localhost/api/transfers/${p.id}/receipt`, { headers: { cookie: p.cookie, ...client("final") } }), params(p.id));
     expect(receipt.status).toBe(200);

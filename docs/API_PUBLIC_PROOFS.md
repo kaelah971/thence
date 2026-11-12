@@ -88,7 +88,11 @@ Example shape (values are illustrative):
 ```
 
 `method.kind` is `reconciliation` (checked by the live payment path against
-Thence’s configured nodes; `sourceRpc` is `null`, `destinationRpcs` empty) or
+the RPCs Thence has configured; `sourceRpc` is the host of the Nimiq RPC
+recorded when the NIM leg was verified — a known third-party operator is
+labelled as such, e.g. `rpc.nimiqwatch.com (third-party community RPC, not run
+by Thence)` — or `null` for older markers that did not record it;
+`destinationRpcs` empty) or
 `historical-recovery` (A3d.6 operator recovery under the named public-RPC trust
 policy). Nimiq finality is always qualified: macro-block inclusion and a present
 justification are checked, but the aggregate BLS signature is not independently
