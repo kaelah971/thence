@@ -8,6 +8,7 @@ import { hasLightningPaymentSupport, payAuthorizedInvoice, type LightningCapable
 import { evaluatePaymentGate, isPaymentFlagEnabled } from "@/ui/lib/payment-gate";
 import { getHostProvider } from "@/ui/lib/nimiq-provider";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
+import { isPreConfirmationRefusal, preConfirmationRefusalCopy, type PreConfirmationRefusalReason } from "@/ui/lib/pre-confirmation-refusal";
 
 export type HandoffPhase =
   | { phase: "ready"; transferId: string }
@@ -34,7 +35,14 @@ interface HandoffRecord {
   reportedOutcome: ServerHandoffOutcome | null;
   /** Host hash hint; never treated as proof by the browser. */
   sourceTxHash?: string | null;
+  /**
+   * Nimiq Pay refused BEFORE asking for approval (allowlisted reason). UX only:
+   * the server still received the conservative `unknown` outcome.
+   */
+  refusal?: { reason: PreConfirmationRefusalReason; invoiceExpiresAt: string | null } | null;
 }
+
+export type HandoffRecordView = HandoffRecord;
 
 const HANDOFF_KEY = "thence.f4.2.handoff.v1";
 const ALLOWED_NETWORKS = ["mainnet"] as const;
@@ -71,6 +79,13 @@ export function loadHandoffRecord(transferId: string, ownerUserId: string): Hand
           ? parsed.reportedOutcome
           : null,
       sourceTxHash: typeof parsed.sourceTxHash === "string" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(parsed.sourceTxHash) ? parsed.sourceTxHash : null,
+      refusal:
+        parsed.refusal && isPreConfirmationRefusal(parsed.refusal.reason)
+          ? {
+              reason: parsed.refusal.reason,
+              invoiceExpiresAt: typeof parsed.refusal.invoiceExpiresAt === "string" && Number.isFinite(Date.parse(parsed.refusal.invoiceExpiresAt)) ? parsed.refusal.invoiceExpiresAt : null,
+            }
+          : null,
     };
   } catch {
     return null;
@@ -330,6 +345,12 @@ export function useHandoff(): {
         return;
       }
       // unknown / unavailable / unsupported / invalid → report unknown, never retry natively.
+      // A recognised pre-confirmation refusal changes ONLY the explanation shown here;
+      // the server still gets the conservative `unknown` (a client error proves nothing).
+      const refusalReason = (paymentDiagnostics as PaymentDiagnostics | null)?.providerReason ?? null;
+      const refusal = isPreConfirmationRefusal(refusalReason)
+        ? { reason: refusalReason, invoiceExpiresAt: typeof swap.invoiceExpiresAt === "string" ? swap.invoiceExpiresAt : null }
+        : null;
       const reported = await reportHandoffResult(input.transferId, "unknown", { diagnostics: paymentDiagnostics ?? undefined });
       saveHandoffRecord({
         transferId: input.transferId,
@@ -339,12 +360,14 @@ export function useHandoff(): {
         outcomeReported: reported.ok,
         reportedOutcome: reported.ok ? "unknown" : null,
         sourceTxHash: null,
+        refusal,
       });
       setState({
         phase: reported.ok ? "checking" : "checking",
         transferId: input.transferId,
-        message:
-          result.kind === "unavailable"
+        message: refusal
+          ? preConfirmationRefusalCopy(refusal.reason, refusal.invoiceExpiresAt).body
+          : result.kind === "unavailable"
             ? "Nimiq Pay isn't available. Checking payment — do not resend."
             : "Payment needs attention. Checking payment — do not resend.",
       });

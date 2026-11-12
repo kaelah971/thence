@@ -46,7 +46,16 @@ export interface ProgressInput {
   message?: string;
   /** This browser already handed the payment to Nimiq Pay (server may not know yet). */
   handedOff?: boolean;
+  /**
+   * Nimiq Pay refused before asking for approval (local handoff record). Replaces
+   * only the generic "checking" explanation while the server is still checking
+   * and the provider shows no movement; never changes the action or outcome.
+   */
+  refusal?: { title: string; body: string } | null;
 }
+
+/** Provider statuses that show no funding movement (null = not read yet). */
+const NO_PROVIDER_MOVEMENT: ReadonlySet<string> = new Set(["", "pending", "expired", "unknown"]);
 
 export interface ProgressView {
   headline: string;
@@ -125,6 +134,13 @@ export function paymentProgress(s: ProgressInput): ProgressView {
       action: "wait",
       steps,
     };
+  }
+  if (
+    s.refusal &&
+    (status === "LIGHTNING_HANDOFF" || status === "OUTCOME_UNKNOWN" || status === "RECONCILING" || (status === "AWAITING_NIM_APPROVAL" && s.handedOff === true)) &&
+    NO_PROVIDER_MOVEMENT.has(s.providerStatus ?? "")
+  ) {
+    return { headline: s.refusal.title, body: s.refusal.body, tone: "warn", action: "check", steps };
   }
   if (status === "LIGHTNING_HANDOFF") {
     return { headline: "Confirming your approval", body: "Checking that Nimiq Pay sent the payment. Don't pay again.", tone: "neutral", action: "wait", steps };
