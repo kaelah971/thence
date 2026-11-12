@@ -12,6 +12,8 @@ import { paymentProgress, type ProgressView } from "@/ui/lib/payment-progress";
 import { claimActionAllowed } from "@/domain/claim-deadline";
 import type { RouteId } from "@/domain/routes";
 import { useSettlement } from "./useSettlement";
+import { loadHandoffRecord } from "./useHandoff";
+import { preConfirmationRefusalCopy } from "@/ui/lib/pre-confirmation-refusal";
 import { ClaimDeadlineLine, useClaimWindow } from "@/ui/components/ClaimDeadline";
 import styles from "./send.module.css";
 
@@ -77,6 +79,9 @@ export function usePaymentProgress({
 
   const { window } = useClaimWindow(state.claimDeadlineMs ?? null);
   const tracking = Boolean(transferId && ownerUserId) && state.phase !== "idle";
+  // Local, UX-only explanation of a Nimiq Pay pre-confirmation refusal (never sent as evidence).
+  const stored = transferId && ownerUserId ? loadHandoffRecord(transferId, ownerUserId)?.refusal ?? null : null;
+  const refusal = stored ? preConfirmationRefusalCopy(stored.reason, stored.invoiceExpiresAt) : null;
   const view = tracking
     ? paymentProgress({
         phase: state.phase,
@@ -89,6 +94,7 @@ export function usePaymentProgress({
         receiptReady: state.receipt !== null,
         message: state.message,
         handedOff,
+        refusal,
       })
     : null;
   const finishNeeded = view?.action === "finish" && !previewMode && Boolean(ownerUserId);

@@ -33,6 +33,8 @@ import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { usePaymentProgress } from "@/ui/screens/send/SettlementProgress";
 import styles from "./activity.module.css";
 import { ProofFeed } from "./ProofFeed";
+import { loadHandoffRecord } from "@/ui/screens/send/useHandoff";
+import { preConfirmationRefusalCopy, type PreConfirmationRefusalCopy } from "@/ui/lib/pre-confirmation-refusal";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -332,9 +334,22 @@ function LiveTransferDetail({
             .finally(() => setProviderEvidenceLoading(false));
         }}
       />
-      <TransferDetail item={item} preview={false} providerEvidence={providerEvidence} archived={archived} onArchiveChange={onArchiveChange} />
+      <TransferDetail
+        item={item}
+        preview={false}
+        providerEvidence={providerEvidence}
+        archived={archived}
+        onArchiveChange={onArchiveChange}
+        refusal={refusalFor(item.id, userId)}
+      />
     </>
   );
+}
+
+/** Local, UX-only Nimiq Pay pre-confirmation refusal for this payment (never sent as evidence). */
+function refusalFor(transferId: string, ownerUserId: string | null): PreConfirmationRefusalCopy | null {
+  const stored = ownerUserId ? loadHandoffRecord(transferId, ownerUserId)?.refusal ?? null : null;
+  return stored ? preConfirmationRefusalCopy(stored.reason, stored.invoiceExpiresAt) : null;
 }
 
 /** Statuses where money is moving after approval: the live progress card speaks for the payment. */
@@ -442,12 +457,14 @@ function TransferDetail({
   providerEvidence = null,
   archived = false,
   onArchiveChange,
+  refusal = null,
 }: {
   item: ActivityItem;
   preview: boolean;
   providerEvidence?: ProviderEvidence | null;
   archived?: boolean;
   onArchiveChange?: (archived: boolean) => void;
+  refusal?: PreConfirmationRefusalCopy | null;
 }): React.JSX.Element {
   const destination = destinationFor(item.routeId);
   const stage = STAGE_OF[item.status];
@@ -506,9 +523,16 @@ function TransferDetail({
         </Notice>
       )}
       {stage === "checking" && !expiredClaimShown && !closedExpired && (
-        <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
-          We can&apos;t confirm the outcome yet. Starting another payment could pay them twice.
-        </Notice>
+        // Provider evidence of funding/settlement/refund always outranks the client's account.
+        refusal && evidenceDisposition === "UNKNOWN" ? (
+          <Notice tone="warn" icon="alert" title={refusal.title}>
+            {refusal.body}
+          </Notice>
+        ) : (
+          <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
+            We can&apos;t confirm the outcome yet. Starting another payment could pay them twice.
+          </Notice>
+        )
       )}
       {stage === "attention" && (
         <Notice tone="error" icon="alert" title="Needs your attention">

@@ -42,6 +42,7 @@ import { activePaymentTrackerCount, resetPaymentTrackersForTests } from "@/ui/li
 import { reportHandoffResult } from "@/ui/lib/handoff-client";
 import { createMemoryVault, RECOVERY_VAULT_VERSION } from "@/ui/lib/recovery-vault";
 import { REFUNDED_BODY } from "@/ui/lib/settlement-client";
+import { saveHandoffRecord } from "@/ui/screens/send/useHandoff";
 
 const DEADLINE_MS = INCIDENT.satora.getSwap.evm_refund_locktime * 1000;
 const FIRST_OBSERVED = INCIDENT.observations[0]!.observed_at; // 21:30:26Z, serverfunded
@@ -568,6 +569,34 @@ describe("Activity — the two real incident payments", () => {
     expect(screen.getAllByText("Not delivered — Polygon lock refunded").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
+  });
+
+  it("19cc312c: a stored Nimiq Pay pre-confirmation refusal replaces the generic checking copy; nothing is retried or closed", async () => {
+    vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
+    api = installFakeApi({ [STALE.transfer.id]: { status: "RECONCILING", providerStatus: "pending", observedAt: STALE.observations[2]!.observed_at } });
+    saveHandoffRecord({
+      transferId: STALE.transfer.id,
+      ownerUserId: OWNER_ID,
+      invoice: "lnbc-redacted",
+      invokedAt: "2026-11-03T12:58:00.000Z",
+      outcomeReported: true,
+      reportedOutcome: "unknown",
+      sourceTxHash: null,
+      refusal: { reason: "INSUFFICIENT_NIM_BALANCE", invoiceExpiresAt: null },
+    });
+    try {
+      await openActivityDetail(/Someone new/);
+      expect(screen.getByText("Nimiq Pay: not enough NIM")).toBeTruthy();
+      expect(screen.getByText(/NIM balance was too low and stopped before asking you to approve/)).toBeTruthy();
+      expect(screen.getByText(/Don't start another payment for it/)).toBeTruthy();
+      expect(screen.queryByText(/Checking your payment — do not resend/)).toBeNull();
+      // UX only: still open, no close/cancel/handoff call, no resume or new payment action.
+      expect(api.state[STALE.transfer.id]!.status).toBe("RECONCILING");
+      expect(screen.queryByRole("button", { name: /Close expired payment|Cancel unpaid payment|Resume payment|Continue to approval/ })).toBeNull();
+      expect(api.calls.some((c) => c.path.endsWith("/handoff-result") || c.path.endsWith("/close-expired"))).toBe(false);
+    } finally {
+      window.localStorage.removeItem(`thence.f4.2.handoff.v1:${STALE.transfer.id}`);
+    }
   });
 
   it("stale eddaa6de: before evidence is checked it stays 'checking — do not resend' with no close action", async () => {
