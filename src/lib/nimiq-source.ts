@@ -91,6 +91,8 @@ export type NimiqSourceFailureCode =
   | "INVALID_INPUT"
   | "PROVIDER_UNAVAILABLE"
   | "PROVIDER_MALFORMED"
+  /** R1.1: the node has not indexed this hash (yet). Temporary; never proof of anything. */
+  | "TRANSACTION_NOT_FOUND"
   | "HASH_MISMATCH"
   | "UNSUCCESSFUL"
   | "WRONG_NETWORK"
@@ -414,6 +416,22 @@ function hasAuthenticatedHtlcOwnerProof(
   return deriveNimiqAddress(Buffer.from(senderProof.publicKey).toString("hex")) === ownerAddress;
 }
 
+/**
+ * R1.1: Nimiq Albatross JSON-RPC answers an unknown hash with
+ * `{"error":{"code":-32603,"message":"Internal error","data":"Transaction not found: <hash>"}}`.
+ * Matches only that code AND that exact data for the requested hash; every
+ * other -32603 (or any other error) stays a permanent PROVIDER_MALFORMED.
+ */
+export function isTransactionNotFoundError(payload: unknown, txHash: string): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const error = (payload as Record<string, unknown>)["error"];
+  if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+  const e = error as Record<string, unknown>;
+  if (e["code"] !== -32603 || typeof e["data"] !== "string") return false;
+  const match = /^Transaction not found: (?:0x)?([0-9a-fA-F]{64})$/.exec(e["data"].trim());
+  return match !== null && match[1]!.toLowerCase() === txHash.toLowerCase().replace(/^0x/, "");
+}
+
 function rpcResult(payload: unknown): unknown | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const root = payload as Record<string, unknown>;
@@ -489,17 +507,16 @@ export async function verifyNimiqSourceTransaction(input: NimiqSourceVerificatio
     clearTimeout(timer);
     return { ok: false, code };
   };
-  const call = async (method: string, params: unknown[] = []): Promise<unknown | null> => {
-    const payload = await postJson(
-      url,
-      JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-      controller.signal,
-    );
-    return rpcResult(payload);
-  };
+  const callRaw = (method: string, params: unknown[] = []): Promise<unknown> =>
+    postJson(url, JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), controller.signal);
+  const call = async (method: string, params: unknown[] = []): Promise<unknown | null> => rpcResult(await callRaw(method, params));
   let transactionResult: unknown | null;
   try {
-    transactionResult = await call("getTransactionByHash", [txHash]);
+    const payload = await callRaw("getTransactionByHash", [txHash]);
+    // R1.1: a hash the node has not indexed yet is a temporary lookup miss,
+    // not a malformed response. Only this exact error for THIS hash qualifies.
+    if (isTransactionNotFoundError(payload, txHash)) return fail("TRANSACTION_NOT_FOUND");
+    transactionResult = rpcResult(payload);
   } catch {
     return fail("PROVIDER_UNAVAILABLE");
   }

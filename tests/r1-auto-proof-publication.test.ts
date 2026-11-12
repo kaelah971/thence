@@ -25,6 +25,7 @@ import { nimiqBase32Decode } from "@/lib/nimiq";
 import { deriveNimiqHtlcCreationAddress, setNimiqSourceRpcTransportForTests } from "@/lib/nimiq-source";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { runServerReconciliation } from "@/lib/server-reconciler";
+import { SOURCE_RETRY_WINDOW_MS } from "@/lib/reconcile";
 import { TRANSFER_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
 import { checkTransferConsistency, readConsistencySnapshot } from "@/lib/consistency";
 import { LIVE, RUN, fixtureWallet, loginAs, postJson } from "./helpers";
@@ -81,7 +82,7 @@ const NIM_MACRO_BLOCK = 3_456_060;
 const HTLC_RECIPIENT_BYTES = Buffer.from("33445566778899aabbccddeeff00112233445566", "hex");
 
 /** Nimiq node state per source tx hash: `final` = closing macro block exists. */
-const nimTxs = new Map<string, { tx: Record<string, unknown>; final: boolean }>();
+const nimTxs = new Map<string, { tx: Record<string, unknown>; final: boolean; indexed?: boolean }>();
 let nimCalls = 0;
 
 /** A native NIM HTLC funding tx from `owner`, hash-locked to the bound Lightning payment hash. */
@@ -111,6 +112,8 @@ function installNimiqRpc(): void {
     const req = JSON.parse(body) as { method: string; params: unknown[] };
     if (req.method === "getTransactionByHash") {
       const s = nimTxs.get(String(req.params[0]));
+      // R1.1: what the Nimiq node really answers for a hash it has not indexed yet.
+      if (s?.indexed === false) return { jsonrpc: "2.0", id: 1, error: { code: -32603, message: "Internal error", data: `Transaction not found: ${String(req.params[0])}` } };
       return { jsonrpc: "2.0", id: 1, result: { data: s ? { ...s.tx, confirmations: s.final ? 12 : 2 } : null } };
     }
     const anyFinal = [...nimTxs.values()].some((s) => s.final);
@@ -194,6 +197,10 @@ const proofRow = async (id: string) => (await getDb().select().from(transferProo
 const markers = async (id: string) =>
   (await getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, id)).orderBy(asc(transferTransitions.createdAt), asc(transferTransitions.id)))
     .map((t) => (t.evidence as Record<string, unknown>)["nimiqSourceVerification"])
+    .filter((v) => v !== undefined);
+const failures = async (id: string) =>
+  (await getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, id)))
+    .map((t) => (t.evidence as Record<string, unknown>)["nimiqSourceFailure"])
     .filter((v) => v !== undefined);
 const config = () => publicProofConfig({ routeTokens: getEnv().THENCE_ROUTE_TOKENS_JSON, finalityPolicies: getEnv().THENCE_SETTLEMENT_FINALITY_JSON });
 async function published(id: string) {
@@ -353,5 +360,38 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
     const feed = await listPublicProofs({ limit: 50, cursor: null }, config());
     expect(feed.proofs.filter((v) => JSON.stringify(v).includes(nimHash))).toHaveLength(1);
     await expectConsistent(p.id);
+  });
+  it("R1.1: a NIM tx not yet indexed by the proof node at handoff verifies and publishes once the node has it", async () => {
+    const p = await authorized("unindexed");
+    const nimHash = h("nim-unindexed");
+    nimTxs.set(nimHash, { tx: nimHtlcFunding(p.owner, nimHash), final: true, indexed: false });
+    await deliverViaOwner(p, nimHash, () => nimTxs.set(nimHash, { ...nimTxs.get(nimHash)!, indexed: true }));
+    expect(await failures(p.id)).toEqual(["TRANSACTION_NOT_FOUND"]);
+    expect(await markers(p.id)).toEqual(["UNVERIFIED", "VERIFIED"]);
+    const view = await published(p.id);
+    expect(view).not.toBeNull();
+    expect(JSON.stringify(view)).toContain(nimHash);
+    await expectConsistent(p.id);
+  });
+
+  it("R1.1: a hash the node never knows is retried only inside the bounded window, then never again", async () => {
+    const p = await authorized("never-indexed");
+    const nimHash = h("nim-never");
+    nimTxs.set(nimHash, { tx: nimHtlcFunding(p.owner, nimHash), final: true, indexed: false });
+    expect((await report(p, "initiated", nimHash)).status).toBe(200);
+    expect(await failures(p.id)).toEqual(["TRANSACTION_NOT_FOUND"]);
+    // Inside the window: each reconcile re-asks the node (one lookup), records nothing new.
+    let before = nimCalls;
+    expect((await reconcile(p)).status).toBe(200);
+    expect(nimCalls).toBe(before + 1);
+    expect(await markers(p.id)).toEqual(["UNVERIFIED"]);
+    // Past the window: no more lookups, no new rows.
+    await getDb().execute(sql`UPDATE transfer_transitions SET created_at = created_at - make_interval(secs => ${Math.ceil(SOURCE_RETRY_WINDOW_MS / 1000) + 3600}) WHERE transfer_id = ${p.id}::uuid`);
+    before = nimCalls;
+    expect((await reconcile(p)).status).toBe(200);
+    expect((await reconcile(p)).status).toBe(200);
+    expect(nimCalls).toBe(before);
+    expect(await markers(p.id)).toEqual(["UNVERIFIED"]);
+    expect(await published(p.id)).toBeNull();
   });
 });

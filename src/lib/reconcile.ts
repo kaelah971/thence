@@ -982,7 +982,16 @@ const RETRYABLE_SOURCE_FAILURES = new Set([
   "NOT_CONFIGURED",
   "SOURCE_VERIFICATION_UNAVAILABLE",
   "SOURCE_BINDING_UNAVAILABLE",
+  // R1.1: the proof node had not indexed the host hash yet (exact not-found only).
+  "TRANSACTION_NOT_FOUND",
 ]);
+
+/**
+ * R1.1: a pending hint is re-checked only this long after its FIRST recorded
+ * verdict. Nimiq indexing and macro-block finality take seconds to a minute;
+ * a hash still unknown after a day is not going to publish, so retries stop.
+ */
+export const SOURCE_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 
 /** Non-terminal, post-handoff statuses where a late source marker may still be recorded. */
 const SOURCE_RETRY_STATUSES: ReadonlySet<string> = new Set([
@@ -1008,15 +1017,22 @@ async function pendingNimiqSourceHint(
   const proof = (await db.select({ nimiqTxHash: transferProofs.nimiqTxHash }).from(transferProofs).where(eq(transferProofs.transferId, transfer.id)).limit(1))[0];
   const hash = normalizeSourceTxHash(proof?.nimiqTxHash?.trim() ?? undefined);
   if (!hash) return null;
-  const audit = await db.select({ evidence: transferTransitions.evidence }).from(transferTransitions).where(eq(transferTransitions.transferId, transfer.id));
+  const audit = await db
+    .select({ evidence: transferTransitions.evidence, createdAt: transferTransitions.createdAt })
+    .from(transferTransitions)
+    .where(eq(transferTransitions.transferId, transfer.id));
   let retryable = false;
+  let firstVerdictAt = Number.POSITIVE_INFINITY;
   for (const row of audit) {
     const e = (row.evidence ?? {}) as Record<string, unknown>;
     if (normalizeSourceTxHash(typeof e["nimiqSourceTxHash"] === "string" ? e["nimiqSourceTxHash"] : undefined) !== hash) continue;
     if (e["nimiqSourceVerification"] === "VERIFIED") return null;
     if (!RETRYABLE_SOURCE_FAILURES.has(String(e["nimiqSourceFailure"]))) return null;
     retryable = true;
+    firstVerdictAt = Math.min(firstVerdictAt, row.createdAt.getTime());
   }
+  // Bounded: a hash that never becomes verifiable stops being re-queried.
+  if (retryable && Date.now() - firstVerdictAt > SOURCE_RETRY_WINDOW_MS) return null;
   return retryable ? hash : null;
 }
 
