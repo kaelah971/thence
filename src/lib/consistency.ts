@@ -121,7 +121,11 @@ export function checkTransferConsistency(s: ConsistencySnapshot, opts: { require
     v.push({ code: "HANDOFF_WITHOUT_AUTHORIZATION", detail: `${status} requires a HANDOFF_AUTHORIZED attempt.` });
   }
 
-  const chain = orderTransitions(s.transitions);
+  // Same-state, non-terminal source-evidence rows annotate a status; they are
+  // not hops (handoff late evidence, R1 reconcile re-check).
+  const chain = orderTransitions(
+    s.transitions.filter((t) => !(t.fromStatus === t.toStatus && !t.terminal && t.reasonCode === "SOURCE_EVIDENCE_RECORDED")),
+  );
   if (status === "REFUNDED" && (chain.length > 0 || opts.requireAudit)) {
     const into = chain.find((t) => t.toStatus === "REFUNDED");
     const ev = (into?.evidence ?? {}) as Record<string, unknown>;

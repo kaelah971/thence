@@ -33,6 +33,7 @@ import {
   reconciliationObservations,
   swapAttachments,
   transferProofs,
+  transferTransitions,
   transfers,
   users,
 } from "@/db/schema";
@@ -415,6 +416,10 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
   // purely by the state machine afterwards (terminal states no-op).
   if (!initialAttachment) throw new AuthError(409, "NOT_RECONCILABLE", "No bound swap to observe.");
   const evidence = await gatherEvidence(initial, initialAttachment);
+  // R1: a host hash that was not yet final at the handoff report is re-checked
+  // here (read-only, no lock), so a verified payment can still publish.
+  const lateSourceHint = await pendingNimiqSourceHint(db, initial);
+  const lateSource = lateSourceHint ? await gatherNimiqSourceEvidence(initial.ownerUserId, initial.id, lateSourceHint) : null;
 
   // ---- Phase B: short commit under the per-transfer lock ----
   return db.transaction(async (tx) => {
@@ -428,6 +433,22 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
       throw new AuthError(409, "NOT_RECONCILABLE", "The bound swap changed during reconciliation.");
     }
     const current = transfer.status as TransferStatus;
+    // R1: record late independent source evidence as a same-state audit row,
+    // BEFORE any advance below, so it is never written against a terminal
+    // status. Re-checked under the lock: concurrent cycles record it once.
+    if (lateSource?.evidence && lateSourceHint && (await pendingNimiqSourceHint(tx, transfer)) === lateSourceHint) {
+      if (await bindVerifiedNimiqSource(tx, transfer.id, lateSource.evidence)) {
+        await recordTransition(tx, {
+          transferId: transfer.id,
+          from: current,
+          to: current,
+          actor: "reconciler",
+          actorUserId: actor.ownerUserId,
+          reasonCode: "SOURCE_EVIDENCE_RECORDED",
+          evidence: { trigger: actor.kind === "system" ? "server-cron" : "owner-session", ...sourceAuditEvidence(lateSource) },
+        });
+      }
+    }
 
     if (evidence.kind === "provider_error") {
       await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: "unknown", kind: "provider_error", errorCode: evidence.code }, false);
@@ -949,6 +970,54 @@ function sourceAuditEvidence(source: SourceEvidenceRead | null): Record<string, 
     nimiqSourceNetwork: source.evidence.network,
     nimiqSourceVerifiedAt: source.evidence.verifiedAt,
   };
+}
+
+/**
+ * Verifier refusals that can clear with time (batch finality, node or config
+ * availability). Any other refusal is final for that hash and is not retried.
+ */
+const RETRYABLE_SOURCE_FAILURES = new Set([
+  "INSUFFICIENT_FINALITY",
+  "PROVIDER_UNAVAILABLE",
+  "NOT_CONFIGURED",
+  "SOURCE_VERIFICATION_UNAVAILABLE",
+  "SOURCE_BINDING_UNAVAILABLE",
+]);
+
+/** Non-terminal, post-handoff statuses where a late source marker may still be recorded. */
+const SOURCE_RETRY_STATUSES: ReadonlySet<string> = new Set([
+  "LIGHTNING_HANDOFF",
+  "OUTCOME_UNKNOWN",
+  "RECONCILING",
+  "CLIENT_FUNDED",
+  "SERVER_FUNDED",
+  "CLAIMING",
+  "NEEDS_ATTENTION",
+]);
+
+/**
+ * R1: the stored host hash still awaiting independent verification, or null.
+ * Only a hash already recorded by the handoff report qualifies (never a new
+ * client value), and only while every recorded verdict for it was retryable.
+ */
+async function pendingNimiqSourceHint(
+  db: Pick<Db, "select">,
+  transfer: { id: string; status: string },
+): Promise<string | null> {
+  if (!SOURCE_RETRY_STATUSES.has(transfer.status)) return null;
+  const proof = (await db.select({ nimiqTxHash: transferProofs.nimiqTxHash }).from(transferProofs).where(eq(transferProofs.transferId, transfer.id)).limit(1))[0];
+  const hash = normalizeSourceTxHash(proof?.nimiqTxHash?.trim() ?? undefined);
+  if (!hash) return null;
+  const audit = await db.select({ evidence: transferTransitions.evidence }).from(transferTransitions).where(eq(transferTransitions.transferId, transfer.id));
+  let retryable = false;
+  for (const row of audit) {
+    const e = (row.evidence ?? {}) as Record<string, unknown>;
+    if (normalizeSourceTxHash(typeof e["nimiqSourceTxHash"] === "string" ? e["nimiqSourceTxHash"] : undefined) !== hash) continue;
+    if (e["nimiqSourceVerification"] === "VERIFIED") return null;
+    if (!RETRYABLE_SOURCE_FAILURES.has(String(e["nimiqSourceFailure"]))) return null;
+    retryable = true;
+  }
+  return retryable ? hash : null;
 }
 
 /** Store only the host hash as a conservative hint; it is never source proof. */
