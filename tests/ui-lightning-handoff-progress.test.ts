@@ -73,7 +73,7 @@ describe("Lightning handoff progress after a verified NIM source", () => {
         const v = paymentProgress({ ...incident, nowMs });
         expect(v.headline).toBe("Not delivered — the delivery deadline has passed");
         expect(v.action).toBe("check");
-        expect(v.body).toContain(`before ${hhmm(CLAIM_DEADLINE)}`);
+        expect(v.body).toContain(`delivery deadline (${hhmm(CLAIM_DEADLINE)}) has passed`);
         expect(v.body).toMatch(/can no longer be delivered, even if the Lightning payment still arrives/);
         expect(v.body).toMatch(/Thence hasn't seen a refund yet/);
         expect(text(v)).not.toMatch(/delivery continues|can still be delivered|\brefunded\b/i);
@@ -81,7 +81,15 @@ describe("Lightning handoff progress after a verified NIM source", () => {
     }
 
     it("the invoice-expired message takes over at invoice expiry", () => {
-      expect(paymentProgress({ ...incident, nowMs: INVOICE_EXPIRES }).headline).toBe("Not delivered — the Lightning payment never arrived");
+      expect(paymentProgress({ ...incident, nowMs: INVOICE_EXPIRES }).headline).toBe("Not delivered — the payment window has closed");
+      expect(paymentProgress({ ...incident, providerStatus: "expired", nowMs: INVOICE_EXPIRES }).headline).toBe("Not delivered — the Lightning payment never arrived");
+    });
+
+    it("deadline passed with an unknown provider state: no claim about what the provider received", () => {
+      const v = paymentProgress({ ...incident, providerStatus: "unknown", nowMs: CLAIM_DEADLINE + 15 * MIN });
+      expect(v.headline).toBe("Not delivered — the delivery deadline has passed");
+      expect(v.body).toMatch(/can't confirm the provider's latest status/);
+      expect(text(v)).not.toMatch(/hasn't received|had not received|never/);
     });
   });
 
@@ -97,12 +105,32 @@ describe("Lightning handoff progress after a verified NIM source", () => {
     expect(paymentProgress({ ...incident, nowMs: HANDOFF + LIGHTNING_DELAY_MS }).headline).toBe("Delivery delayed — waiting for the Lightning payment");
   });
 
+  it("invoice expired: only the provider's own `expired` verdict says the Lightning payment never arrived", () => {
+    const confirmed = paymentProgress({ ...incident, providerStatus: "expired", nowMs: INVOICE_EXPIRES });
+    expect(confirmed.headline).toBe("Not delivered — the Lightning payment never arrived");
+    expect(confirmed.body).toMatch(/The provider reports the swap expired without receiving the Lightning payment/);
+
+    // Invoice expiry alone with the last provider read still `pending`: not categorical.
+    const pending = paymentProgress({ ...incident, providerStatus: "pending", nowMs: INVOICE_EXPIRES });
+    expect(pending.headline).toBe("Not delivered — the payment window has closed");
+    expect(pending.body).toMatch(/As of Thence's last check, the provider had not received the Lightning payment/);
+    expect(text(pending)).not.toMatch(/never (arrived|received)/);
+
+    // Unknown or unrecognized provider state: non-conclusive.
+    for (const providerStatus of ["unknown", null, "somethingnew"]) {
+      const v = paymentProgress({ ...incident, providerStatus, invoiceExpired: true, nowMs: HANDOFF + 60_000 });
+      expect(v.headline).toBe("Not delivered — the payment window has closed");
+      expect(v.body).toMatch(/can't confirm the provider's latest status/);
+      expect(text(v)).not.toMatch(/never (arrived|received)|hadn't received|had not received/);
+    }
+  });
+
   it("invoice expired (server verdict or clock): not delivered, refund only as a future possibility, never as done", () => {
     for (const v of [
       paymentProgress({ ...incident, invoiceExpired: true, nowMs: HANDOFF + 60_000 }),
       paymentProgress({ ...incident, nowMs: INVOICE_EXPIRES }),
     ]) {
-      expect(v.headline).toBe("Not delivered — the Lightning payment never arrived");
+      expect(v.headline).toMatch(/^Not delivered — /);
       expect(v.action).toBe("check");
       expect(v.body).toMatch(/Thence hasn't seen a refund yet/);
       expect(v.body).toMatch(/Nimiq Pay can return it/);

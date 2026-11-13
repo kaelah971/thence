@@ -84,10 +84,20 @@ function lightningHandoffView(s: ProgressInput, steps: TimelineStep[] | null): P
   if (s.transferStatus !== "LIGHTNING_HANDOFF" || !s.sourceVerifiedAtMs) return null;
   const now = s.nowMs ?? Date.now();
   const expired = s.invoiceExpired === true || (typeof s.invoiceExpiresAtMs === "number" && s.invoiceExpiresAtMs <= now);
+  // Only the provider's own terminal `expired` verdict says the Lightning
+  // payment never arrived. Invoice expiry alone, or a stale/unknown provider
+  // read, stays non-conclusive.
+  const providerExpired = s.providerStatus === "expired";
+  const providerUnpaid = providerExpired || s.providerStatus === "pending";
+  const whatProviderSaw = providerExpired
+    ? "The provider reports the swap expired without receiving the Lightning payment."
+    : providerUnpaid
+      ? "As of Thence's last check, the provider had not received the Lightning payment."
+      : "Thence can't confirm the provider's latest status yet.";
   if (expired) {
     return {
-      headline: "Not delivered — the Lightning payment never arrived",
-      body: `Nimiq Pay locked your NIM, but the provider never received the Lightning payment and its invoice has expired, so nothing was delivered. ${NIM_LOCKED_NOTE}`,
+      headline: providerExpired ? "Not delivered — the Lightning payment never arrived" : "Not delivered — the payment window has closed",
+      body: `Nimiq Pay locked your NIM and its Lightning invoice has expired. ${whatProviderSaw} Nothing has been delivered. ${NIM_LOCKED_NOTE}`,
       tone: "warn",
       action: "check",
       steps,
@@ -101,7 +111,7 @@ function lightningHandoffView(s: ProgressInput, steps: TimelineStep[] | null): P
     return {
       headline: "Not delivered — the delivery deadline has passed",
       body:
-        `Nimiq Pay locked your NIM, but the provider didn't receive the Lightning payment in time to deliver before ${clock(s.claimDeadlineMs!)}. ` +
+        `Nimiq Pay locked your NIM, but the delivery deadline (${clock(s.claimDeadlineMs!)}) has passed without the payment being funded. ${whatProviderSaw} ` +
         `This payment can no longer be delivered, even if the Lightning payment still arrives. ${NIM_LOCKED_NOTE}`,
       tone: "warn",
       action: "check",
@@ -117,7 +127,7 @@ function lightningHandoffView(s: ProgressInput, steps: TimelineStep[] | null): P
   if (now - since >= LIGHTNING_DELAY_MS) {
     return {
       headline: "Delivery delayed — waiting for the Lightning payment",
-      body: `Approved in Nimiq Pay and your NIM is locked, but the provider hasn't received the Lightning payment yet.${until} Don't pay again.`,
+      body: `Approved in Nimiq Pay and your NIM is locked. ${providerUnpaid ? "The provider hasn't received the Lightning payment yet." : whatProviderSaw}${until} Don't pay again.`,
       tone: "warn",
       action: "wait",
       steps,
