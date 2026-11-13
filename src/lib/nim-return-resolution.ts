@@ -398,4 +398,3 @@ export async function closeExpiredNimReturned(userId: string, transferId: string
     throw err;
   }
 }
-
