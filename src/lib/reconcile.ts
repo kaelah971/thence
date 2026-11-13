@@ -25,6 +25,7 @@
  */
 import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import { assessHandoffStall, emitHandoffStallAlert, type HandoffStall } from "@/lib/handoff-stall";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import {
@@ -229,6 +230,8 @@ export interface ReconciliationBase {
   sourceVerifiedAt: string | null;
   /** When the transfer first entered LIGHTNING_HANDOFF, ISO; null if never. */
   handoffAt: string | null;
+  /** R3: derived stalled-handoff condition (display and alert only; never a state). */
+  handoffStall: HandoffStall;
 }
 
 export interface ReconciliationSummary extends ReconciliationBase {
@@ -430,7 +433,7 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
   const lateSource = lateSourceHint ? await gatherNimiqSourceEvidence(initial.ownerUserId, initial.id, lateSourceHint) : null;
 
   // ---- Phase B: short commit under the per-transfer lock ----
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx): Promise<ReconciliationSummary> => {
     await lockTransfer(tx, transferId);
     const fresh = await tx.select().from(transfers).where(scope).limit(1);
     const transfer = fresh[0];
@@ -567,6 +570,9 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
     if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     return { ...summary, advanced: advanced.length > 0, advancedPath: advanced };
   });
+  // R3: alert only after commit, so a rolled-back cycle never alerts.
+  emitHandoffStallAlert({ transferId: result.transferId, satoraSwapId: initialAttachment.satoraSwapId, stall: result.handoffStall });
+  return result;
 }
 
 /**
@@ -623,6 +629,19 @@ async function buildSummary(
     .where(and(eq(transferTransitions.transferId, transferId), sql`${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'`))
     .orderBy(asc(transferTransitions.createdAt))
     .limit(1);
+  const stallObservations = await db
+    .select({ id: reconciliationObservations.id, providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind, observedAt: reconciliationObservations.observedAt })
+    .from(reconciliationObservations)
+    .where(eq(reconciliationObservations.transferId, transferId))
+    .orderBy(desc(reconciliationObservations.observedAt))
+    .limit(200);
+  const handoffStall = assessHandoffStall({
+    status: transfer.status,
+    sourceVerifiedAt: sourceRows[0]?.at ?? null,
+    handoffAt: handoffRows[0]?.at ?? null,
+    observations: stallObservations,
+    now: Date.now(),
+  });
   const unknownProviderState = !latest || (!!latest && !RECOGNIZED_STATUSES.has(latest.providerStatus) && latest.kind === "observation" && latest.providerStatus !== "unknown");
   const ambiguityReasons: string[] = [];
   if (invoiceLive === false) ambiguityReasons.push("Invoice expired; expiry alone does not establish whether payment was initiated.");
@@ -646,6 +665,7 @@ async function buildSummary(
     identityMismatch,
     sourceVerifiedAt: sourceRows[0]?.at.toISOString() ?? null,
     handoffAt: handoffRows[0]?.at.toISOString() ?? null,
+    handoffStall,
   };
 }
 

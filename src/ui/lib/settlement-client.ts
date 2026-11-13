@@ -48,6 +48,8 @@ export interface ReconciliationLatest {
   sourceVerifiedAt?: string | null;
   /** First entry into LIGHTNING_HANDOFF (ISO). */
   handoffAt?: string | null;
+  /** R3: server-derived stall (verified NIM lock, provider still pending 5+ min). Display only. */
+  handoffStall?: { stalled: boolean; stalledSince: string | null; anchorAt: string | null } | null;
 }
 
 export interface ReconciliationView {

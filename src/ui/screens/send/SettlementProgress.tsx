@@ -94,6 +94,7 @@ export function usePaymentProgress({
         handoffAtMs: state.handoffAtMs ?? null,
         invoiceExpiresAtMs: state.invoiceExpiresAtMs ?? null,
         invoiceExpired: state.invoiceExpired === true,
+        handoffStalled: state.handoffStalled === true,
         claimDeadlineMs: state.claimDeadlineMs ?? null,
         nowMs: now,
       })
