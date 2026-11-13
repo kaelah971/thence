@@ -111,6 +111,8 @@ export interface TimelineStep {
 export interface TimelineContext {
   claimSubmitted?: boolean;
   awaitingFinality?: boolean;
+  /** The NIM source transaction is independently verified on-chain (copy only). */
+  sourceVerified?: boolean;
 }
 
 const STEP_ORDER = ["approve", "finish", "verify", "delivered"] as const;
@@ -143,7 +145,7 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
   const index = progressIndex(status, ctx);
   const copy: Record<TimelineStep["key"], { label: string; detail: string }> = {
     approve: {
-      label: index > 0 ? "Approved in Nimiq Pay" : "Approve in Nimiq Pay",
+      label: index > 0 || (status === "LIGHTNING_HANDOFF" && ctx.sourceVerified) ? "Approved in Nimiq Pay" : "Approve in Nimiq Pay",
       detail:
         stage === "closed"
           ? USER_FACING_LABEL[status]
@@ -152,7 +154,9 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
             : stage === "attention"
               ? "Follow the next step before starting another payment."
               : status === "LIGHTNING_HANDOFF"
-                ? "Confirming your Nimiq Pay payment."
+                ? ctx.sourceVerified
+                  ? "NIM locked — waiting for the Lightning payment."
+                  : "Confirming your Nimiq Pay payment."
                 : "Nimiq Pay shows the exact NIM amount first.",
     },
     finish: {

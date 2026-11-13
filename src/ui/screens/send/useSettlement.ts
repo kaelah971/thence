@@ -10,6 +10,7 @@ import {
   progressCopy,
   progressForStatus,
   type ProgressPhase,
+  type ReconciliationView,
   type SettlementVerdict,
 } from "@/ui/lib/settlement-client";
 import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRetryClaim } from "@/ui/lib/claim-gate";
@@ -50,6 +51,11 @@ export interface SettlementState {
    * again; the screen shows "confirming" instead.
    */
   claimPending?: boolean;
+  /** Display-only Lightning-handoff facts (see HandoffInfo). */
+  sourceVerifiedAtMs?: number | null;
+  handoffAtMs?: number | null;
+  invoiceExpiresAtMs?: number | null;
+  invoiceExpired?: boolean;
 }
 
 /** P3: is a local claim attempt still awaiting verification (no second attempt yet)? */
@@ -69,6 +75,29 @@ export function claimPendingFor(record: ClaimRecord | null, claimReadyNow: boole
  * cross-device duplicates are refused by the server claim lease.
  */
 const claimsInFlight = new Set<string>();
+
+/**
+ * Display-only Lightning-handoff facts (2026-11-13 incident 6f44918d: the NIM
+ * source was verified on-chain within a minute, yet the screen said
+ * "Confirming your approval" while the provider never received the Lightning
+ * payment). Never authority: state and exposure stay with the server.
+ */
+export interface HandoffInfo {
+  sourceVerifiedAtMs: number | null;
+  handoffAtMs: number | null;
+  invoiceExpiresAtMs: number | null;
+  invoiceExpired: boolean;
+}
+const EMPTY_HANDOFF_INFO: HandoffInfo = { sourceVerifiedAtMs: null, handoffAtMs: null, invoiceExpiresAtMs: null, invoiceExpired: false };
+
+export function handoffInfoFrom(view: Pick<ReconciliationView, "latest" | "swap">): HandoffInfo {
+  return {
+    sourceVerifiedAtMs: deadlineMsFrom(view.latest.sourceVerifiedAt),
+    handoffAtMs: deadlineMsFrom(view.latest.handoffAt),
+    invoiceExpiresAtMs: deadlineMsFrom(view.swap?.invoiceExpiresAt),
+    invoiceExpired: view.latest.invoiceExpired === true,
+  };
+}
 
 /** P2: parse a server deadline; anything unparseable is unknown (fail closed). */
 export function deadlineMsFrom(value: string | null | undefined): number | null {
@@ -251,6 +280,7 @@ export function useSettlement(): {
     verifyVerdict: null,
   });
   const [claimInfo, setClaimInfo] = useState<{ claimDeadlineMs: number | null; identityMismatch: boolean }>({ claimDeadlineMs: null, identityMismatch: false });
+  const [handoffInfo, setHandoffInfo] = useState<HandoffInfo>(EMPTY_HANDOFF_INFO);
   const runId = useRef(0);
   const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
@@ -304,6 +334,7 @@ export function useSettlement(): {
       claimDeadlineMs: deadlineMsFrom(view.latest.claimDeadlineAt ?? view.swap?.claimDeadline),
       identityMismatch: view.latest.identityMismatch === true,
     });
+    setHandoffInfo(handoffInfoFrom(view));
     const status = view.transfer.status;
     const statusLabel = view.transfer.statusLabel ?? null;
     const providerStatus = view.latest.providerStatus;
@@ -609,5 +640,5 @@ export function useSettlement(): {
     runVerifyLoopRef.current = runVerifyLoop;
   }, [runVerifyLoop]);
 
-  return { state: { ...state, ...claimInfo, claimMessage }, track, stop, attemptClaim, checkAgain };
+  return { state: { ...state, ...claimInfo, ...handoffInfo, claimMessage }, track, stop, attemptClaim, checkAgain };
 }

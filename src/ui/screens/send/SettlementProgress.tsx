@@ -75,7 +75,8 @@ export function usePaymentProgress({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transferId, ownerUserId]);
 
-  const { window } = useClaimWindow(state.claimDeadlineMs ?? null);
+  // `now` ticks every 5 s, so the delayed/expired Lightning copy appears without a new server read.
+  const { window, now } = useClaimWindow(state.claimDeadlineMs ?? null);
   const tracking = Boolean(transferId && ownerUserId) && state.phase !== "idle";
   const view = tracking
     ? paymentProgress({
@@ -89,6 +90,12 @@ export function usePaymentProgress({
         receiptReady: state.receipt !== null,
         message: state.message,
         handedOff,
+        sourceVerifiedAtMs: state.sourceVerifiedAtMs ?? null,
+        handoffAtMs: state.handoffAtMs ?? null,
+        invoiceExpiresAtMs: state.invoiceExpiresAtMs ?? null,
+        invoiceExpired: state.invoiceExpired === true,
+        claimDeadlineMs: state.claimDeadlineMs ?? null,
+        nowMs: now,
       })
     : null;
   const finishNeeded = view?.action === "finish" && !previewMode && Boolean(ownerUserId);
