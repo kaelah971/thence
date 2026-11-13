@@ -20,6 +20,7 @@ export const SHARDS: Record<string, string[]> = {
     "ui-*",
     "incident-2026-11-02",
     "test-db-guard",
+    "test-db-tls",
     "satora-swap-verify",
     "transfer-handoff",
     "f43-settlement",

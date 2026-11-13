@@ -7,8 +7,11 @@
  * removed, because pg lets connection-string TLS settings override `ssl` and
  * `sslmode=no-verify` would silently disable verification. Credentials,
  * host and database are untouched. Localhost uses no TLS.
+ *
+ * The localhost rule comes from `db-target.ts`, not `db-guard.ts`, so the
+ * guard can use this config without a circular import.
  */
-import { isLocalhostTarget } from "./db-guard";
+import { isLocalhostTarget } from "./db-target";
 
 const TLS_PARAMS = ["sslmode", "ssl", "sslcert", "sslkey", "sslrootcert", "sslcrl", "uselibpqcompat"];
 
