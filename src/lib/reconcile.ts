@@ -23,8 +23,11 @@
  *   retirement (the server verifies pre-handoff or terminal expired evidence),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import { assessHandoffStall, emitHandoffStallAlert, type HandoffStall } from "@/lib/handoff-stall";
+import { readHostSwapHint, recordHostSwapHint } from "@/lib/host-swap-hint";
+import { HOST_SWAP_ID_RE } from "@/domain/host-swap-id";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import {
@@ -221,6 +224,16 @@ export interface ReconciliationBase {
   claimWindow: ClaimWindow;
   /** P2: the latest provider read diverged from the bound swap identity. */
   identityMismatch: boolean;
+  /**
+   * When the NIM source transaction was independently VERIFIED on-chain
+   * (append-only transition evidence), ISO; null when unverified. Copy only:
+   * it proves NIM left the wallet, never that the Lightning leg was paid.
+   */
+  sourceVerifiedAt: string | null;
+  /** When the transfer first entered LIGHTNING_HANDOFF, ISO; null if never. */
+  handoffAt: string | null;
+  /** R3: derived stalled-handoff condition (display and alert only; never a state). */
+  handoffStall: HandoffStall;
 }
 
 export interface ReconciliationSummary extends ReconciliationBase {
@@ -422,7 +435,7 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
   const lateSource = lateSourceHint ? await gatherNimiqSourceEvidence(initial.ownerUserId, initial.id, lateSourceHint) : null;
 
   // ---- Phase B: short commit under the per-transfer lock ----
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx): Promise<ReconciliationSummary> => {
     await lockTransfer(tx, transferId);
     const fresh = await tx.select().from(transfers).where(scope).limit(1);
     const transfer = fresh[0];
@@ -559,6 +572,14 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
     if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     return { ...summary, advanced: advanced.length > 0, advancedPath: advanced };
   });
+  // R3: alert only after commit, so a rolled-back cycle never alerts.
+  let hostSwapId: string | null = null;
+  if (result.handoffStall.alertDue) {
+    // R4: best-effort; a failed read never blocks the alert.
+    hostSwapId = await readHostSwapHint(db, result.transferId).then((h) => h?.hostSwapId ?? null, () => null);
+  }
+  emitHandoffStallAlert({ transferId: result.transferId, satoraSwapId: initialAttachment.satoraSwapId, hostSwapId, stall: result.handoffStall });
+  return result;
 }
 
 /**
@@ -603,6 +624,31 @@ async function buildSummary(
   const claimDeadline = boundRows[0]?.evmRefundLocktime ?? null;
   const claimWindow = claimWindowAt(claimDeadline ? claimDeadline.getTime() : null, Date.now());
   const identityMismatch = latest?.kind === "identity_mismatch";
+  const handoffRows = await db
+    .select({ at: transferTransitions.createdAt })
+    .from(transferTransitions)
+    .where(and(eq(transferTransitions.transferId, transferId), eq(transferTransitions.toStatus, "LIGHTNING_HANDOFF")))
+    .orderBy(asc(transferTransitions.createdAt))
+    .limit(1);
+  const sourceRows = await db
+    .select({ at: transferTransitions.createdAt })
+    .from(transferTransitions)
+    .where(and(eq(transferTransitions.transferId, transferId), sql`${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'`))
+    .orderBy(asc(transferTransitions.createdAt))
+    .limit(1);
+  const stallObservations = await db
+    .select({ id: reconciliationObservations.id, providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind, observedAt: reconciliationObservations.observedAt })
+    .from(reconciliationObservations)
+    .where(eq(reconciliationObservations.transferId, transferId))
+    .orderBy(desc(reconciliationObservations.observedAt))
+    .limit(200);
+  const handoffStall = assessHandoffStall({
+    status: transfer.status,
+    sourceVerifiedAt: sourceRows[0]?.at ?? null,
+    handoffAt: handoffRows[0]?.at ?? null,
+    observations: stallObservations,
+    now: Date.now(),
+  });
   const unknownProviderState = !latest || (!!latest && !RECOGNIZED_STATUSES.has(latest.providerStatus) && latest.kind === "observation" && latest.providerStatus !== "unknown");
   const ambiguityReasons: string[] = [];
   if (invoiceLive === false) ambiguityReasons.push("Invoice expired; expiry alone does not establish whether payment was initiated.");
@@ -624,6 +670,9 @@ async function buildSummary(
     claimDeadlineAt: claimDeadline ? claimDeadline.toISOString() : null,
     claimWindow,
     identityMismatch,
+    sourceVerifiedAt: sourceRows[0]?.at.toISOString() ?? null,
+    handoffAt: handoffRows[0]?.at.toISOString() ?? null,
+    handoffStall,
   };
 }
 
@@ -1141,6 +1190,8 @@ export const handoffOutcomeSchema = z
     diagnostics: handoffDiagnosticsSchema.optional(),
     /** Host-returned Nimiq hash; server treats it as an untrusted hint. */
     sourceTxHash: z.string().regex(SOURCE_TX_HASH_RE, "sourceTxHash must be a 32-byte hex hash.").optional(),
+    /** R4: host-returned Fastspot swap id; an untrusted diagnostic hint, never evidence. */
+    hostSwapId: z.string().regex(HOST_SWAP_ID_RE, "hostSwapId is malformed.").optional(),
   })
   .strict()
   .refine((value) => value.diagnostics === undefined || value.diagnostics.normalizedOutcome === value.outcome, {
@@ -1150,6 +1201,10 @@ export const handoffOutcomeSchema = z
   .refine((value) => value.outcome !== "cancelled" || value.sourceTxHash === undefined, {
     path: ["sourceTxHash"],
     message: "A cancelled handoff cannot include a source transaction hint.",
+  })
+  .refine((value) => value.hostSwapId === undefined || value.sourceTxHash !== undefined, {
+    path: ["hostSwapId"],
+    message: "A host swap id is only accepted together with its source transaction hint.",
   });
 
 /**
@@ -1212,6 +1267,10 @@ export async function reportHandoffOutcome(
       }
     };
     const current = transfer.status as TransferStatus;
+    // R4: diagnostic hint only. Written before any hop, never read by a payment decision.
+    if (parsed.data.hostSwapId) {
+      await recordHostSwapHint(tx, { transferId: transfer.id, status: current, actorUserId: userId, hostSwapId: parsed.data.hostSwapId, sourceTxHashHint: sourceHintHash });
+    }
     const recordLateSourceEvidence = async (): Promise<void> => {
       if (!sourceForAudit) return;
       await recordTransition(tx, {

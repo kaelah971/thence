@@ -44,6 +44,12 @@ export interface ReconciliationLatest {
   /** P2: server window at read time. Clients recompute from claimDeadlineAt with their clock. */
   claimWindow?: ClaimWindow;
   identityMismatch?: boolean;
+  /** NIM source independently verified on-chain (ISO); proves NIM left the wallet, not that Lightning was paid. */
+  sourceVerifiedAt?: string | null;
+  /** First entry into LIGHTNING_HANDOFF (ISO). */
+  handoffAt?: string | null;
+  /** R3: server-derived stall (verified NIM lock, provider still pending 5+ min). Display only. */
+  handoffStall?: { stalled: boolean; stalledSince: string | null; anchorAt: string | null } | null;
 }
 
 export interface ReconciliationView {
