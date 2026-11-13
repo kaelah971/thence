@@ -20,6 +20,8 @@ export interface ActivityItem {
   dayLabel: string;
   timeLabel: string;
   destination?: string;
+  /** R2: on-chain-verified NIM return (server-set, EXPIRED_UNFUNDED only). */
+  nimReturn?: { refundTxHash: string; returnedLuna: string; feeLuna: string } | null;
 }
 
 export function formatReceive(amount: string, routeId: RouteId): string {
