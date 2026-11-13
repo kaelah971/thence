@@ -38,6 +38,7 @@ import {
 import { pairForRouteId } from "@/domain/routes";
 import { checkDestination, displayNameSchema, readJsonBody, rejectForbiddenKeys } from "@/lib/recipients";
 import { createQuote } from "@/lib/quotes";
+import { recordedReturn, type RecordedNimReturn } from "@/lib/nim-return-record";
 
 export const MAX_BODY_BYTES = 8_192;
 
@@ -135,6 +136,12 @@ export interface TransferView {
   updatedAt: string;
   quotedAt: string | null;
   quoteExpiresAt: string | null;
+  /**
+   * R2: present ONLY on EXPIRED_UNFUNDED transfers; non-null only when the
+   * close was the evidence-gated NIM return resolution (terminal audit row
+   * with an on-chain-verified return). Never inferred from anything else.
+   */
+  nimReturn?: RecordedNimReturn | null;
 }
 
 type Db = ReturnType<typeof getDb>;
@@ -183,6 +190,7 @@ async function toView(db: Db, row: TransferRow): Promise<TransferView> {
     updatedAt: row.updatedAt.toISOString(),
     quotedAt: row.quotedAt?.toISOString() ?? null,
     quoteExpiresAt: row.quoteExpiresAt?.toISOString() ?? null,
+    ...(displayStatus === "EXPIRED_UNFUNDED" ? { nimReturn: await recordedReturn(db, row.id) } : {}),
   };
 }
 
