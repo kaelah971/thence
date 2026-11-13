@@ -9,6 +9,7 @@ import { Timeline } from "@/ui/components/Timeline";
 import { maskAddress } from "@/ui/lib/assets";
 import { humanAmount } from "@/ui/lib/transfers-api";
 import { paymentProgress, type ProgressView } from "@/ui/lib/payment-progress";
+import { settlementNetworkFor } from "@/ui/lib/network-copy";
 import { claimActionAllowed } from "@/domain/claim-deadline";
 import type { RouteId } from "@/domain/routes";
 import { useSettlement } from "./useSettlement";
@@ -57,6 +58,7 @@ export function usePaymentProgress({
   requestPublicId,
   sessionValid,
   previewMode,
+  routeId,
   asset,
   saveOffer,
   compact = false,
@@ -89,6 +91,7 @@ export function usePaymentProgress({
         receiptReady: state.receipt !== null,
         message: state.message,
         handedOff,
+        network: settlementNetworkFor(routeId),
       })
     : null;
   const finishNeeded = view?.action === "finish" && !previewMode && Boolean(ownerUserId);
@@ -126,7 +129,7 @@ export function usePaymentProgress({
         </p>
       )}
 
-      {claiming && state.claimMessage?.startsWith("Securing the payment on Polygon") && (
+      {claiming && state.claimMessage?.startsWith("Securing the payment on ") && (
         <p className={styles.ctaNote} role="status" aria-live="polite" data-claim-waiting>
           <span className={styles.quoteSpinner} aria-hidden="true" /> {state.claimMessage}
         </p>

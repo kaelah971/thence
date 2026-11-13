@@ -52,7 +52,7 @@ export function formatClockTime(ms: number): string {
 }
 
 export const NIM_TIMER_SEPARATE_NOTE =
-  "This is the delivery deadline on Polygon. It's separate from Nimiq Pay's own timer for returning NIM.";
+  "This is the delivery deadline on the recipient's network. It's separate from Nimiq Pay's own timer for returning NIM.";
 
 /** Live claim window for a deadline (re-evaluated on a clock tick and on foreground). */
 export function useClaimWindow(deadlineMs: number | null, intervalMs = 5_000): { window: ClaimWindow; now: number } {
@@ -110,7 +110,7 @@ export function ClaimDeadlineNotice({
     return (
       <div data-claim-window="passed">
         <Notice tone="warn" icon="alert" title="The delivery deadline has passed" live>
-          The deadline was {at}. Thence is checking whether the provider took the funds back on Polygon. Don&apos;t resend.
+          The deadline was {at}. Thence is checking whether the provider took the funds back on-chain. Don&apos;t resend.
         </Notice>
       </div>
     );

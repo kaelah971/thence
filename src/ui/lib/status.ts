@@ -1,4 +1,5 @@
 import { isTerminal, USER_FACING_LABEL, type TransferStatus } from "@/domain/transfers";
+import { verifyEstimate, type SettlementNetwork } from "./network-copy";
 
 /** Product stages used for grouping, filters and tone. The backend label stays authoritative. */
 export type TransferStage = "ready" | "approval" | "moving" | "checking" | "attention" | "delivered" | "closed";
@@ -111,6 +112,8 @@ export interface TimelineStep {
 export interface TimelineContext {
   claimSubmitted?: boolean;
   awaitingFinality?: boolean;
+  /** Settlement network for copy only (defaults to Polygon). */
+  network?: SettlementNetwork;
 }
 
 const STEP_ORDER = ["approve", "finish", "verify", "delivered"] as const;
@@ -141,6 +144,7 @@ function progressIndex(status: TransferStatus, ctx: TimelineContext): number {
 export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): TimelineStep[] {
   const stage = STAGE_OF[status];
   const index = progressIndex(status, ctx);
+  const network = ctx.network ?? "Polygon";
   const copy: Record<TimelineStep["key"], { label: string; detail: string }> = {
     approve: {
       label: index > 0 ? "Approved in Nimiq Pay" : "Approve in Nimiq Pay",
@@ -157,11 +161,13 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
     },
     finish: {
       label: "Finish delivery",
-      detail: status === "CLIENT_FUNDED" ? "Locking the USDC on Polygon first." : "Waiting for your tap.",
+      detail: status === "CLIENT_FUNDED" ? `Locking the USDC on ${network} first.` : "Waiting for your tap.",
     },
     verify: {
-      label: "Verifying on Polygon",
-      detail: ctx.awaitingFinality ? "Waiting for confirmations." : "Usually about 10 minutes.",
+      label: `Verifying on ${network}`,
+      detail: ctx.awaitingFinality
+        ? network === "Arbitrum" ? "Waiting for Ethereum finality." : "Waiting for confirmations."
+        : `Usually ${verifyEstimate(network)}.`,
     },
     delivered: { label: "Delivered", detail: "Confirmed on their network." },
   };

@@ -95,9 +95,24 @@ export const UNKNOWN_CLAIM_VERIFY_DELAY_MS = 20_000;
  */
 export const FUNDING_RETRY_INTERVAL_MS = 8_000;
 export const FUNDING_RETRY_BUDGET_MS = 4 * 60_000;
+/**
+ * Arbitrum: the server authorizes a claim only once the funding is covered by
+ * the L1-finalized block (~20 min observed). Ask less often, for longer. The
+ * server's DEADLINE_TOO_CLOSE refusal (not retried) still ends the wait before
+ * the unsafe window, so this budget is only an upper bound.
+ */
+export const FUNDING_RETRY_L1_INTERVAL_MS = 30_000;
+export const FUNDING_RETRY_L1_BUDGET_MS = 45 * 60_000;
 export const FUNDING_NOT_CONFIRMED = "FUNDING_NOT_CONFIRMED";
 
 export type FundingRetryDecision = { retry: true; delayMs: number } | { retry: false };
+
+/** Retry cadence and budget for the funding wait the server reported. */
+export function fundingRetryPolicy(finality: string | null | undefined): { intervalMs: number; budgetMs: number } {
+  return finality === "l1"
+    ? { intervalMs: FUNDING_RETRY_L1_INTERVAL_MS, budgetMs: FUNDING_RETRY_L1_BUDGET_MS }
+    : { intervalMs: FUNDING_RETRY_INTERVAL_MS, budgetMs: FUNDING_RETRY_BUDGET_MS };
+}
 
 /**
  * Pure retry rule. Retry only the funding-confirmation refusal, only within
@@ -105,19 +120,28 @@ export type FundingRetryDecision = { retry: true; delayMs: number } | { retry: f
  * tracking. Every other outcome (network failure, rate limit, deadline,
  * mismatch, success) ends the attempt exactly as before.
  */
-export function nextFundingRetry(input: { code: string | null | undefined; startedAtMs: number; nowMs: number; active: boolean }): FundingRetryDecision {
+export function nextFundingRetry(input: { code: string | null | undefined; startedAtMs: number; nowMs: number; active: boolean; finality?: string | null }): FundingRetryDecision {
   if (!input.active || input.code !== FUNDING_NOT_CONFIRMED) return { retry: false };
-  if (input.nowMs + FUNDING_RETRY_INTERVAL_MS - input.startedAtMs > FUNDING_RETRY_BUDGET_MS) return { retry: false };
-  return { retry: true, delayMs: FUNDING_RETRY_INTERVAL_MS };
+  const { intervalMs, budgetMs } = fundingRetryPolicy(input.finality);
+  if (input.nowMs + intervalMs - input.startedAtMs > budgetMs) return { retry: false };
+  return { retry: true, delayMs: intervalMs };
 }
 
-/** Progress copy while the tap waits for the funding confirmations. */
-export function fundingWaitMessage(confirmations: number | null, required: number | null): string {
+/** Progress copy while the tap waits for the funding to settle. */
+export function fundingWaitMessage(confirmations: number | null, required: number | null, finality?: string | null): string {
+  if (finality === "l1") {
+    return "Securing the payment on Arbitrum — waiting for Ethereum finality, usually about 20 minutes. Thence finishes delivery automatically — keep this screen open.";
+  }
   const progress =
     typeof confirmations === "number" && typeof required === "number" && required > 0
       ? ` (${Math.min(confirmations, required)} of ${required} confirmations)`
       : "";
   return `Securing the payment on Polygon${progress}. Thence finishes delivery automatically — keep this screen open.`;
+}
+
+/** The server's funding-wait kind ("l1" for Arbitrum), or null. */
+export function fundingFinalityFrom(details: Record<string, string> | null | undefined): "l1" | null {
+  return details?.["finality"] === "l1" ? "l1" : null;
 }
 
 /**
@@ -532,11 +556,12 @@ export function useSettlement(): {
       const startedAtMs = Date.now();
       let result = await attemptClaimOnce(input);
       for (;;) {
-        const decision = nextFundingRetry({ code: result.code, startedAtMs, nowMs: Date.now(), active: runId.current === id });
+        const finality = fundingFinalityFrom(result.details);
+        const decision = nextFundingRetry({ code: result.code, startedAtMs, nowMs: Date.now(), active: runId.current === id, finality });
         if (!decision.retry) break;
         const { confirmations, required } = confirmationsFrom(result.details);
-        setClaimMessage(fundingWaitMessage(confirmations, required));
-        await waitVisible(decision.delayMs, () => runId.current === id, startedAtMs + FUNDING_RETRY_BUDGET_MS);
+        setClaimMessage(fundingWaitMessage(confirmations, required, finality));
+        await waitVisible(decision.delayMs, () => runId.current === id, startedAtMs + fundingRetryPolicy(finality).budgetMs);
         if (runId.current !== id) break;
         result = await attemptClaimOnce(input);
       }
