@@ -6,6 +6,7 @@
  *   ... --lookup   also runs ONE read-only Fastspot GET /swap/{id}
  *
  * - The database is read inside BEGIN READ ONLY ... ROLLBACK. Nothing is written.
+ * - Remote connections use certificate-verified TLS (scripts/db-tls.ts).
  * - It prints the host-reported Fastspot swap id (an untrusted hint), its
  *   conflicts and when it was recorded. The full id is shown only here.
  * - `--lookup` is off unless THENCE_FASTSPOT_DIAG_BASE_URL and
@@ -17,7 +18,8 @@
  */
 import "dotenv/config";
 import { Client } from "pg";
-import { loadProductionDatabaseUrl, probeAnchor, productionEnvFile, verifyNonProductionTarget } from "./db-guard";
+import { TEST_ANCHOR_TABLE, loadProductionDatabaseUrl, productionEnvFile, verifyNonProductionTarget } from "./db-guard";
+import { verifiedClientConfig } from "./db-tls";
 import { normalizeHostSwapId } from "../src/domain/host-swap-id";
 import { lookupFastspotSwap } from "../src/lib/fastspot-diag";
 
@@ -32,11 +34,7 @@ async function resolveUrl(): Promise<{ url: string; production: boolean }> {
       console.error(`fastspot-diag: --production requires DATABASE_URL in ${productionEnvFile()}.`);
       process.exit(2);
     }
-    const anchor = await probeAnchor(url);
-    if (anchor.reason !== "no-anchor") {
-      console.error("fastspot-diag: production target refused.");
-      process.exit(2);
-    }
+    // The test-anchor refusal runs on the same certificate-verified connection below.
     return { url, production: true };
   }
   const url = (process.env["DATABASE_URL"] ?? "").trim();
@@ -55,11 +53,20 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const { url, production } = await resolveUrl();
-  const client = new Client({ connectionString: url, ssl: production ? { rejectUnauthorized: false } : undefined, connectionTimeoutMillis: 10_000 });
+  // Certificate-verified TLS for every remote connection (no rejectUnauthorized: false).
+  const client = new Client({ ...verifiedClientConfig(url), connectionTimeoutMillis: 10_000, statement_timeout: 15_000 });
   await client.connect();
   let rows: Array<{ evidence: Record<string, unknown> | null; created_at: Date; from_status: string }> = [];
   try {
     await client.query("BEGIN READ ONLY");
+    if (production) {
+      const anchored = await client.query(`SELECT to_regclass('public.${TEST_ANCHOR_TABLE}') IS NOT NULL AS present`);
+      if (anchored.rows[0]?.present === true) {
+        console.error("fastspot-diag: production target refused (it carries the test anchor).");
+        process.exitCode = 2;
+        return;
+      }
+    }
     const res = await client.query(
       "SELECT evidence, created_at, from_status FROM transfer_transitions WHERE transfer_id = $1 AND reason_code = 'HOST_SWAP_HINT_RECORDED' ORDER BY created_at ASC",
       [transferId],

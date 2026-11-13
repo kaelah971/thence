@@ -8,12 +8,34 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HOST_SWAP_ID_RE, hostSwapIdPrefix, normalizeHostSwapId } from "@/domain/host-swap-id";
 import { reportHandoffResult } from "@/ui/lib/handoff-client";
 import { loadHandoffRecord, saveHandoffRecord } from "@/ui/screens/send/useHandoff";
-import { lookupFastspotSwap, summarizeFastspotSwap } from "@/lib/fastspot-diag";
+import { CONTRACT_STATUS_LIMITATION, lookupFastspotSwap, summarizeFastspotSwap } from "@/lib/fastspot-diag";
+import { verifiedClientConfig } from "../scripts/db-tls";
 import { emitHandoffStallAlert, setStallAlertSinkForTests, type HandoffStall } from "@/lib/handoff-stall";
 import { handoffOutcomeSchema } from "@/lib/reconcile";
 
 const HASH = "a".repeat(64);
 const ID = "fs-swap-0001-abcdef";
+
+/**
+ * Raw REST response in the exact shape of the pinned SDK's `FastspotSwap`
+ * (@nimiq/fastspot-api@2.0.0-beta.2 dist/types.d.ts): sell/buy arrays, fees,
+ * hash, optional preimage, and `contracts: FastspotContract[]` with
+ * { id, asset, amount, status: PENDING|REDEEMED, refundTarget, recipient, expiry, data }.
+ * Values are synthetic.
+ */
+const V2_SWAP = {
+  id: ID,
+  status: "PENDING_DEPOSIT",
+  sell: [{ asset: "NIM", amount: "7244.09383" }],
+  buy: [{ asset: "BTC_LN", amount: "0.00031" }],
+  fees: [{ asset: "NIM", network: "nimiq", amount: "0.0001", included: false, source: "NETWORK", type: "DEPOSIT_TRANSACTION" }],
+  expiry: 1763060570.42,
+  hash: "ef".repeat(32),
+  contracts: [
+    { id: "nim-contract-id", asset: "NIM", amount: "7244093830", status: "PENDING", refundTarget: { address: "NQ07 0000 0000 0000 0000 0000 0000 0000 0000" }, recipient: { address: "NQ07 1111 1111 1111 1111 1111 1111 1111 1111" }, expiry: 1763233370, data: null },
+    { id: "ln-contract-id", asset: "BTC_LN", amount: "31000", status: "PENDING", refundTarget: null, recipient: "lnbc310u1pfixture", expiry: 1763060570, data: null },
+  ],
+};
 
 vi.mock("@/ui/lib/payment-tracker", () => ({ kickPaymentTracker: () => undefined }));
 
@@ -94,15 +116,44 @@ describe("read-only Fastspot diagnostic", () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const f = (async (url: string, init: RequestInit) => {
       calls.push({ url, init });
-      return new Response(JSON.stringify({ id: ID, status: "PENDING", preimage: "deadbeef".repeat(8), expiry: 1.5e9 + 0.7, contracts: [{ asset: "NIM", status: "FUNDED", htlc: { address: "NQ..." } }, { asset: "BTC_LN", status: "PENDING" }] }), { status: 200 });
+      return new Response(JSON.stringify(V2_SWAP), { status: 200 });
     }) as unknown as typeof fetch;
     const r = await lookupFastspotSwap(ID, { baseUrl: "https://fastspot.invalid/", apiKey: "k", fetch: f });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.init.method).toBe("GET");
     expect(calls[0]!.init.body).toBeUndefined();
     expect(calls[0]!.url).toBe(`https://fastspot.invalid/swap/${ID}`);
-    expect(r).toEqual({ ok: true, swapStatus: "PENDING", hasPreimage: true, expiry: 1500000000, contracts: [{ asset: "NIM", status: "FUNDED" }, { asset: "BTC_LN", status: "PENDING" }] });
-    expect(JSON.stringify(r)).not.toContain("deadbeef");
+    expect(r).toMatchObject({ ok: true, swapStatus: "PENDING_DEPOSIT", nim: { status: "PENDING" }, lightning: { status: "PENDING" }, hasPreimage: false });
+  });
+
+  it("v2 REST shape (FastspotSwap, contracts ARRAY per the pinned SDK types): NIM and Lightning statuses, nothing sensitive", () => {
+    const finished = { ...V2_SWAP, status: "FINISHED", preimage: "ab".repeat(32), contracts: V2_SWAP.contracts.map((c) => ({ ...c, status: "REDEEMED" })) };
+    const r = summarizeFastspotSwap(finished);
+    expect(r).toEqual({
+      ok: true,
+      swapStatus: "FINISHED",
+      nim: { status: "REDEEMED" },
+      lightning: { status: "REDEEMED" },
+      otherContracts: 0,
+      hasPreimage: true,
+      expiry: 1763060570,
+      limitation: CONTRACT_STATUS_LIMITATION,
+    });
+    const text = JSON.stringify(r);
+    for (const secret of ["abab", "NQ07", "lnbc", "nim-contract-id", "7244093830", "refund", "deadbeef"]) expect(text).not.toContain(secret);
+  });
+
+  it("v1 SDK keyed shape (swap.contracts.NIM, as Nimiq Pay reads it) and `secret` are understood too", () => {
+    const keyed = { status: "waiting-for-transactions", secret: "cd".repeat(32), contracts: { NIM: { asset: "NIM", status: "funded", htlc: { address: "NQ07 SECRET" } }, BTC_LN: { asset: "BTC_LN", status: "pending" } } };
+    const r = summarizeFastspotSwap(keyed);
+    expect(r).toMatchObject({ ok: true, nim: { status: "funded" }, lightning: { status: "pending" }, hasPreimage: true });
+    expect(JSON.stringify(r)).not.toContain("SECRET");
+  });
+
+  it("a PENDING NIM contract is never presented as funding acknowledgement", () => {
+    const r = summarizeFastspotSwap(V2_SWAP);
+    expect(r).toMatchObject({ nim: { status: "PENDING" }, limitation: expect.stringMatching(/does not show whether Fastspot received or accepted the NIM funding proof/) });
+    expect(Object.keys(r)).not.toContain("fundingAcknowledged");
   });
 
   it("maps HTTP errors, timeouts and junk to bounded codes", async () => {
@@ -111,7 +162,9 @@ describe("read-only Fastspot diagnostic", () => {
     const hang = ((_u: string, init: RequestInit) => new Promise((_, rej) => init.signal?.addEventListener("abort", () => rej(Object.assign(new Error("a"), { name: "AbortError" }))))) as unknown as typeof fetch;
     expect(await lookupFastspotSwap(ID, { baseUrl: "https://x.invalid", apiKey: "k", fetch: hang, timeoutMs: 10 })).toEqual({ ok: false, code: "TIMEOUT" });
     expect(summarizeFastspotSwap("nope")).toEqual({ ok: false, code: "BAD_RESPONSE" });
-    expect(summarizeFastspotSwap({ status: "<b>x</b>", contracts: "no" })).toMatchObject({ ok: true, swapStatus: null, contracts: [] });
+    expect(summarizeFastspotSwap([V2_SWAP])).toEqual({ ok: false, code: "BAD_RESPONSE" });
+    expect(summarizeFastspotSwap({ status: "<b>x</b>", contracts: "no" })).toMatchObject({ ok: true, swapStatus: null, nim: null, lightning: null, otherContracts: 0 });
+    expect(summarizeFastspotSwap({ contracts: [{ asset: "NIM", status: "<script>" }] })).toMatchObject({ nim: { status: null } });
   });
 });
 
@@ -124,5 +177,34 @@ describe("R3 alert linkage", () => {
     emitHandoffStallAlert({ transferId: "r4-alert-1", satoraSwapId: null, hostSwapId: ID, stall, now: 400_000 });
     expect(JSON.parse(lines[0]!.slice("thence-alert ".length))).toMatchObject({ hostSwap: "fs-swap-" });
     expect(lines[0]).not.toContain(ID);
+  });
+});
+
+describe("operator script database TLS", () => {
+  it("remote targets always verify the certificate and drop URL TLS overrides", () => {
+    for (const url of [
+      "postgresql://u:p@ep-x.eu-central-1.aws.neon.tech/db?sslmode=require",
+      "postgresql://u:p@ep-x.eu-central-1.aws.neon.tech/db?sslmode=no-verify&channel_binding=require",
+      "postgresql://u:p@ep-x.eu-central-1.aws.neon.tech/db",
+    ]) {
+      const cfg = verifiedClientConfig(url);
+      expect(cfg.ssl).toEqual({ rejectUnauthorized: true });
+      expect(cfg.connectionString).not.toMatch(/sslmode|no-verify/);
+      expect(new URL(cfg.connectionString).hostname).toBe("ep-x.eu-central-1.aws.neon.tech");
+      expect(new URL(cfg.connectionString).password).toBe("p");
+    }
+    expect(new URL(verifiedClientConfig("postgresql://u:p@h.neon.tech/db?sslmode=require&channel_binding=require").connectionString).searchParams.get("channel_binding")).toBe("require");
+  });
+
+  it("localhost stays without TLS", () => {
+    expect(verifiedClientConfig("postgresql://u:p@localhost:5432/db").ssl).toBeUndefined();
+  });
+
+  it("the diagnostics script never disables certificate verification", async () => {
+    const { readFileSync } = await import("node:fs");
+    for (const f of ["scripts/fastspot-diag.ts", "scripts/db-tls.ts"]) {
+      expect(readFileSync(f, "utf8")).not.toMatch(/rejectUnauthorized:s*false/);
+    }
+    expect(readFileSync("scripts/fastspot-diag.ts", "utf8")).not.toMatch(/probeAnchor/);
   });
 });

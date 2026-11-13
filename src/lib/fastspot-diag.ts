@@ -25,33 +25,86 @@ export interface FastspotDiagConfig {
   timeoutMs?: number;
 }
 
+/**
+ * What a contract status can and cannot show. In the pinned SDK
+ * (@nimiq/fastspot-api@2.0.0-beta.2, `FastspotContract.status`) a contract is
+ * only PENDING or REDEEMED: there is no "funded" state, so a PENDING NIM
+ * contract does NOT show whether Fastspot received or accepted the funding
+ * proof. Only Fastspot's own records establish that.
+ */
+export const CONTRACT_STATUS_LIMITATION =
+  "Contract status is PENDING or REDEEMED only; it does not show whether Fastspot received or accepted the NIM funding proof.";
+
+export interface FastspotContractSnapshot {
+  status: string | null;
+}
+
 export interface FastspotSwapSnapshot {
   ok: true;
   swapStatus: string | null;
-  contracts: Array<{ asset: string | null; status: string | null }>;
+  /** NIM HTLC contract (the user's locked NIM). Null when absent from the response. */
+  nim: FastspotContractSnapshot | null;
+  /** Lightning contract (`BTC_LN`, Fastspot paying the invoice). Null when absent. */
+  lightning: FastspotContractSnapshot | null;
+  /** Count of other contracts; their contents are never reported. */
+  otherContracts: number;
+  /** Whether a preimage (v2 `preimage`, v1 `secret`) is present. The value is never returned. */
   hasPreimage: boolean;
   expiry: number | null;
+  limitation: typeof CONTRACT_STATUS_LIMITATION;
 }
 
 export type FastspotDiagResult = FastspotSwapSnapshot | { ok: false; code: "NOT_CONFIGURED" | "BAD_SWAP_ID" | "HTTP_ERROR" | "TIMEOUT" | "BAD_RESPONSE"; httpStatus?: number };
 
 const SAFE_TOKEN = /^[A-Za-z0-9_.-]{1,64}$/;
 const token = (v: unknown): string | null => (typeof v === "string" && SAFE_TOKEN.test(v) ? v : null);
+const MAX_CONTRACTS = 8;
+
+/**
+ * Contracts as (asset, status) pairs. The REST response (v2 `FastspotSwap`)
+ * is an ARRAY of `{ id, asset, amount, status, refundTarget, recipient,
+ * expiry, data }`. The v1 SDK re-keys it by asset (`swap.contracts.NIM`),
+ * which is the shape Nimiq Pay code reads; that keyed shape is accepted too.
+ * Only `asset` and `status` are read: ids, amounts, addresses, refund targets
+ * and HTLC data are never copied.
+ */
+function contractPairs(raw: unknown): Array<{ asset: string | null; status: string | null }> | null {
+  if (Array.isArray(raw)) {
+    return raw.slice(0, MAX_CONTRACTS).map((c) => {
+      const o = (typeof c === "object" && c !== null ? c : {}) as Record<string, unknown>;
+      return { asset: token(o["asset"]), status: token(o["status"]) };
+    });
+  }
+  if (typeof raw === "object" && raw !== null) {
+    return Object.entries(raw as Record<string, unknown>)
+      .slice(0, MAX_CONTRACTS)
+      .map(([key, c]) => {
+        const o = (typeof c === "object" && c !== null ? c : {}) as Record<string, unknown>;
+        return { asset: token(o["asset"]) ?? token(key), status: token(o["status"]) };
+      });
+  }
+  return null;
+}
 
 /** Reduce a raw Fastspot swap to the allowlisted, non-secret snapshot. */
 export function summarizeFastspotSwap(raw: unknown): FastspotDiagResult {
-  if (typeof raw !== "object" || raw === null) return { ok: false, code: "BAD_RESPONSE" };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { ok: false, code: "BAD_RESPONSE" };
   const r = raw as Record<string, unknown>;
-  const contracts = Array.isArray(r["contracts"]) ? (r["contracts"] as unknown[]).slice(0, 4) : [];
+  const pairs = contractPairs(r["contracts"]) ?? [];
+  const pick = (asset: string): FastspotContractSnapshot | null => {
+    const c = pairs.find((x) => x.asset === asset);
+    return c ? { status: c.status } : null;
+  };
+  const secret = r["preimage"] ?? r["secret"];
   return {
     ok: true,
     swapStatus: token(r["status"]),
-    contracts: contracts.map((c) => {
-      const o = (typeof c === "object" && c !== null ? c : {}) as Record<string, unknown>;
-      return { asset: token(o["asset"]), status: token(o["status"]) };
-    }),
-    hasPreimage: typeof r["preimage"] === "string" && r["preimage"].length > 0,
+    nim: pick("NIM"),
+    lightning: pick("BTC_LN"),
+    otherContracts: pairs.filter((x) => x.asset !== "NIM" && x.asset !== "BTC_LN").length,
+    hasPreimage: typeof secret === "string" && secret.length > 0,
     expiry: typeof r["expiry"] === "number" && Number.isFinite(r["expiry"]) ? Math.floor(r["expiry"]) : null,
+    limitation: CONTRACT_STATUS_LIMITATION,
   };
 }
 
