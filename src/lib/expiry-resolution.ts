@@ -223,6 +223,16 @@ export function assessNonChainEvidence(input: Omit<ResolutionInputs, "chain" | "
   if (local.identityMismatchObservations > 0) return "LOCAL_IDENTITY_MISMATCH_RECORDED";
   if (local.movementObservations > 0) return "LOCAL_MOVEMENT_RECORDED";
   if (local.activeReservations > 0) return "ATTEMPT_STILL_RESERVED";
+  return assessProviderEvidence({ transfer, attachment, facts, routeMatches: input.routeMatches, now });
+}
+
+/**
+ * Pure provider gates shared by every expiry resolution (P4 and R2): fresh
+ * identity match, no EVM fund/claim tx, terminal `expired`, every invoice
+ * copy expired by at least EXPIRY_SETTLE_MARGIN_MS, and a pinned HTLC.
+ */
+export function assessProviderEvidence(input: Pick<ResolutionInputs, "transfer" | "attachment" | "facts" | "routeMatches" | "now">): ResolutionRefusal | null {
+  const { transfer, attachment, facts, now } = input;
   if (
     facts.satoraSwapId !== attachment.satoraSwapId ||
     facts.direction !== "lightning_to_evm" ||
@@ -258,7 +268,7 @@ export function chainRefusal(chain: HtlcActivityResult): ResolutionRefusal | nul
 }
 
 /** Read every local fact the gates depend on (used in BOTH phases). */
-async function readLocalEvidence(db: Reader, transferId: string, now: number): Promise<LocalEvidence> {
+export async function readLocalEvidence(db: Reader, transferId: string, now: number): Promise<LocalEvidence> {
   const observations = await db
     .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind })
     .from(reconciliationObservations)

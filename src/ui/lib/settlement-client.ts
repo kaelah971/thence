@@ -203,6 +203,49 @@ export function postCloseExpired(id: string, opts: Opts = {}): Promise<ApiResult
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/close-expired`, { ...opts, method: "POST", body: {} });
 }
 
+/**
+ * R2: owner request to close a failed Lightning handoff after the server
+ * proves on-chain that the locked NIM returned in full. No body: the client
+ * cannot supply evidence; any doubt keeps the payment open.
+ */
+export function postCloseNimReturned(
+  id: string,
+  opts: Opts = {},
+): Promise<ApiResult<{ resolution: { transferId: string; status: TransferStatus; deduplicated: boolean; nimReturn: { refundTxHash: string; returnedLuna: string; feeLuna: string } | null } }>> {
+  return apiRequest(`/api/transfers/${encodeURIComponent(id)}/close-nim-returned`, { ...opts, method: "POST", body: {} });
+}
+
+/** Statuses a failed Lightning handoff can sit in while its NIM is locked or returning. */
+export const NIM_RETURN_CLOSABLE: ReadonlySet<string> = new Set(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"]);
+
+/** NIM amount from luna (1 NIM = 100,000 luna), exact, trailing zeros trimmed. */
+export function nimFromLuna(luna: string): string | null {
+  if (!/^\d+$/.test(luna)) return null;
+  const v = BigInt(luna);
+  const whole = v / 100_000n;
+  const frac = (v % 100_000n).toString().padStart(5, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole.toString();
+}
+
+/**
+ * R2 copy for EXPIRED_UNFUNDED closed with an on-chain-verified NIM return.
+ * Shown ONLY when the server returns `nimReturn`; every other expired payment
+ * keeps EXPIRED_UNFUNDED_BODY, which never claims a refund.
+ */
+export function expiredNimReturnedBody(nimReturn: { refundTxHash: string; returnedLuna: string; feeLuna: string }): string {
+  const returned = nimFromLuna(nimReturn.returnedLuna);
+  const fee = nimFromLuna(nimReturn.feeLuna);
+  const amount = returned ? `${returned} NIM` : "the locked NIM";
+  const feeNote = fee && fee !== "0" ? ` (a network fee of ${fee} NIM was paid from the locked amount)` : "";
+  // Verified fact: an on-chain transfer to the authenticated Nimiq address.
+  // Not claimed: that Nimiq Pay already shows it as spendable balance.
+  return (
+    `Nothing was delivered: the provider never received the Lightning payment. Thence verified on the Nimiq blockchain that ${amount} ` +
+    `was returned to your Nimiq address${feeNote} in transaction ${nimReturn.refundTxHash.slice(0, 8)}…${nimReturn.refundTxHash.slice(-6)}. ` +
+    "Nimiq Pay may take a while to show it in your balance; if it doesn't appear, contact Nimiq Pay support with this transaction."
+  );
+}
+
 /** P3: server authorization of ONE explicit Finish-delivery attempt (see src/lib/claim-intent.ts). */
 export interface ClaimIntentView {
   transferId: string;

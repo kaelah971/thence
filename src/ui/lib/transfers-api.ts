@@ -23,6 +23,8 @@ export interface ApiTransfer {
   recipientDestinationId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** R2: on-chain-verified NIM return; only ever set by the server for an R2 close. */
+  nimReturn?: { refundTxHash: string; returnedLuna: string; feeLuna: string } | null;
 }
 
 export interface TransferPage {
@@ -128,5 +130,6 @@ export function toActivityItem(t: ApiTransfer, now: Date = new Date()): Activity
     dayLabel: dayLabelFor(t.createdAt, now),
     timeLabel: timeLabelFor(t.createdAt),
     destination: t.destination,
+    nimReturn: t.status === "EXPIRED_UNFUNDED" ? (t.nimReturn ?? null) : null,
   };
 }

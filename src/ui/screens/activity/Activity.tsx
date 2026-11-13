@@ -20,8 +20,11 @@ import {
   getProviderEvidence,
   needsOwnerClaim,
   postCloseExpired,
+  postCloseNimReturned,
   postHandoffCancel,
   EXPIRED_UNFUNDED_BODY,
+  expiredNimReturnedBody,
+  NIM_RETURN_CLOSABLE,
   postReconcile,
   providerEvidenceDisposition,
   providerStatusLabel,
@@ -467,7 +470,22 @@ function TransferDetail({
   // (e.g. network activity found), stop saying no money moved and restore the
   // "do not resend" warning. The button stays so a transient refusal can retry.
   const [closeRefused, setCloseRefused] = useState(false);
+  const [closeRefusedCode, setCloseRefusedCode] = useState<string | null>(null);
   const expiredClaimShown = canCloseExpired && !closeRefused;
+  // R2: a failed Lightning handoff whose NIM was locked. Offered only when the
+  // provider's fresh evidence says expired; in RECONCILING only after P4 itself
+  // refused because a NIM payment is recorded. The server proves the NIM
+  // return on-chain before closing; nothing here claims a refund.
+  const [returnedResult, setReturnedResult] = useState<{ refundTxHash: string; returnedLuna: string; feeLuna: string } | null>(null);
+  const [returnNote, setReturnNote] = useState<string | null>(null);
+  const [checkingReturn, setCheckingReturn] = useState(false);
+  const canCloseReturned =
+    !preview &&
+    returnedResult === null &&
+    NIM_RETURN_CLOSABLE.has(item.status) &&
+    evidenceDisposition === "EXPIRED_UNFUNDED" &&
+    (item.status !== "RECONCILING" || closeRefusedCode === "NIM_FUNDING_RECORDED");
+  const verifiedReturn = returnedResult ?? (item.status === "EXPIRED_UNFUNDED" ? (item.nimReturn ?? null) : null);
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>
@@ -500,10 +518,55 @@ function TransferDetail({
           network again first, and keeps it open if anything doesn&apos;t match.
         </Notice>
       )}
-      {(item.status === "EXPIRED_UNFUNDED" || closedExpired) && (
-        <Notice tone="info" icon="info" title="Payment expired — not delivered">
-          {EXPIRED_UNFUNDED_BODY}
+      {verifiedReturn ? (
+        <Notice tone="info" icon="info" title="Not delivered — NIM return verified on the Nimiq blockchain">
+          {expiredNimReturnedBody(verifiedReturn)}
         </Notice>
+      ) : (
+        (item.status === "EXPIRED_UNFUNDED" || closedExpired) && (
+          <Notice tone="info" icon="info" title="Payment expired — not delivered">
+            {EXPIRED_UNFUNDED_BODY}
+          </Notice>
+        )
+      )}
+      {canCloseReturned && (
+        <div style={{ marginTop: 12 }} data-nim-return-close>
+          <Notice tone="warn" icon="clock" title="Not delivered — waiting for your NIM to come back">
+            The provider reports this payment expired. Your NIM was locked in Nimiq Pay&apos;s swap. Thence can close this payment
+            only after it verifies on the Nimiq blockchain that the full amount was returned to your Nimiq address. Until then it stays open —
+            don&apos;t pay again.
+          </Notice>
+          <Button
+            variant="soft"
+            size="md"
+            icon="refresh"
+            block
+            disabled={checkingReturn}
+            onClick={() => {
+              setCheckingReturn(true);
+              setReturnNote(null);
+              void postCloseNimReturned(item.id)
+                .then((result) => {
+                  if (result.ok && result.data.resolution.status === "EXPIRED_UNFUNDED" && result.data.resolution.nimReturn) {
+                    setReturnedResult(result.data.resolution.nimReturn);
+                    invalidateData();
+                    return;
+                  }
+                  if (!result.ok && result.kind === "unauthorized") setReturnNote("Your session has ended. Sign in again.");
+                  else if (!result.ok && result.message) setReturnNote(result.message);
+                  else setReturnNote("Thence couldn't confirm your NIM came back yet. The payment stays open — don't pay again.");
+                })
+                .finally(() => setCheckingReturn(false));
+            }}
+          >
+            {checkingReturn ? "Checking the Nimiq blockchain…" : "Check whether my NIM was returned"}
+          </Button>
+          {returnNote && (
+            <p className={styles.latest} role="status">
+              {returnNote}
+            </p>
+          )}
+        </div>
       )}
       {stage === "checking" && !expiredClaimShown && !closedExpired && (
         <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
@@ -555,6 +618,7 @@ function TransferDetail({
                     return;
                   }
                   setCloseRefused(true);
+                  setCloseRefusedCode(!result.ok ? result.code : null);
                   if (!result.ok && result.kind === "unauthorized") {
                     setClosedNote("Your session has ended. Sign in again.");
                   } else if (!result.ok && result.message) {
