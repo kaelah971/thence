@@ -95,6 +95,23 @@ describe("R2 verifyNimiqHtlcReturn", () => {
     expect(await verifyNimiqHtlcReturn(input())).toEqual({ ok: false, code: "WRONG_DESTINATION" });
   });
 
+  it("refund to the owner address but as a non-basic account type (e.g. HTLC/staking): WRONG_DESTINATION", async () => {
+    for (const recipientType of [1, 2, 3]) {
+      node = new SimulatedNimiqNode();
+      setNimiqSourceRpcTransportForTests(node.transport);
+      // Genuinely signed over the declared recipient type, so only the type gate can refuse it.
+      spent(buildSpend({ funding, hash: REFUND, kind: "timeout", to: owner.address, owner, recipientType }));
+      expect(await verifyNimiqHtlcReturn(input())).toEqual({ ok: false, code: "WRONG_DESTINATION" });
+    }
+  });
+
+  it("refund to the source vault (HTLC-funded case) is refused under the strict owner-address rule", async () => {
+    // The vault that funded the lock is a different (HTLC-type) address; R2 does not accept it.
+    const vault = keypair();
+    spent(buildSpend({ funding, hash: REFUND, kind: "timeout", to: vault.address, owner, recipientType: 2 }));
+    expect(await verifyNimiqHtlcReturn(input())).toEqual({ ok: false, code: "WRONG_DESTINATION" });
+  });
+
   it("partial amount (value + fee below the locked amount): AMOUNT_MISMATCH", async () => {
     spent(buildSpend({ funding, hash: REFUND, kind: "timeout", to: owner.address, owner, valueLuna: 700_000_000n }), { leftover: 0n });
     expect(await verifyNimiqHtlcReturn(input())).toEqual({ ok: false, code: "AMOUNT_MISMATCH" });

@@ -13,11 +13,13 @@
  * refusal with POSITIVE proof, and closes as EXPIRED_UNFUNDED only when ALL
  * of the following hold, re-verified at request time:
  *
- * Nimiq (verifyNimiqHtlcReturn, independent of Nimiq Pay and the provider):
+ * Nimiq (verifyNimiqHtlcReturn, read from the configured Nimiq RPC node —
+ * independent of Nimiq Pay's app and of the swap provider, but a single node):
  * - the recorded, previously VERIFIED source transaction re-verifies (HTLC
  *   creation, hash lock = bound payment hash, owner-authenticated sender,
  *   exact recorded amount, macro-final);
- * - the HTLC's complete history (two agreeing endpoints, never truncated) is
+ * - the HTLC's complete history (two agreeing RPC methods on that node, never
+ *   truncated) is
  *   exactly that funding plus ONE outgoing transaction, which is successful,
  *   macro-final, sent to the authenticated owner for value + fee equal to the
  *   full locked amount, under a TimeoutResolve/EarlyResolve owner proof (never

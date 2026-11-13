@@ -229,11 +229,14 @@ export function nimFromLuna(luna: string): string | null {
 export function expiredNimReturnedBody(nimReturn: { refundTxHash: string; returnedLuna: string; feeLuna: string }): string {
   const returned = nimFromLuna(nimReturn.returnedLuna);
   const fee = nimFromLuna(nimReturn.feeLuna);
-  const amount = returned ? `${returned} NIM` : "Your NIM";
-  const feeNote = fee && fee !== "0" ? ` (the network fee of ${fee} NIM was paid from the locked amount)` : "";
+  const amount = returned ? `${returned} NIM` : "the locked NIM";
+  const feeNote = fee && fee !== "0" ? ` (a network fee of ${fee} NIM was paid from the locked amount)` : "";
+  // Verified fact: an on-chain transfer to the authenticated Nimiq address.
+  // Not claimed: that Nimiq Pay already shows it as spendable balance.
   return (
-    `Nothing was delivered: the provider never received the Lightning payment. ${amount} came back to your wallet${feeNote}, ` +
-    `and Thence verified the return on the Nimiq blockchain (transaction ${nimReturn.refundTxHash.slice(0, 8)}…${nimReturn.refundTxHash.slice(-6)}).`
+    `Nothing was delivered: the provider never received the Lightning payment. Thence verified on the Nimiq blockchain that ${amount} ` +
+    `was returned to your Nimiq address${feeNote} in transaction ${nimReturn.refundTxHash.slice(0, 8)}…${nimReturn.refundTxHash.slice(-6)}. ` +
+    "Nimiq Pay may take a while to show it in your balance; if it doesn't appear, contact Nimiq Pay support with this transaction."
   );
 }
 

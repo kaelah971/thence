@@ -771,9 +771,14 @@ function balanceOf(value: unknown): bigint | null {
  * 1. The funding transaction re-verifies exactly as R1 source evidence does
  *    (native HTLC creation, macro-final, hash lock = bound Lightning hash,
  *    owner-authenticated sender, exact recorded amount).
- * 2. The HTLC's complete address history is read from two independent
- *    endpoints that must agree, must not reach the page bound, and must be
- *    exactly {funding, one outgoing transaction}.
+ * 2. The HTLC's complete address history is read through two RPC methods
+ *    (getTransactionsByAddress, getTransactionHashesByAddress) on the SAME
+ *    configured node. Their agreement is a consistency check against a
+ *    malformed or truncated answer, NOT independent corroboration by a second
+ *    node: the trust anchor remains the single configured Nimiq RPC, plus the
+ *    cryptographic checks below (signatures, derived HTLC address, macro
+ *    justification shape). The page bound must not be reached, and the history
+ *    must be exactly {funding, one outgoing transaction}.
  * 3. The outgoing transaction is successful, macro-final, a canonical HTLC
  *    spend to the owner (the HTLC's encoded refund address), for value + fee
  *    equal to the full locked amount, whose proof is a TimeoutResolve signed by
@@ -823,7 +828,7 @@ export async function verifyNimiqHtlcReturn(input: NimiqHtlcReturnInput): Promis
     if (!fundingRecord || !htlcAddress || !htlc || locked === null) return fail("PROVIDER_MALFORMED");
     if (htlc.sender !== ownerAddress || locked !== expectedLocked) return fail("SOURCE_NOT_VERIFIED");
 
-    // (2) Complete history from two endpoints that must agree.
+    // (2) Complete history via two methods on the same node that must agree (consistency, not independence).
     const historyQuery = { address: htlcAddress, max: NIMIQ_HTLC_HISTORY_MAX };
     const listed = await call("getTransactionsByAddress", historyQuery);
     const hashes = await call("getTransactionHashesByAddress", historyQuery);
@@ -889,6 +894,9 @@ export async function verifyNimiqHtlcReturn(input: NimiqHtlcReturnInput): Promis
       return fail("UNEXPECTED_SPEND");
     }
     if (destination !== ownerAddress) return fail("WRONG_DESTINATION");
+    // The owner address is a basic (key-controlled) account. A spend whose
+    // recipient type is anything else is not a plain return to the owner.
+    if (toType !== NIMIQ_BASIC_ACCOUNT_TYPE) return fail("WRONG_DESTINATION");
     if (value + fee !== locked) return fail("AMOUNT_MISMATCH");
 
     const destinationBytes = addressBytes(destination);

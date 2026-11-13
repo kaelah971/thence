@@ -36,10 +36,12 @@ describe("R2 refund status copy", () => {
   it("verified return: names the amount, the fee and the verifying transaction; separates non-delivery from the refund", () => {
     const body = expiredNimReturnedBody(RETURN);
     expect(body).toMatch(/^Nothing was delivered/);
-    expect(body).toContain("7244.09283 NIM came back to your wallet");
+    expect(body).toContain("verified on the Nimiq blockchain that 7244.09283 NIM was returned to your Nimiq address");
     expect(body).toContain("network fee of 0.001 NIM");
-    expect(body).toContain("verified the return on the Nimiq blockchain");
     expect(body).toContain("abababab…ababab");
+    // On-chain receipt is not presented as spendable balance in Nimiq Pay.
+    expect(body).toMatch(/Nimiq Pay may take a while to show it in your balance/);
+    expect(body).not.toMatch(/came back to your wallet|is back in your wallet|available to spend|refunded/i);
   });
 
   it("the P4 copy still never claims a refund", () => {

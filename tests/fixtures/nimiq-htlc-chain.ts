@@ -111,12 +111,15 @@ export function buildSpend(input: {
   block?: number;
   timestampMs?: bigint;
   executionResult?: boolean;
+  /** Recipient account type (0 basic; anything else is signed consistently but must be refused). */
+  recipientType?: number;
 }): Record<string, unknown> {
   const fee = input.feeLuna ?? 100n;
   const value = input.valueLuna ?? input.funding.lockedLuna - fee;
+  const recipientType = input.recipientType ?? 0;
   const content = serializeNimiqTransactionContent({
     data: new Uint8Array(0), senderAddress: input.funding.htlcAddress, senderType: 2, recipient: addrBytes(input.to),
-    recipientType: 0, value, fee, validityStartHeight: 3_456_120, networkId: 24, flags: 0, senderData: new Uint8Array(0),
+    recipientType, value, fee, validityStartHeight: 3_456_120, networkId: 24, flags: 0, senderData: new Uint8Array(0),
   })!;
   const ownerSigner = input.signer ?? input.owner;
   let proof: Buffer;
@@ -130,7 +133,7 @@ export function buildSpend(input: {
   }
   return {
     hash: input.hash, blockNumber: input.block ?? 3_456_130, confirmations: 12, from: input.funding.htlcAddress, fromType: 2,
-    to: input.to, toType: 0, value: value.toString(), fee: fee.toString(), recipientData: "", senderData: "", flags: 0,
+    to: input.to, toType: recipientType, value: value.toString(), fee: fee.toString(), recipientData: "", senderData: "", flags: 0,
     executionResult: input.executionResult ?? true, networkId: 24, validityStartHeight: 3_456_120,
     timestamp: Number(input.timestampMs ?? input.funding.timeoutMs + 60_000n), proof: proof.toString("hex"),
   };

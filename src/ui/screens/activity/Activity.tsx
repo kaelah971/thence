@@ -519,7 +519,7 @@ function TransferDetail({
         </Notice>
       )}
       {verifiedReturn ? (
-        <Notice tone="info" icon="info" title="Not delivered — your NIM came back">
+        <Notice tone="info" icon="info" title="Not delivered — NIM return verified on the Nimiq blockchain">
           {expiredNimReturnedBody(verifiedReturn)}
         </Notice>
       ) : (
@@ -533,7 +533,7 @@ function TransferDetail({
         <div style={{ marginTop: 12 }} data-nim-return-close>
           <Notice tone="warn" icon="clock" title="Not delivered — waiting for your NIM to come back">
             The provider reports this payment expired. Your NIM was locked in Nimiq Pay&apos;s swap. Thence can close this payment
-            only after it verifies on the Nimiq blockchain that the full amount came back to your wallet. Until then it stays open —
+            only after it verifies on the Nimiq blockchain that the full amount was returned to your Nimiq address. Until then it stays open —
             don&apos;t pay again.
           </Notice>
           <Button
@@ -559,7 +559,7 @@ function TransferDetail({
                 .finally(() => setCheckingReturn(false));
             }}
           >
-            {checkingReturn ? "Checking the Nimiq blockchain…" : "Check whether my NIM came back"}
+            {checkingReturn ? "Checking the Nimiq blockchain…" : "Check whether my NIM was returned"}
           </Button>
           {returnNote && (
             <p className={styles.latest} role="status">
