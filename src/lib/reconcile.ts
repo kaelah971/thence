@@ -23,7 +23,7 @@
  *   retirement (the server verifies pre-handoff or terminal expired evidence),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
@@ -221,6 +221,14 @@ export interface ReconciliationBase {
   claimWindow: ClaimWindow;
   /** P2: the latest provider read diverged from the bound swap identity. */
   identityMismatch: boolean;
+  /**
+   * When the NIM source transaction was independently VERIFIED on-chain
+   * (append-only transition evidence), ISO; null when unverified. Copy only:
+   * it proves NIM left the wallet, never that the Lightning leg was paid.
+   */
+  sourceVerifiedAt: string | null;
+  /** When the transfer first entered LIGHTNING_HANDOFF, ISO; null if never. */
+  handoffAt: string | null;
 }
 
 export interface ReconciliationSummary extends ReconciliationBase {
@@ -603,6 +611,18 @@ async function buildSummary(
   const claimDeadline = boundRows[0]?.evmRefundLocktime ?? null;
   const claimWindow = claimWindowAt(claimDeadline ? claimDeadline.getTime() : null, Date.now());
   const identityMismatch = latest?.kind === "identity_mismatch";
+  const handoffRows = await db
+    .select({ at: transferTransitions.createdAt })
+    .from(transferTransitions)
+    .where(and(eq(transferTransitions.transferId, transferId), eq(transferTransitions.toStatus, "LIGHTNING_HANDOFF")))
+    .orderBy(asc(transferTransitions.createdAt))
+    .limit(1);
+  const sourceRows = await db
+    .select({ at: transferTransitions.createdAt })
+    .from(transferTransitions)
+    .where(and(eq(transferTransitions.transferId, transferId), sql`${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'`))
+    .orderBy(asc(transferTransitions.createdAt))
+    .limit(1);
   const unknownProviderState = !latest || (!!latest && !RECOGNIZED_STATUSES.has(latest.providerStatus) && latest.kind === "observation" && latest.providerStatus !== "unknown");
   const ambiguityReasons: string[] = [];
   if (invoiceLive === false) ambiguityReasons.push("Invoice expired; expiry alone does not establish whether payment was initiated.");
@@ -624,6 +644,8 @@ async function buildSummary(
     claimDeadlineAt: claimDeadline ? claimDeadline.toISOString() : null,
     claimWindow,
     identityMismatch,
+    sourceVerifiedAt: sourceRows[0]?.at.toISOString() ?? null,
+    handoffAt: handoffRows[0]?.at.toISOString() ?? null,
   };
 }
 

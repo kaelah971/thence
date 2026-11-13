@@ -37,6 +37,7 @@ import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/rou
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as verifySettlementPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
+import { GET as reconciliationGet } from "../app/api/transfers/[id]/reconciliation/route";
 
 const INC = fixture.incident_077770a1;
 const HASH_LOCK = INC.attachment.payment_hash;
@@ -270,6 +271,37 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
     const receipt = await receiptGet(new Request(`http://localhost/api/transfers/${p.id}/receipt`, { headers: { cookie: p.cookie, ...client("final") } }), params(p.id));
     expect(receipt.status).toBe(200);
     expect(JSON.stringify(await receipt.json())).toContain(p.claimTx);
+    await expectConsistent(p.id);
+  });
+
+  it("incident 6f44918d: verified NIM source with an unpaid Lightning invoice is reported to the client, and a late provider payment still advances", async () => {
+    const p = await authorized("lightning-unpaid");
+    const nimHash = h("nim-lightning-unpaid");
+    const latest = async () => {
+      const res = await reconciliationGet(new Request(`http://localhost/api/transfers/${p.id}/reconciliation`, { headers: { cookie: p.cookie, ...client(p.tag) } }), params(p.id));
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { latest: { status: string; providerStatus: string; sourceVerifiedAt: string | null; handoffAt: string | null } }).latest;
+    };
+    // Production shape: the host returned a hash that was not final yet (UNVERIFIED / INSUFFICIENT_FINALITY).
+    nimTxs.set(nimHash, { tx: nimHtlcFunding(p.owner, nimHash), final: false });
+    expect((await report(p, "initiated", nimHash)).status).toBe(200);
+    let view = await latest();
+    expect(view).toMatchObject({ status: "LIGHTNING_HANDOFF", sourceVerifiedAt: null });
+    expect(view.handoffAt).not.toBeNull();
+
+    // NIM finalizes; the provider still never sees the Lightning payment.
+    nimTxs.set(nimHash, { ...nimTxs.get(nimHash)!, final: true });
+    expect((await reconcile(p)).status).toBe(200);
+    view = await latest();
+    expect(view.status).toBe("LIGHTNING_HANDOFF");
+    expect(view.providerStatus).toBe("pending");
+    expect(view.sourceVerifiedAt).not.toBeNull();
+    expect(await markers(p.id)).toEqual(["UNVERIFIED", "VERIFIED"]);
+
+    // A late provider payment still advances the transfer normally.
+    fundOnProvider(p);
+    expect((await reconcile(p)).status).toBe(200);
+    expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
     await expectConsistent(p.id);
   });
 
