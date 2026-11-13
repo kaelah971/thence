@@ -16,6 +16,7 @@
 import type { TransferStatus } from "@/domain/transfers";
 import { needsOwnerClaim, type SettlementVerdict } from "./settlement-client";
 import { timelineFor, type TimelineStep } from "./status";
+import { verifyEstimate, type SettlementNetwork } from "./network-copy";
 
 export type NextAction =
   /** Waiting on something the owner can't speed up; nothing to tap. */
@@ -46,6 +47,8 @@ export interface ProgressInput {
   message?: string;
   /** This browser already handed the payment to Nimiq Pay (server may not know yet). */
   handedOff?: boolean;
+  /** Settlement network for copy only (defaults to Polygon). */
+  network?: SettlementNetwork;
 }
 
 export interface ProgressView {
@@ -61,6 +64,9 @@ const REDEEMED: ReadonlySet<string> = new Set(["clientredeemed", "serverredeemed
 const FINALITY_PENDING: ReadonlySet<string> = new Set(["PENDING", "INSUFFICIENT_CONFIRMATIONS"]);
 
 export const VERIFYING_HEADLINE = "Delivery submitted — verifying on Polygon";
+export function verifyingHeadline(network: SettlementNetwork = "Polygon"): string {
+  return `Delivery submitted — verifying on ${network}`;
+}
 export const FINISH_HEADLINE = "Action required — Finish delivery";
 
 function isStatus(value: string | null): value is TransferStatus {
@@ -78,15 +84,16 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   const submitted = s.claimPending === true || claimLanded || (status === "CLAIMING" && !s.claimReady);
   // Handed to Nimiq Pay but the server hasn't recorded it yet: same step, "confirming" wording.
   const stepStatus = status === "AWAITING_NIM_APPROVAL" && s.handedOff === true ? "LIGHTNING_HANDOFF" : status;
-  const steps = isStatus(stepStatus) ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, awaitingFinality }) : null;
+  const network = s.network ?? "Polygon";
+  const steps = isStatus(stepStatus) ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, awaitingFinality, network }) : null;
 
   if (s.phase === "delivered" || status === "DELIVERED") {
     return s.receiptReady
-      ? { headline: "Delivered", body: "Verified on Polygon. The receipt below is the proof.", tone: "done", action: "receipt", steps }
-      : { headline: "Delivered", body: "Verified on Polygon. Loading the receipt…", tone: "done", action: "wait", steps };
+      ? { headline: "Delivered", body: `Verified on ${network}. The receipt below is the proof.`, tone: "done", action: "receipt", steps }
+      : { headline: "Delivered", body: `Verified on ${network}. Loading the receipt…`, tone: "done", action: "wait", steps };
   }
   if (s.phase === "cancelled") return { headline: "Payment cancelled", body: "Nothing was paid.", tone: "neutral", action: "none", steps };
-  if (s.phase === "refunded") return { headline: "Not delivered — Polygon lock refunded", body: s.message || "", tone: "warn", action: "none", steps };
+  if (s.phase === "refunded") return { headline: `Not delivered — ${network} lock refunded`, body: s.message || "", tone: "warn", action: "none", steps };
   if (s.phase === "expired") return { headline: "Payment expired — not delivered", body: s.message || "", tone: "warn", action: "none", steps };
   if (s.phase === "attention" || s.verifyVerdict === "INVALID") {
     return {
@@ -98,7 +105,7 @@ export function paymentProgress(s: ProgressInput): ProgressView {
     };
   }
 
-  // Funded on Polygon and the owner's tap is the next step (and not yet made here).
+  // Funded on-chain and the owner's tap is the next step (and not yet made here).
   if (!submitted && needsOwnerClaim({ phase: s.phase, transferStatus: status, providerStatus: s.providerStatus, claimReady: s.claimReady, identityMismatch: s.identityMismatch === true })) {
     return {
       headline: FINISH_HEADLINE,
@@ -111,11 +118,11 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   if (submitted && (status === "SERVER_FUNDED" || status === "CLAIMING")) {
     const body =
       s.verifyVerdict === "UNAVAILABLE" || s.verifyVerdict === "INCONCLUSIVE"
-        ? "Polygon couldn't be checked just now. Thence keeps checking — don't pay again."
+        ? `${network} couldn't be checked just now. Thence keeps checking — don't pay again.`
         : awaitingFinality
-          ? "Seen on Polygon. Waiting for confirmations — usually about 10 minutes. You can leave this screen."
-          : "Usually about 10 minutes. You can leave this screen; the receipt appears once it's confirmed.";
-    return { headline: VERIFYING_HEADLINE, body, tone: "neutral", action: "verifying", steps };
+          ? `Seen on ${network}. Waiting for ${network === "Arbitrum" ? "finality" : "confirmations"} — usually ${verifyEstimate(network)}. You can leave this screen.`
+          : `Usually ${verifyEstimate(network)}. You can leave this screen; the receipt appears once it's confirmed.`;
+    return { headline: verifyingHeadline(network), body, tone: "neutral", action: "verifying", steps };
   }
   if (status === "CLIENT_FUNDED") {
     return {

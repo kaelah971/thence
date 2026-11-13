@@ -46,6 +46,7 @@ export const SHARDS: Record<string, string[]> = {
     "p5-refund-consistency",
     "p3-claim-verification",
     "p7-arbitrum-recovery",
+    "arbitrum-ux-gates",
     "payments-mode",
   ],
   S2: ["reconciliation", "settlement", "f42-handoff", "f45-nimiq-pay-failure-reasons", "f812-attach-recovery", "f812-retire-replace"],
