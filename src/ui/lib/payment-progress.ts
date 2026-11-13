@@ -16,6 +16,7 @@
 import type { TransferStatus } from "@/domain/transfers";
 import { needsOwnerClaim, type SettlementVerdict } from "./settlement-client";
 import { timelineFor, type TimelineStep } from "./status";
+import { CLAIM_UNSAFE_WINDOW_MS, claimWindowAt } from "@/domain/claim-deadline";
 
 export type NextAction =
   /** Waiting on something the owner can't speed up; nothing to tap. */
@@ -53,6 +54,8 @@ export interface ProgressInput {
   /** Lightning invoice expiry (ms) and the server's expired verdict. */
   invoiceExpiresAtMs?: number | null;
   invoiceExpired?: boolean;
+  /** Polygon claim deadline (ms, Satora evm_refund_locktime from the server); null when unknown. */
+  claimDeadlineMs?: number | null;
   /** Clock for the delay message (defaults to Date.now()). */
   nowMs?: number;
 }
@@ -74,6 +77,9 @@ function clock(ms: number): string {
  * approval is done; what is outstanding is the Lightning leg. Wording never
  * claims a refund: Thence cannot see one until it is independently verified.
  */
+const NIM_LOCKED_NOTE =
+  "Your NIM stays locked in Nimiq Pay's swap until its timeout; after that Nimiq Pay can return it. Thence hasn't seen a refund yet. Don't pay again.";
+
 function lightningHandoffView(s: ProgressInput, steps: TimelineStep[] | null): ProgressView | null {
   if (s.transferStatus !== "LIGHTNING_HANDOFF" || !s.sourceVerifiedAtMs) return null;
   const now = s.nowMs ?? Date.now();
@@ -81,16 +87,33 @@ function lightningHandoffView(s: ProgressInput, steps: TimelineStep[] | null): P
   if (expired) {
     return {
       headline: "Not delivered — the Lightning payment never arrived",
+      body: `Nimiq Pay locked your NIM, but the provider never received the Lightning payment and its invoice has expired, so nothing was delivered. ${NIM_LOCKED_NOTE}`,
+      tone: "warn",
+      action: "check",
+      steps,
+    };
+  }
+  // The invoice can outlive the Polygon claim deadline (incident 6f44918d:
+  // deadline 09:02:50Z, invoice 09:32:50Z). Delivery needs a claim before the
+  // unsafe window, so an active invoice alone never means delivery is possible.
+  const window = claimWindowAt(s.claimDeadlineMs, now);
+  if (window === "unsafe" || window === "passed") {
+    return {
+      headline: "Not delivered — the delivery deadline has passed",
       body:
-        "Nimiq Pay locked your NIM, but the provider never received the Lightning payment and its invoice has expired, so nothing was delivered. " +
-        "Your NIM stays locked in Nimiq Pay's swap until its timeout; after that Nimiq Pay can return it. Thence hasn't seen a refund yet. Don't pay again.",
+        `Nimiq Pay locked your NIM, but the provider didn't receive the Lightning payment in time to deliver before ${clock(s.claimDeadlineMs!)}. ` +
+        `This payment can no longer be delivered, even if the Lightning payment still arrives. ${NIM_LOCKED_NOTE}`,
       tone: "warn",
       action: "check",
       steps,
     };
   }
   const since = s.handoffAtMs ?? s.sourceVerifiedAtMs;
-  const until = typeof s.invoiceExpiresAtMs === "number" ? ` If it arrives before ${clock(s.invoiceExpiresAtMs)}, delivery continues.` : "";
+  // Latest moment Finish delivery can still be offered; never the invoice expiry.
+  const until =
+    window === "open" || window === "closing"
+      ? ` It can still be delivered only if it arrives in time to finish before ${clock(s.claimDeadlineMs! - CLAIM_UNSAFE_WINDOW_MS)}.`
+      : " Thence can't confirm the delivery deadline yet.";
   if (now - since >= LIGHTNING_DELAY_MS) {
     return {
       headline: "Delivery delayed — waiting for the Lightning payment",

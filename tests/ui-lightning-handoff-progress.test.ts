@@ -12,6 +12,10 @@ import { handoffInfoFrom } from "@/ui/screens/send/useSettlement";
 const HANDOFF = Date.parse("2026-11-13T08:03:52.387Z");
 const VERIFIED = Date.parse("2026-11-13T08:04:29.259Z");
 const INVOICE_EXPIRES = Date.parse("2026-11-13T09:32:50.000Z");
+/** Polygon claim deadline (Satora evm_refund_locktime): 30 min BEFORE the invoice expiry. */
+const CLAIM_DEADLINE = Date.parse("2026-11-13T09:02:50.000Z");
+const MIN = 60_000;
+const hhmm = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
 const incident: ProgressInput = {
   phase: "waiting-approval",
@@ -24,6 +28,7 @@ const incident: ProgressInput = {
   handoffAtMs: HANDOFF,
   invoiceExpiresAtMs: INVOICE_EXPIRES,
   invoiceExpired: false,
+  claimDeadlineMs: CLAIM_DEADLINE,
 };
 
 const text = (v: { headline: string; body: string }) => `${v.headline} ${v.body}`;
@@ -43,15 +48,48 @@ describe("Lightning handoff progress after a verified NIM source", () => {
     expect(v.steps?.[0]).toMatchObject({ label: "Approved in Nimiq Pay", detail: "NIM locked — waiting for the Lightning payment." });
   });
 
-  it("the exact incident at five minutes: delayed, names the invoice deadline, never 'Confirming your approval'", () => {
-    const v = paymentProgress({ ...incident, nowMs: HANDOFF + 5 * 60_000 });
+  it("the exact incident at five minutes: delayed, bounded by the claim deadline (not the invoice), never 'Confirming your approval'", () => {
+    const v = paymentProgress({ ...incident, nowMs: HANDOFF + 5 * MIN });
     expect(v.headline).toBe("Delivery delayed — waiting for the Lightning payment");
     expect(v.tone).toBe("warn");
     expect(v.action).toBe("wait");
     expect(v.body).toMatch(/your NIM is locked/);
-    expect(v.body).toMatch(/If it arrives before .+, delivery continues\./);
+    // Latest Finish delivery = claim deadline − 5 min unsafe window (08:57:50Z), never the 09:32:50Z invoice expiry.
+    expect(v.body).toContain(`only if it arrives in time to finish before ${hhmm(CLAIM_DEADLINE - 5 * MIN)}`);
+    expect(v.body).not.toContain(hhmm(INVOICE_EXPIRES));
+    expect(v.body).not.toMatch(/delivery continues/);
     expect(v.body).toMatch(/Don't pay again/);
     expect(text(v)).not.toMatch(/Confirming your approval/);
+  });
+
+  describe("30-minute gap: claim deadline 09:02:50Z passed while the invoice is live until 09:32:50Z", () => {
+    for (const [label, nowMs] of [
+      ["inside the 5-min unsafe window (08:59Z)", CLAIM_DEADLINE - 4 * MIN],
+      ["just after the claim deadline (09:03Z)", CLAIM_DEADLINE + 10_000],
+      ["mid-gap (09:17Z)", CLAIM_DEADLINE + 15 * MIN],
+      ["one second before invoice expiry", INVOICE_EXPIRES - 1_000],
+    ] as const) {
+      it(`${label}: not deliverable even though the invoice is active`, () => {
+        const v = paymentProgress({ ...incident, nowMs });
+        expect(v.headline).toBe("Not delivered — the delivery deadline has passed");
+        expect(v.action).toBe("check");
+        expect(v.body).toContain(`before ${hhmm(CLAIM_DEADLINE)}`);
+        expect(v.body).toMatch(/can no longer be delivered, even if the Lightning payment still arrives/);
+        expect(v.body).toMatch(/Thence hasn't seen a refund yet/);
+        expect(text(v)).not.toMatch(/delivery continues|can still be delivered|\brefunded\b/i);
+      });
+    }
+
+    it("the invoice-expired message takes over at invoice expiry", () => {
+      expect(paymentProgress({ ...incident, nowMs: INVOICE_EXPIRES }).headline).toBe("Not delivered — the Lightning payment never arrived");
+    });
+  });
+
+  it("unknown claim deadline: never promises delivery", () => {
+    const v = paymentProgress({ ...incident, claimDeadlineMs: null, nowMs: HANDOFF + 5 * MIN });
+    expect(v.headline).toBe("Delivery delayed — waiting for the Lightning payment");
+    expect(v.body).toMatch(/can't confirm the delivery deadline yet/);
+    expect(v.body).not.toMatch(/can still be delivered|delivery continues/);
   });
 
   it("switches to delayed exactly at the threshold, measured from the handoff", () => {
