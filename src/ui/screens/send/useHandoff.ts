@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizeHostSwapId } from "@/domain/host-swap-id";
 import { useCallback, useRef, useState } from "react";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import { clearPending, fetchAttempt, fetchTransfer } from "@/ui/lib/prepare-flow";
@@ -34,6 +35,8 @@ interface HandoffRecord {
   reportedOutcome: ServerHandoffOutcome | null;
   /** Host hash hint; never treated as proof by the browser. */
   sourceTxHash?: string | null;
+  /** R4: host-returned Fastspot swap id; untrusted diagnostic hint, kept for interrupted reports. */
+  hostSwapId?: string | null;
 }
 
 const HANDOFF_KEY = "thence.f4.2.handoff.v1";
@@ -71,6 +74,7 @@ export function loadHandoffRecord(transferId: string, ownerUserId: string): Hand
           ? parsed.reportedOutcome
           : null,
       sourceTxHash: typeof parsed.sourceTxHash === "string" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(parsed.sourceTxHash) ? parsed.sourceTxHash : null,
+      hostSwapId: normalizeHostSwapId(parsed.hostSwapId),
     };
   } catch {
     return null;
@@ -276,6 +280,8 @@ export function useHandoff(): {
       });
       const outcome = mapHostResultToServerOutcome(result);
       const sourceTxHash = result.kind === "initiated" && /^(?:0x)?[0-9a-fA-F]{64}$/.test(result.hash) ? result.hash : undefined;
+      // R4: kept only alongside a valid hash (the host returns them together).
+      const hostSwapId = sourceTxHash && result.kind === "initiated" ? (normalizeHostSwapId(result.swapId) ?? undefined) : undefined;
       if (sourceTxHash) {
         // Preserve the host hint before the report request can be lost; it is
         // still untrusted and is only re-submitted for server verification.
@@ -287,6 +293,7 @@ export function useHandoff(): {
           outcomeReported: false,
           reportedOutcome: null,
           sourceTxHash,
+          hostSwapId: hostSwapId ?? null,
         });
       }
       if (result.kind === "cancelled") {
@@ -310,7 +317,7 @@ export function useHandoff(): {
         return;
       }
       if (result.kind === "initiated") {
-        const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined, sourceTxHash });
+        const reported = await reportHandoffResult(input.transferId, outcome, { diagnostics: paymentDiagnostics ?? undefined, sourceTxHash, hostSwapId });
         saveHandoffRecord({
           transferId: input.transferId,
           ownerUserId: input.ownerUserId,
@@ -319,6 +326,7 @@ export function useHandoff(): {
           outcomeReported: reported.ok,
           reportedOutcome: reported.ok ? outcome : null,
           sourceTxHash: sourceTxHash ?? null,
+          hostSwapId: hostSwapId ?? null,
         });
         if (!reported.ok) {
           // Native call succeeded but the report timed out: outcome unknown
@@ -366,7 +374,7 @@ export function useHandoff(): {
     const decided = decideResumeAction(current.data.transfer.status, record);
     if (decided.action === "report-unknown") {
       // Report unknown once for an unreported invocation; idempotent server-side.
-      await reportHandoffResult(transferId, "unknown", { sourceTxHash: record?.sourceTxHash ?? undefined }).catch(() => undefined);
+      await reportHandoffResult(transferId, "unknown", { sourceTxHash: record?.sourceTxHash ?? undefined, hostSwapId: record?.hostSwapId ?? undefined }).catch(() => undefined);
     }
     switch (decided.phase) {
       case "checking":

@@ -26,6 +26,8 @@
 import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { assessHandoffStall, emitHandoffStallAlert, type HandoffStall } from "@/lib/handoff-stall";
+import { readHostSwapHint, recordHostSwapHint } from "@/lib/host-swap-hint";
+import { HOST_SWAP_ID_RE } from "@/domain/host-swap-id";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
 import {
@@ -571,7 +573,12 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
     return { ...summary, advanced: advanced.length > 0, advancedPath: advanced };
   });
   // R3: alert only after commit, so a rolled-back cycle never alerts.
-  emitHandoffStallAlert({ transferId: result.transferId, satoraSwapId: initialAttachment.satoraSwapId, stall: result.handoffStall });
+  let hostSwapId: string | null = null;
+  if (result.handoffStall.alertDue) {
+    // R4: best-effort; a failed read never blocks the alert.
+    hostSwapId = await readHostSwapHint(db, result.transferId).then((h) => h?.hostSwapId ?? null, () => null);
+  }
+  emitHandoffStallAlert({ transferId: result.transferId, satoraSwapId: initialAttachment.satoraSwapId, hostSwapId, stall: result.handoffStall });
   return result;
 }
 
@@ -1183,6 +1190,8 @@ export const handoffOutcomeSchema = z
     diagnostics: handoffDiagnosticsSchema.optional(),
     /** Host-returned Nimiq hash; server treats it as an untrusted hint. */
     sourceTxHash: z.string().regex(SOURCE_TX_HASH_RE, "sourceTxHash must be a 32-byte hex hash.").optional(),
+    /** R4: host-returned Fastspot swap id; an untrusted diagnostic hint, never evidence. */
+    hostSwapId: z.string().regex(HOST_SWAP_ID_RE, "hostSwapId is malformed.").optional(),
   })
   .strict()
   .refine((value) => value.diagnostics === undefined || value.diagnostics.normalizedOutcome === value.outcome, {
@@ -1192,6 +1201,10 @@ export const handoffOutcomeSchema = z
   .refine((value) => value.outcome !== "cancelled" || value.sourceTxHash === undefined, {
     path: ["sourceTxHash"],
     message: "A cancelled handoff cannot include a source transaction hint.",
+  })
+  .refine((value) => value.hostSwapId === undefined || value.sourceTxHash !== undefined, {
+    path: ["hostSwapId"],
+    message: "A host swap id is only accepted together with its source transaction hint.",
   });
 
 /**
@@ -1254,6 +1267,10 @@ export async function reportHandoffOutcome(
       }
     };
     const current = transfer.status as TransferStatus;
+    // R4: diagnostic hint only. Written before any hop, never read by a payment decision.
+    if (parsed.data.hostSwapId) {
+      await recordHostSwapHint(tx, { transferId: transfer.id, status: current, actorUserId: userId, hostSwapId: parsed.data.hostSwapId, sourceTxHashHint: sourceHintHash });
+    }
     const recordLateSourceEvidence = async (): Promise<void> => {
       if (!sourceForAudit) return;
       await recordTransition(tx, {

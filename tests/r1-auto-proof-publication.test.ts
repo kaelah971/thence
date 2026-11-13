@@ -27,6 +27,7 @@ import { setSatoraFetchersForTests } from "@/lib/satora";
 import { runServerReconciliation } from "@/lib/server-reconciler";
 import { SOURCE_RETRY_WINDOW_MS, reconcileCore } from "@/lib/reconcile";
 import { setStallAlertSinkForTests } from "@/lib/handoff-stall";
+import { HOST_SWAP_HINT_MAX_ROWS, HOST_SWAP_HINT_REASON, readHostSwapHint } from "@/lib/host-swap-hint";
 import { TRANSFER_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
 import { checkTransferConsistency, readConsistencySnapshot } from "@/lib/consistency";
 import { LIVE, RUN, fixtureWallet, loginAs, postJson } from "./helpers";
@@ -380,6 +381,81 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
       expect(s.status).toBe("SERVER_FUNDED");
       expect(s.handoffStall).toMatchObject({ stalled: false, reason: "NOT_IN_HANDOFF" });
       expect(lines).toHaveLength(1);
+      await expectConsistent(p.id);
+    } finally {
+      setStallAlertSinkForTests(null);
+    }
+  });
+
+  it("R4: the host Fastspot swap id is kept as an untrusted, owner-scoped, first-wins hint, reaches only the operator alert, and never changes payment state", async () => {
+    const lines: string[] = [];
+    setStallAlertSinkForTests((line) => lines.push(line));
+    try {
+      const FASTSPOT_ID = "fs-swap-0001-abcdef";
+      const reportWith = (p: Paid, body: Record<string, unknown>) =>
+        reportPost(postJson(`http://localhost/api/transfers/${p.id}/handoff-result`, body, { cookie: p.cookie, ...client(p.tag) }), params(p.id));
+      const hintRows = async (id: string) =>
+        (await getDb().select().from(transferTransitions).where(and(eq(transferTransitions.transferId, id), eq(transferTransitions.reasonCode, HOST_SWAP_HINT_REASON))));
+
+      const p = await authorized("host-swap");
+      const nimHash = h("nim-host-swap");
+      nimTxs.set(nimHash, { tx: nimHtlcFunding(p.owner, nimHash), final: true });
+
+      // Malformed or unpaired ids are refused by the schema; nothing is recorded and state is unchanged.
+      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: "bad id!" })).status).toBe(400);
+      expect((await reportWith(p, { outcome: "initiated", hostSwapId: FASTSPOT_ID })).status).toBe(400);
+      expect((await reportWith(p, { outcome: "cancelled", hostSwapId: FASTSPOT_ID })).status).toBe(400);
+      expect(await hintRows(p.id)).toHaveLength(0);
+
+      // Valid: recorded once, transition unchanged from the plain report path.
+      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: FASTSPOT_ID })).status).toBe(200);
+      expect(await statusOf(p.id)).toBe("LIGHTNING_HANDOFF");
+      // Duplicate (interrupted report replayed): no second row. Replays use `initiated`, which is idempotent; `unknown` would walk the existing RECONCILING chain.
+      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: FASTSPOT_ID })).status).toBe(200);
+      expect(await hintRows(p.id)).toHaveLength(1);
+      // Mismatch: kept as a flagged conflict; the first id is never replaced.
+      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: "fs-swap-9999-zzzzzz" })).status).toBe(200);
+      let hint = await readHostSwapHint(getDb(), p.id);
+      expect(hint).toMatchObject({ hostSwapId: FASTSPOT_ID, conflictingIds: ["fs-swap-9999-zzzzzz"], reportedOnOtherTransfer: false });
+      // Bounded: at most HOST_SWAP_HINT_MAX_ROWS rows per transfer.
+      for (const n of [1, 2, 3]) await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: `fs-swap-extra-${n}` });
+      expect(await hintRows(p.id)).toHaveLength(HOST_SWAP_HINT_MAX_ROWS);
+      expect((await hintRows(p.id)).every((r) => r.fromStatus === r.toStatus && !r.terminal)).toBe(true);
+
+      // Owner scope: another user cannot attach an id to this transfer.
+      const other = await authorized("host-swap-other");
+      const foreign = await reportPost(
+        postJson(`http://localhost/api/transfers/${p.id}/handoff-result`, { outcome: "unknown", sourceTxHash: nimHash, hostSwapId: "fs-swap-foreign-01" }, { cookie: other.cookie, ...client(other.tag) }),
+        params(p.id),
+      );
+      expect(foreign.status).toBe(404);
+      // The same id reported on a different transfer is flagged there, never moved.
+      const otherHash = h("nim-host-swap-other");
+      nimTxs.set(otherHash, { tx: nimHtlcFunding(other.owner, otherHash), final: true });
+      expect((await reportWith(other, { outcome: "initiated", sourceTxHash: otherHash, hostSwapId: FASTSPOT_ID })).status).toBe(200);
+      expect(await readHostSwapHint(getDb(), other.id)).toMatchObject({ hostSwapId: FASTSPOT_ID, reportedOnOtherTransfer: true });
+      hint = await readHostSwapHint(getDb(), p.id);
+      expect(hint?.hostSwapId).toBe(FASTSPOT_ID);
+
+      // Not exposed to clients: the reconciliation view never carries it.
+      expect(JSON.stringify(await reconciliationLatest(p))).not.toContain(FASTSPOT_ID);
+
+      // R3 stall alert carries only the 8-character prefix.
+      const system = () => reconcileCore(p.id, { kind: "system", ownerUserId: null });
+      await system();
+      await ageHistory(p.id, 6);
+      const s = await system();
+      expect(s.handoffStall).toMatchObject({ stalled: true, alertDue: true });
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!.replace(/^thence-alert /, ""))).toMatchObject({ hostSwap: FASTSPOT_ID.slice(0, 8) });
+      expect(lines[0]).not.toContain(FASTSPOT_ID);
+
+      // Source verification and state are untouched by the hint; history stays consistent.
+      expect(s.sourceVerifiedAt).not.toBeNull();
+      expect(await statusOf(p.id)).toBe("LIGHTNING_HANDOFF");
+      await expectConsistent(p.id);
+      fundOnProvider(p);
+      expect((await system()).status).toBe("SERVER_FUNDED");
       await expectConsistent(p.id);
     } finally {
       setStallAlertSinkForTests(null);
