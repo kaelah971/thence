@@ -65,6 +65,7 @@ export const SHARDS: Record<string, string[]> = {
     "r1-auto-proof-publication",
     "nimiq-source",
     "p6-server-reconciler",
+    "r3-handoff-stall",
     "f41-prepare-flow",
     "f41-recovery-vault",
   ],

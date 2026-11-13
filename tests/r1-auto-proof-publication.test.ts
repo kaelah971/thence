@@ -25,7 +25,8 @@ import { nimiqBase32Decode } from "@/lib/nimiq";
 import { deriveNimiqHtlcCreationAddress, setNimiqSourceRpcTransportForTests } from "@/lib/nimiq-source";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { runServerReconciliation } from "@/lib/server-reconciler";
-import { SOURCE_RETRY_WINDOW_MS } from "@/lib/reconcile";
+import { SOURCE_RETRY_WINDOW_MS, reconcileCore } from "@/lib/reconcile";
+import { setStallAlertSinkForTests } from "@/lib/handoff-stall";
 import { TRANSFER_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
 import { checkTransferConsistency, readConsistencySnapshot } from "@/lib/consistency";
 import { LIVE, RUN, fixtureWallet, loginAs, postJson } from "./helpers";
@@ -214,6 +215,16 @@ async function expectConsistent(id: string): Promise<void> {
 }
 const ageObservations = (id: string, minutes: number) =>
   getDb().execute(sql`UPDATE reconciliation_observations SET observed_at = observed_at - make_interval(mins => ${minutes}) WHERE transfer_id = ${id}::uuid`);
+/** Shift this transfer's whole history (transitions + observations) into the past. */
+async function ageHistory(id: string, minutes: number): Promise<void> {
+  await getDb().execute(sql`UPDATE transfer_transitions SET created_at = created_at - make_interval(mins => ${minutes}) WHERE transfer_id = ${id}::uuid`);
+  await ageObservations(id, minutes);
+}
+async function reconciliationLatest(p: Paid): Promise<{ handoffStall: Record<string, unknown> }> {
+  const res = await reconciliationGet(new Request(`http://localhost/api/transfers/${p.id}/reconciliation`, { headers: { cookie: p.cookie, ...client(p.tag) } }), params(p.id));
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { latest: { handoffStall: Record<string, unknown> } }).latest;
+}
 let leaseSeq = 0;
 const lease = (tag: string) => `r1-${RUN}-${tag}-${leaseSeq++}`;
 
@@ -303,6 +314,76 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
     expect((await reconcile(p)).status).toBe(200);
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
     await expectConsistent(p.id);
+  });
+
+  it("R3: a verified NIM lock with the provider still pending 5+ min is flagged stalled with exactly one operator alert, never changes state, and a late payment still advances", async () => {
+    const lines: string[] = [];
+    setStallAlertSinkForTests((line) => lines.push(line));
+    try {
+      const p = await authorized("stalled");
+      const nimHash = h("nim-stalled");
+      nimTxs.set(nimHash, { tx: nimHtlcFunding(p.owner, nimHash), final: true });
+      expect((await report(p, "initiated", nimHash)).status).toBe(200);
+      const system = () => reconcileCore(p.id, { kind: "system", ownerUserId: null });
+      const terminalRows = async () => (await getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, p.id))).filter((t) => t.terminal).length;
+
+      // Within the first minutes: verified and pending, but not stalled.
+      let s = await system();
+      expect(s.status).toBe("LIGHTNING_HANDOFF");
+      expect(s.sourceVerifiedAt).not.toBeNull();
+      expect(s.handoffStall).toMatchObject({ stalled: false, reason: "TOO_EARLY" });
+
+      // 6 minutes later, but the only pending read predates the threshold: a stale read proves nothing.
+      await ageHistory(p.id, 6);
+      expect((await reconciliationLatest(p)).handoffStall).toMatchObject({ stalled: false, reason: "PROVIDER_EVIDENCE_STALE" });
+      expect(lines).toEqual([]);
+
+      // A fresh pending read past the threshold: stalled, one alert, no state change.
+      s = await system();
+      expect(s.handoffStall).toMatchObject({ stalled: true, reason: "STALLED", alertDue: true });
+      expect(s.status).toBe("LIGHTNING_HANDOFF");
+      expect(lines).toHaveLength(1);
+      const alert = JSON.parse(lines[0]!.replace(/^thence-alert /, "")) as Record<string, unknown>;
+      expect(alert).toMatchObject({ alert: "LIGHTNING_HANDOFF_STALLED", transferId: p.id, providerStatus: "pending", swap: p.swapId.slice(0, 8) });
+      expect(lines[0]).not.toContain(nimHash);
+      expect(lines[0]).not.toContain(p.owner.replace(/ /g, ""));
+
+      // Owner view carries the stall; the owner path never re-alerts.
+      expect((await reconciliationLatest(p)).handoffStall).toMatchObject({ stalled: true });
+      expect((await reconcile(p)).status).toBe(200);
+      s = await system();
+      expect(s.handoffStall.stalled).toBe(true);
+      expect(lines).toHaveLength(1);
+
+      // A process restart (in-memory guard cleared) with newer reads still never re-alerts.
+      setStallAlertSinkForTests((line) => lines.push(line));
+      await ageHistory(p.id, 2);
+      s = await system();
+      expect(s.handoffStall).toMatchObject({ stalled: true, alertDue: false });
+      expect(lines).toHaveLength(1);
+
+      // A provider error is not evidence of a stall.
+      const saved = provider.get(p.swapId)!;
+      provider.delete(p.swapId);
+      await ageHistory(p.id, 2);
+      s = await system();
+      expect(s.handoffStall).toMatchObject({ stalled: false, reason: "PROVIDER_ERROR" });
+      provider.set(p.swapId, saved);
+
+      // Nothing terminal, no refund: the payment slot stays held.
+      expect(await statusOf(p.id)).toBe("LIGHTNING_HANDOFF");
+      expect(await terminalRows()).toBe(0);
+
+      // Late Lightning arrival advances normally and clears the stall.
+      fundOnProvider(p);
+      s = await system();
+      expect(s.status).toBe("SERVER_FUNDED");
+      expect(s.handoffStall).toMatchObject({ stalled: false, reason: "NOT_IN_HANDOFF" });
+      expect(lines).toHaveLength(1);
+      await expectConsistent(p.id);
+    } finally {
+      setStallAlertSinkForTests(null);
+    }
   });
 
   it("a NIM payment NOT yet final at handoff still publishes automatically once a later reconcile sees finality", async () => {

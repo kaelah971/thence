@@ -29,6 +29,7 @@ import { useApiResource } from "@/ui/lib/resource";
 import { availabilityFor, tokenDecimalsFor, useRouteCatalogue } from "@/ui/lib/routes-api";
 import { useSession } from "@/ui/lib/session";
 import { usePreviewMode } from "@/ui/lib/stores";
+import { PRE_APPROVAL_RISK_BODY, PRE_APPROVAL_RISK_TITLE } from "@/ui/lib/handoff-risk";
 import { isPaymentFlagEnabled } from "@/ui/lib/payment-gate";
 import { RequestDetailsStep, RequestSharedStep } from "./RequestSteps";
 import { useCalculator } from "./useCalculator";
@@ -1025,6 +1026,11 @@ export function ReviewStep({ payee, amount, decimals, tokenDecimals, fixed, quot
           The price above is what the Lightning payment needs to deliver exactly {formatted} {destination.asset}. Nimiq Pay converts your NIM and shows the exact NIM
           amount before you approve. A price check isn&apos;t a guarantee.
         </Notice>
+        <div data-payment-risk-disclosure style={{ marginTop: 12 }}>
+          <Notice tone="warn" icon="clock" title={PRE_APPROVAL_RISK_TITLE}>
+            {PRE_APPROVAL_RISK_BODY}
+          </Notice>
+        </div>
       </div>
 
       <div className={styles.swipeArea}>

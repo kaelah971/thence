@@ -56,6 +56,7 @@ export interface SettlementState {
   handoffAtMs?: number | null;
   invoiceExpiresAtMs?: number | null;
   invoiceExpired?: boolean;
+  handoffStalled?: boolean;
 }
 
 /** P3: is a local claim attempt still awaiting verification (no second attempt yet)? */
@@ -87,8 +88,10 @@ export interface HandoffInfo {
   handoffAtMs: number | null;
   invoiceExpiresAtMs: number | null;
   invoiceExpired: boolean;
+  /** R3: the server reports a stalled handoff (display only). */
+  handoffStalled: boolean;
 }
-const EMPTY_HANDOFF_INFO: HandoffInfo = { sourceVerifiedAtMs: null, handoffAtMs: null, invoiceExpiresAtMs: null, invoiceExpired: false };
+const EMPTY_HANDOFF_INFO: HandoffInfo = { sourceVerifiedAtMs: null, handoffAtMs: null, invoiceExpiresAtMs: null, invoiceExpired: false, handoffStalled: false };
 
 export function handoffInfoFrom(view: Pick<ReconciliationView, "latest" | "swap">): HandoffInfo {
   return {
@@ -96,6 +99,7 @@ export function handoffInfoFrom(view: Pick<ReconciliationView, "latest" | "swap"
     handoffAtMs: deadlineMsFrom(view.latest.handoffAt),
     invoiceExpiresAtMs: deadlineMsFrom(view.swap?.invoiceExpiresAt),
     invoiceExpired: view.latest.invoiceExpired === true,
+    handoffStalled: view.latest.handoffStall?.stalled === true,
   };
 }
 

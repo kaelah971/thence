@@ -151,12 +151,16 @@ describe("Lightning handoff progress after a verified NIM source", () => {
         latest: { sourceVerifiedAt: "2026-11-13T08:04:29.259Z", handoffAt: "2026-11-13T08:03:52.387Z", invoiceExpired: false } as never,
         swap: { invoiceExpiresAt: "2026-11-13T09:32:50.000Z" } as never,
       }),
-    ).toEqual({ sourceVerifiedAtMs: VERIFIED, handoffAtMs: HANDOFF, invoiceExpiresAtMs: INVOICE_EXPIRES, invoiceExpired: false });
+    ).toEqual({ sourceVerifiedAtMs: VERIFIED, handoffAtMs: HANDOFF, invoiceExpiresAtMs: INVOICE_EXPIRES, invoiceExpired: false, handoffStalled: false });
     expect(handoffInfoFrom({ latest: { sourceVerifiedAt: "garbage", invoiceExpired: true } as never, swap: null })).toEqual({
       sourceVerifiedAtMs: null,
       handoffAtMs: null,
       invoiceExpiresAtMs: null,
       invoiceExpired: true,
+      handoffStalled: false,
     });
+    // R3: only an explicit server `stalled: true` sets the flag.
+    expect(handoffInfoFrom({ latest: { handoffStall: { stalled: true, stalledSince: null, anchorAt: null } } as never, swap: null }).handoffStalled).toBe(true);
+    expect(handoffInfoFrom({ latest: { handoffStall: { stalled: "yes" } } as never, swap: null }).handoffStalled).toBe(false);
   });
 });

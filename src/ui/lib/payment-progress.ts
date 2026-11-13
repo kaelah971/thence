@@ -17,6 +17,7 @@ import type { TransferStatus } from "@/domain/transfers";
 import { needsOwnerClaim, type SettlementVerdict } from "./settlement-client";
 import { timelineFor, type TimelineStep } from "./status";
 import { CLAIM_UNSAFE_WINDOW_MS, claimWindowAt } from "@/domain/claim-deadline";
+import { STALLED_HEADLINE, stalledBody } from "./handoff-risk";
 
 export type NextAction =
   /** Waiting on something the owner can't speed up; nothing to tap. */
@@ -54,6 +55,8 @@ export interface ProgressInput {
   /** Lightning invoice expiry (ms) and the server's expired verdict. */
   invoiceExpiresAtMs?: number | null;
   invoiceExpired?: boolean;
+  /** R3: server-derived stalled handoff (display only, never state). */
+  handoffStalled?: boolean;
   /** Polygon claim deadline (ms, Satora evm_refund_locktime from the server); null when unknown. */
   claimDeadlineMs?: number | null;
   /** Clock for the delay message (defaults to Date.now()). */
@@ -124,6 +127,11 @@ function lightningHandoffView(s: ProgressInput, steps: TimelineStep[] | null): P
     window === "open" || window === "closing"
       ? ` It can still be delivered only if it arrives in time to finish before ${clock(s.claimDeadlineMs! - CLAIM_UNSAFE_WINDOW_MS)}.`
       : " Thence can't confirm the delivery deadline yet.";
+  // R3: the server's stall verdict (verified lock, fresh `pending` read 5+ min
+  // after handoff) supersedes the client-only 2-minute "delayed" copy.
+  if (s.handoffStalled === true && s.providerStatus === "pending") {
+    return { headline: STALLED_HEADLINE, body: stalledBody(until), tone: "warn", action: "wait", steps };
+  }
   if (now - since >= LIGHTNING_DELAY_MS) {
     return {
       headline: "Delivery delayed — waiting for the Lightning payment",

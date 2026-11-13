@@ -237,6 +237,8 @@ export interface RunSummary {
   deferredByBudget: number;
   advanced: Array<{ transferId: string; from: string; to: string }>;
   errors: Record<string, number>;
+  /** R3: reconciled transfers currently in a stalled Lightning handoff (count only). */
+  stalledHandoffs?: number;
 }
 
 /** One bounded reconciliation run. Safe to invoke concurrently and repeatedly. */
@@ -282,6 +284,7 @@ export async function runServerReconciliation(options: RunOptions = {}): Promise
         summary.reconciled += 1;
         if (result.advanced) summary.advanced.push({ transferId: candidate.transferId, from: candidate.status, to: result.status });
         if (result.lastError) summary.errors[result.lastError] = (summary.errors[result.lastError] ?? 0) + 1;
+        if (result.handoffStall?.stalled) summary.stalledHandoffs = (summary.stalledHandoffs ?? 0) + 1;
         // P3: once the provider reports claim activity, independently verify
         // destination delivery here too, so DELIVERED (with proof) never
         // depends on the owner's browser staying open after Finish delivery.
