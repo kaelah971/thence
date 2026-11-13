@@ -1,3 +1,4 @@
+import { hostSwapIdPrefix } from "@/domain/host-swap-id";
 /**
  * R3 — derived "stalled Lightning handoff" condition (no new transfer state).
  *
@@ -135,7 +136,7 @@ export function setStallAlertSinkForTests(next: AlertSink | null): void {
  * (same `thence-<topic> {json}` convention as thence-chain-scan). Non-secret:
  * transfer id, swap id prefix and timestamps only. Returns true if emitted.
  */
-export function emitHandoffStallAlert(input: { transferId: string; satoraSwapId: string | null; stall: HandoffStall; now?: number }): boolean {
+export function emitHandoffStallAlert(input: { transferId: string; satoraSwapId: string | null; hostSwapId?: string | null; stall: HandoffStall; now?: number }): boolean {
   if (!input.stall.stalled || !input.stall.alertDue || alerted.has(input.transferId)) return false;
   if (alerted.size >= ALERTED_MAX) alerted.clear();
   alerted.add(input.transferId);
@@ -146,6 +147,8 @@ export function emitHandoffStallAlert(input: { transferId: string; satoraSwapId:
       alert: "LIGHTNING_HANDOFF_STALLED",
       transferId: input.transferId,
       swap: input.satoraSwapId ? input.satoraSwapId.slice(0, 8) : null,
+      // R4: Fastspot swap id prefix (untrusted host hint). Full id: scripts/fastspot-diag.ts.
+      hostSwap: input.hostSwapId ? hostSwapIdPrefix(input.hostSwapId) : null,
       providerStatus: "pending",
       anchorAt: input.stall.anchorAt,
       stalledSince: input.stall.stalledSince,

@@ -12,6 +12,7 @@
  */
 import { apiRequest, type ApiOptions, type ApiResult } from "./api";
 import { kickPaymentTracker } from "./payment-tracker";
+import { normalizeHostSwapId } from "@/domain/host-swap-id";
 import type { HostPaymentResult, PaymentDiagnostics } from "./nimiq-pay";
 
 export type ServerHandoffOutcome = "cancelled" | "initiated" | "unknown";
@@ -26,6 +27,8 @@ type Opts = Pick<ApiOptions, "signal" | "fetch"> & {
   diagnostics?: PaymentDiagnostics | undefined;
   /** Host-reported hash only; the backend verifies it independently. */
   sourceTxHash?: string | undefined;
+  /** R4: host-returned Fastspot swap id; an untrusted diagnostic hint. Requires `sourceTxHash`. */
+  hostSwapId?: string | undefined;
 };
 
 /** Map a host result onto the only outcomes the backend accepts. */
@@ -49,7 +52,9 @@ export async function reportHandoffResult(
   if (outcome !== "cancelled" && outcome !== "initiated" && outcome !== "unknown") {
     throw new Error("Invalid handoff outcome.");
   }
-  const { diagnostics, sourceTxHash, ...requestOpts } = opts;
+  const { diagnostics, sourceTxHash, hostSwapId: rawHostSwapId, ...requestOpts } = opts;
+  // A malformed or unpaired host swap id is dropped, never allowed to fail the report.
+  const hostSwapId = sourceTxHash !== undefined ? (normalizeHostSwapId(rawHostSwapId) ?? undefined) : undefined;
   if (sourceTxHash !== undefined && !/^(?:0x)?[0-9a-fA-F]{64}$/.test(sourceTxHash)) {
     throw new Error("Invalid source transaction hash.");
   }
@@ -60,6 +65,7 @@ export async function reportHandoffResult(
     outcome,
     ...(diagnostics ? { diagnostics } : {}),
     ...(sourceTxHash ? { sourceTxHash } : {}),
+    ...(hostSwapId && outcome !== "cancelled" ? { hostSwapId } : {}),
   };
   try {
     return await apiRequest<{ handoff: HandoffReport }>(`/api/transfers/${encodeURIComponent(transferId)}/handoff-result`, {

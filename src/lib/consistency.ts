@@ -63,6 +63,8 @@ const BOUND_STATUSES: ReadonlySet<string> = new Set([
 const AUTHORIZED_STATUSES: ReadonlySet<string> = new Set([...BOUND_STATUSES].filter((s) => s !== "SWAP_CREATED"));
 
 /** Statuses a transfer may hold without any transition (creation states). */
+/** Same-state annotation rows (not hops). */
+const ANNOTATION_REASONS: ReadonlySet<string> = new Set(["SOURCE_EVIDENCE_RECORDED", "HOST_SWAP_HINT_RECORDED"]);
 const INITIAL_STATUSES: ReadonlySet<string> = new Set(["DRAFT", "QUOTED"]);
 
 function proofComplete(proof: ConsistencySnapshot["proof"]): boolean {
@@ -122,9 +124,9 @@ export function checkTransferConsistency(s: ConsistencySnapshot, opts: { require
   }
 
   // Same-state, non-terminal source-evidence rows annotate a status; they are
-  // not hops (handoff late evidence, R1 reconcile re-check).
+  // not hops (handoff late evidence, R1 reconcile re-check, R4 host swap hint).
   const chain = orderTransitions(
-    s.transitions.filter((t) => !(t.fromStatus === t.toStatus && !t.terminal && t.reasonCode === "SOURCE_EVIDENCE_RECORDED")),
+    s.transitions.filter((t) => !(t.fromStatus === t.toStatus && !t.terminal && ANNOTATION_REASONS.has(t.reasonCode))),
   );
   if (status === "REFUNDED" && (chain.length > 0 || opts.requireAudit)) {
     const into = chain.find((t) => t.toStatus === "REFUNDED");
