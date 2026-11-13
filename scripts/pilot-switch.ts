@@ -31,10 +31,14 @@
  *   merged into process.env, must NOT carry the test anchor, and any write
  *   (enable OR disable) additionally requires --yes.
  * NEVER commit URLs or print connection strings (this script prints none).
+ * Every remote connection is certificate-verified (scripts/db-tls.ts); URL
+ * TLS parameters cannot downgrade it.
  */
 import "dotenv/config";
 import { Client } from "pg";
 import { loadProductionDatabaseUrl, probeAnchor, productionEnvFile, verifyNonProductionTarget } from "./db-guard";
+import { verifiedClientConfig } from "./db-tls";
+import { confirmationRequired, isPilotCommand, productionTargetVerdict, type PilotCommand } from "./pilot-switch-policy";
 
 const USAGE = "usage: npx tsx scripts/pilot-switch.ts status|enable|disable [--production] [--note \"...\"] [--yes]";
 
@@ -48,19 +52,19 @@ function flag(name: string): boolean {
   return process.argv.includes(name);
 }
 
-async function resolveTarget(command: string): Promise<{ url: string; production: boolean }> {
+async function resolveTarget(command: PilotCommand): Promise<{ url: string; production: boolean }> {
   if (flag("--production")) {
     const prodUrl = loadProductionDatabaseUrl();
     if (!prodUrl) {
       console.error(`pilot-switch: --production requires DATABASE_URL in ${productionEnvFile()} (operator-held, outside the repo).`);
       process.exit(2);
     }
-    const anchor = await probeAnchor(prodUrl);
-    if (anchor.reason !== "no-anchor") {
-      console.error(`pilot-switch: production target refused (${anchor.reason === "anchored" ? "it carries the test anchor" : "unreachable"}); no change made.`);
+    const verdict = productionTargetVerdict((await probeAnchor(prodUrl)).reason);
+    if (verdict !== "allowed") {
+      console.error(`pilot-switch: production target refused (${verdict === "refused-anchored" ? "it carries the test anchor" : "unreachable"}); no change made.`);
       process.exit(2);
     }
-    if (command !== "status" && !flag("--yes")) {
+    if (confirmationRequired(command, true) && !flag("--yes")) {
       console.error(`pilot-switch: refusing to ${command} PRODUCTION without --yes.`);
       process.exit(2);
     }
@@ -79,19 +83,19 @@ async function resolveTarget(command: string): Promise<{ url: string; production
 
 async function main(): Promise<void> {
   const command = process.argv[2];
-  if (command !== "status" && command !== "enable" && command !== "disable") {
+  if (!isPilotCommand(command)) {
     console.error(USAGE);
     process.exit(2);
   }
-  if (command === "enable" && !flag("--yes")) {
+  if (confirmationRequired(command, false) && !flag("--yes")) {
     console.error("pilot-switch: refusing to enable without --yes. Confirm the deployed env is armed and verified first.");
     process.exit(2);
   }
-  const { url, production } = await resolveTarget(command);
+  const { url } = await resolveTarget(command);
   const note = arg("--note") ?? (command === "status" ? null : command === "enable" ? "enabled by operator" : "emergency stop by operator");
+  // Certificate-verified TLS for every remote target (scripts/db-tls.ts).
   const client = new Client({
-    connectionString: url,
-    ssl: production ? { rejectUnauthorized: false } : undefined,
+    ...verifiedClientConfig(url),
     connectionTimeoutMillis: 10_000,
     statement_timeout: 10_000,
   });

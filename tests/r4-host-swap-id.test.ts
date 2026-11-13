@@ -203,7 +203,12 @@ describe("operator script database TLS", () => {
   it("the diagnostics script never disables certificate verification", async () => {
     const { readFileSync } = await import("node:fs");
     for (const f of ["scripts/fastspot-diag.ts", "scripts/db-tls.ts"]) {
-      expect(readFileSync(f, "utf8")).not.toMatch(/rejectUnauthorized:s*false/);
+      // Comment lines are skipped: prose that names the forbidden setting is not code.
+      const code = readFileSync(f, "utf8")
+        .split("\n")
+        .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+        .join("\n");
+      expect(code).not.toMatch(/rejectUnauthorized\s*:\s*false/);
     }
     expect(readFileSync("scripts/fastspot-diag.ts", "utf8")).not.toMatch(/probeAnchor/);
   });

@@ -20,11 +20,21 @@
  *
  * Never prints, logs or returns connection strings or passwords. Reasons are
  * static strings; identity comparisons use parsed components only.
+ *
+ * Remote connections are certificate-verified (`scripts/db-tls.ts`): the
+ * anchor probe is the first thing that touches a candidate database, so it
+ * must not be the one connection that accepts any certificate.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseDotenv } from "dotenv";
+import { isLocalhostTarget, parseDbTarget, sameDatabase } from "./db-target";
+import { verifiedClientConfig } from "./db-tls";
+
+// Shared with `db-tls.ts` through `db-target.ts`; re-exported for existing callers.
+export { isLocalhostTarget, normalizeDbHost, parseDbTarget, sameDatabase } from "./db-target";
+export type { DbTarget } from "./db-target";
 
 /** Neon project that owns the isolated automated-test database. */
 export const TEST_PROJECT_ID = "empty-wildflower-93415146";
@@ -32,55 +42,6 @@ export const TEST_PROJECT_ID = "empty-wildflower-93415146";
 export const TEST_ANCHOR_TABLE = "__thence_test_anchor";
 /** Override for the production env file location (path only; never a URL). */
 export const PRODUCTION_ENV_FILE_KEY = "THENCE_PRODUCTION_ENV_FILE";
-
-export interface DbTarget {
-  /** Role (user). Informational only; never part of the identity comparison. */
-  user: string;
-  /** Lower-cased host with any Neon `-pooler` suffix removed from the endpoint label. */
-  host: string;
-  port: string;
-  database: string;
-}
-
-/** Strip the Neon pooler suffix: `ep-x-123-pooler.region…` and `ep-x-123.region…` are one database. */
-export function normalizeDbHost(hostname: string): string {
-  const host = hostname.toLowerCase();
-  const [first, ...rest] = host.split(".");
-  if (!first) return host;
-  return [first.replace(/-pooler$/, ""), ...rest].join(".");
-}
-
-/** Parse a postgres connection string into non-secret identity components. Null when unparseable. */
-export function parseDbTarget(url: string): DbTarget | null {
-  try {
-    const parsed = new URL(String(url ?? "").trim());
-    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") return null;
-    const database = parsed.pathname.replace(/^\/+/, "").split("/")[0] ?? "";
-    if (!parsed.hostname || !database) return null;
-    return {
-      user: decodeURIComponent(parsed.username),
-      host: normalizeDbHost(parsed.hostname),
-      port: parsed.port || "5432",
-      database,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** True when both URLs address the same database (role ignored, pooler normalized). Unparseable → false. */
-export function sameDatabase(a: string, b: string): boolean {
-  const x = parseDbTarget(a);
-  const y = parseDbTarget(b);
-  if (!x || !y) return false;
-  return x.host === y.host && x.port === y.port && x.database === y.database;
-}
-
-export function isLocalhostTarget(url: string): boolean {
-  const target = parseDbTarget(url);
-  if (!target) return false;
-  return target.host === "localhost" || target.host === "127.0.0.1" || target.host === "::1" || target.host === "[::1]";
-}
 
 /** Location of the operator-held production env file (outside the repository). */
 export function productionEnvFile(env: Record<string, string | undefined> = process.env): string {
@@ -121,9 +82,10 @@ export interface AnchorProbe {
 export async function probeAnchor(url: string): Promise<AnchorProbe> {
   try {
     const { Client } = await import("pg");
+    // Certificate-verified TLS for every remote target; connection-string TLS
+    // parameters cannot re-enable `sslmode=no-verify` (scripts/db-tls.ts).
     const client = new Client({
-      connectionString: url,
-      ssl: isLocalhostTarget(url) ? undefined : { rejectUnauthorized: false },
+      ...verifiedClientConfig(url),
       connectionTimeoutMillis: 15_000,
       statement_timeout: 15_000,
     });
