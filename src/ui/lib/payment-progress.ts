@@ -206,6 +206,24 @@ export function paymentProgress(s: ProgressInput): ProgressView {
     };
   }
 
+  // No independent NIM verification yet: Thence must not say the NIM is locked, and it must not
+  // claim preparation failed either. An unknown host outcome can follow a successful submission
+  // with delayed or missing evidence, so absence of source verification proves nothing.
+  // Live: transfer 75f05d35 (2026-11-14) is RECONCILING with no on-chain NIM funding.
+  const nimVerified = typeof s.sourceVerifiedAtMs === 'number' && s.sourceVerifiedAtMs > 0
+  if (!nimVerified && (status === 'RECONCILING' || status === 'OUTCOME_UNKNOWN') && !s.receiptReady && !s.claimReady) {
+    return {
+      headline: "Payment status still being verified",
+      body:
+        "Nimiq Pay's response for this payment was inconclusive, so Thence has not independently confirmed NIM funding yet. "
+        + "That is not proof that funds moved, and it is not proof that they stayed put. "
+        + "Don't pay the same invoice again while the outcome is unresolved.",
+      tone: "neutral",
+      action: "check",
+      steps,
+    }
+  }
+
   // Funded on Polygon and the owner's tap is the next step (and not yet made here).
   if (!submitted && needsOwnerClaim({ phase: s.phase, transferStatus: status, providerStatus: s.providerStatus, claimReady: s.claimReady, identityMismatch: s.identityMismatch === true })) {
     return {
