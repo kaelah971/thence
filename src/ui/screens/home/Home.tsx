@@ -29,6 +29,7 @@ import {
   type SignedWalletDiagnosis,
 } from "@/ui/lib/wallet-diagnostics";
 import { formatLuna } from "@/ui/lib/luna";
+import { ESTIMATE_DISCLAIMER, nimUsdcPreview, PARTIAL_BALANCE_NOTE, useNimUsdcPrice } from "@/ui/lib/conversion";
 import { useActivityData } from "@/ui/lib/data";
 import { signOutEverywhere, useSession } from "@/ui/lib/session";
 import { usePreviewMode, useSetupName } from "@/ui/lib/stores";
@@ -49,6 +50,10 @@ export function Home(): React.JSX.Element {
   const destination = destinationFor(routeId);
   const address = wallet.status === "connected" ? wallet.address : null;
   const balance = useNimBalance(address);
+  // Display-only market rate; fetched only for a connected wallet (never in preview).
+  const price = useNimUsdcPrice(Boolean(address) && !preview);
+  const conversion = nimUsdcPreview(balance.state, price);
+  const usdcDestination = destination.asset === "USDC";
   const name = session.status === "valid" ? session.me.profile.displayName : preview ? setupName : null;
 
   const signOut = async () => {
@@ -77,7 +82,7 @@ export function Home(): React.JSX.Element {
         </header>
 
         <div className={styles.stack}>
-          <WalletCards wallet={wallet} balance={balance.state} onRetryBalance={balance.retry} onOpenAccount={() => setAccountOpen(true)} />
+          <WalletCards wallet={wallet} balance={balance.state} price={price} onRetryBalance={balance.retry} onOpenAccount={() => setAccountOpen(true)} />
         </div>
 
         <nav className={styles.actions} aria-label="Quick actions">
@@ -107,14 +112,37 @@ export function Home(): React.JSX.Element {
               </button>
             </div>
             <div className={styles.estimate}>
-              <p className={styles.estimateValue}>Estimate unavailable</p>
+              {conversion.status === "estimate" && usdcDestination ? (
+                <>
+                  <p className={styles.estimateLabel}>Estimated USDC value</p>
+                  <p className={styles.estimateValue} data-live="true">
+                    ≈ <span className="tabular">{conversion.usdc}</span> USDC
+                  </p>
+                  <p className={styles.estimateMeta}>
+                    <a href={conversion.sourceUrl} target="_blank" rel="noopener noreferrer">
+                      {conversion.source}
+                    </a>{" "}
+                    · {conversion.freshness}
+                  </p>
+                </>
+              ) : (
+                <p className={styles.estimateValue}>
+                  {conversion.status === "loading" && address ? "Loading estimate…" : conversion.status === "estimate" ? "Estimate in USDC only" : "Estimate unavailable"}
+                </p>
+              )}
             </div>
           </div>
           <p className={styles.estimateHint}>
             <Icon name="info" size={14} />
-            {address
-              ? "No live conversion is available yet, so Thence won't guess. An estimate is never a balance you own."
-              : "Connect your wallet to see what your NIM could send as. It's an estimate, not a balance you own."}
+            {!address
+              ? "Connect your wallet to see the approximate market value of your NIM. It's an estimate, not a balance you own."
+              : conversion.status === "estimate"
+                ? `${usdcDestination ? "Approximate market value of your NIM. " : ""}${conversion.partial ? `${PARTIAL_BALANCE_NOTE} ` : ""}${ESTIMATE_DISCLAIMER}`
+                : conversion.status === "loading"
+                  ? "Checking the market rate…"
+                  : conversion.status === "rate-unavailable"
+                    ? conversion.message
+                    : "Your NIM balance isn't available right now, so no estimate is shown."}
           </p>
         </div>
 

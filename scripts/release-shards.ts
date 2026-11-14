@@ -18,6 +18,7 @@ const ROOT = join(__dirname, "..");
 export const SHARDS: Record<string, string[]> = {
   S1: [
     "ui-*",
+    "nim-price",
     "incident-2026-11-02",
     "test-db-guard",
     "test-db-tls",

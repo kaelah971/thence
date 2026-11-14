@@ -188,6 +188,13 @@ const envSchema = z.object({
   THENCE_PREPARATION_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   /** Optional override for the Satora API base URL (B3.1). Empty = SDK default. */
   THENCE_SATORA_BASE_URL: z.string().default(""),
+  /**
+   * Optional CoinGecko Demo API key for the display-only NIM/USDC indicative
+   * rate (server-side only, never sent to browsers). Empty = keyless public API.
+   */
+  THENCE_COINGECKO_DEMO_API_KEY: z.string().default(""),
+  /** Display-only NIM/USDC indicative rate: set "0" to switch it off (fail closed). */
+  THENCE_NIM_PRICE_ENABLED: z.enum(["0", "1"]).default("1"),
   /** Trusted EVM RPC endpoints per chain id (B4.4). Empty = chain verification unavailable. */
   THENCE_EVM_RPCS_JSON: evmRpcMapSchema,
   /** Per-chain finality policy overrides (B4.4). Empty = documented defaults. */
@@ -306,6 +313,8 @@ export function validateEnv(source: Record<string, string | undefined> = process
     THENCE_TRANSFERS_READ_RATE_PER_MINUTE: source["THENCE_TRANSFERS_READ_RATE_PER_MINUTE"],
     THENCE_PREPARATION_TTL_SECONDS: source["THENCE_PREPARATION_TTL_SECONDS"],
     THENCE_SATORA_BASE_URL: source["THENCE_SATORA_BASE_URL"],
+    THENCE_COINGECKO_DEMO_API_KEY: source["THENCE_COINGECKO_DEMO_API_KEY"],
+    THENCE_NIM_PRICE_ENABLED: source["THENCE_NIM_PRICE_ENABLED"],
     THENCE_EVM_RPCS_JSON: source["THENCE_EVM_RPCS_JSON"],
     THENCE_SETTLEMENT_FINALITY_JSON: source["THENCE_SETTLEMENT_FINALITY_JSON"],
     THENCE_NIMIQ_RPC_URL: source["THENCE_NIMIQ_RPC_URL"],
