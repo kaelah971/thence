@@ -79,9 +79,16 @@ settlement / reconciler / consistency / UI suites green.
    is the input, untouched.
 4. **Verify (read-only)**: transfer status `DELIVERED_SHORT`; proof
    `verified_amount_atomic = 999556`; one `SETTLEMENT_VERIFIED_SHORT` transition
-   with `shortfallAtomic: "444"`; `/api/proofs` count unchanged (6); no
-   `SETTLEMENT_INVALID` in later reconciler runs; the owner's receipt shows
-   requested 1.00, received 0.999556, short by 0.000444.
+   with `shortfallAtomic: "444"`; `/api/proofs` count goes from 6 to 7 — the
+   six existing `DELIVERED` records byte-identical, plus one new
+   `DELIVERED_SHORT` record with `shortfallAtomic: "444"` (the incident already
+   has independent NIM source evidence); no `SETTLEMENT_INVALID` in later
+   reconciler runs; the owner's receipt shows requested 1.00, received
+   0.999556, short by 0.000444.
+   *Outcome (2026-11-14):* deployed `3ceebc2` (release `20261114T134721Z`) at
+   13:50:11Z; the first reconcile (13:52:12Z) moved `2b24ca8f` to
+   `DELIVERED_SHORT`; Global Proof went 6 → 7 (new proof `ad0119c3`), the six
+   existing records unchanged.
 5. **Rollback** if anything differs: `thence-deploy production rollback` + restart.
    A `DELIVERED_SHORT` row written before rollback is inert on the old build:
    the old reconciler only selects its fixed `SERVER_RECONCILABLE` list, so it
