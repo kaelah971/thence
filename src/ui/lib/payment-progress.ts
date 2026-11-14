@@ -171,6 +171,23 @@ function isStatus(value: string | null): value is TransferStatus {
 
 export function paymentProgress(s: ProgressInput): ProgressView {
   const status = s.transferStatus;
+  // No independent source verification: Thence must not describe the NIM as locked.
+  // Live: transfer 75f05d35 (2026-11-14). Nimiq Pay failed before signing
+  // (INVALID_TRANSACTION -32602, "Cannot create swap"), the client reported unknown and the
+  // transfer reached RECONCILING with no on-chain NIM funding.
+  const nimVerified = typeof s.sourceVerifiedAtMs === 'number' && s.sourceVerifiedAtMs > 0
+  if (!nimVerified && (status === 'RECONCILING' || status === 'OUTCOME_UNKNOWN') && !s.receiptReady && !s.claimReady) {
+    return {
+      headline: "Payment preparation didn't complete",
+      body:
+        "Nimiq Pay reported that this payment could not be prepared, and Thence has no independently verified NIM funding for it. "
+        + "That is not proof that funds moved, and it is not proof that they stayed put. Reconciliation keeps checking the provider until it settles. "
+        + "Don't pay again with the same invoice.",
+      tone: 'warn',
+      action: 'check',
+      steps: null,
+    }
+  }
   const awaitingFinality = FINALITY_PENDING.has(s.verifyVerdict ?? "");
   const claimLanded = REDEEMED.has(s.providerStatus ?? "") && !s.claimReady;
   // CLAIMING means a claim was authorized somewhere. While the server refuses

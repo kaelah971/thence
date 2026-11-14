@@ -574,3 +574,28 @@ describe("amount display consistency (0.3 vs 0.30) — display only", () => {
     expect(padAmountDecimals("0.3", "NIM")).toBe("0.3");
   });
 });
+
+describe('payment preparation without verified NIM funding', () => {
+  // Live: transfer 75f05d35 (2026-11-14). Nimiq Pay returned INVALID_TRANSACTION -32602
+  // ("Cannot create swap"); Thence recorded CLIENT_REPORTED_UNKNOWN and reached RECONCILING
+  // with no NIM funding at all. The screen must not claim the NIM is locked.
+  const base = { phase: 'handoff', providerStatus: 'pending', claimReady: false, receiptReady: false }
+
+  it.each(['OUTCOME_UNKNOWN', 'RECONCILING'])('%s without source verification is preparation-incomplete', (status) => {
+    const view = paymentProgress({ ...base, transferStatus: status, sourceVerifiedAtMs: null })
+    expect(view.headline).toBe("Payment preparation didn't complete")
+    expect(view.action).toBe('check')
+    expect(`${view.headline} ${view.body}`).not.toMatch(/locked your NIM/i)
+  })
+
+  it('never asserts that no funds moved, nor that they did', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'RECONCILING', sourceVerifiedAtMs: null })
+    expect(view.body).toMatch(/not proof that funds moved/i)
+    expect(view.body).toMatch(/not proof that they stayed put/i)
+  })
+
+  it('keeps the locked-NIM copy once the source is independently verified', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'LIGHTNING_HANDOFF', sourceVerifiedAtMs: Date.now(), claimDeadlineMs: Date.now() + 3_600_000, handoffAtMs: Date.now() })
+    expect(view.headline).not.toBe("Payment preparation didn't complete")
+  })
+})
