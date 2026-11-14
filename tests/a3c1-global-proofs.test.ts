@@ -115,6 +115,83 @@ describe("A3c.1 global proof publication", () => {
     expect(toPublicProof(candidate, config)).toBeNull();
   });
 
+  describe("R7 verified short deliveries", () => {
+    const source = { sourceVerified: true, sourceVerifiedHash: NIMIQ_TX_HASH, sourceVerifiedEvidence: verifiedSource() };
+    const shortEvidence = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+      providerStatus: "serverredeemed",
+      chainId: 137,
+      claimTxHash: CLAIM_TX,
+      blockNumber: "123456",
+      logIndexes: [279],
+      verifiedAmountAtomic: "999556",
+      finalityLevel: "confirmations-256",
+      requestedAmountAtomic: "1000000",
+      shortfallAtomic: "444",
+      swapIdentity: "BOUND_REDEEM_MATCH",
+      ...overrides,
+    });
+    const shortRow = (evidence: unknown = shortEvidence(), transfer: Record<string, unknown> = {}, proof: Record<string, unknown> = {}) => ({
+      ...row({
+        transfer: { status: "DELIVERED_SHORT", targetAmountAtomic: "1000000", ...transfer },
+        proof: { nimiqTxHash: NIMIQ_TX_HASH, verifiedAmountAtomic: "999556", ...proof },
+      }),
+      ...source,
+      shortDeliveryEvidence: evidence,
+    });
+
+    it("publishes the incident 999556 / 1000000 as DELIVERED_SHORT with the measured amount and exact shortfall", () => {
+      const candidate = shortRow();
+      expect(isPublishableGlobalProof(candidate, config)).toBe(true);
+      const view = toPublicProof(candidate, config);
+      expect(view?.status).toBe("DELIVERED_SHORT");
+      expect(view?.destination).toMatchObject({
+        requestedAmountAtomic: "1000000",
+        verifiedAmountAtomic: "999556",
+        shortfallAtomic: "444",
+        deliveryOutcome: "SHORT",
+        transactionHash: CLAIM_TX,
+      });
+      expect(view?.destination.explorerTxUrl).toContain(CLAIM_TX);
+      expect(view?.verification).toEqual({ destination: "VERIFIED", source: "VERIFIED", overall: "VERIFIED" });
+    });
+
+    it("never publishes a short delivery without the matching audited bound-swap redeem", () => {
+      expect(isPublishableGlobalProof(shortRow(null), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ swapIdentity: undefined })), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ claimTxHash: `0x${"99".repeat(32)}` })), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ verifiedAmountAtomic: "1000000" })), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ requestedAmountAtomic: "999556" })), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ shortfallAtomic: "0" })), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ chainId: 42161 })), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ finalityLevel: "finalized" })), config)).toBe(false);
+    });
+
+    it("keeps every other publication gate for short deliveries", () => {
+      // No independent source evidence.
+      expect(isPublishableGlobalProof({ ...shortRow(), sourceVerified: false, sourceVerifiedEvidence: null }, config)).toBe(false);
+      // Wrong token, wrong recipient, unfinalized/other finality, malformed tx.
+      expect(isPublishableGlobalProof(shortRow(undefined, {}, { tokenContract: "0x9999999999999999999999999999999999999999" }), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(undefined, {}, { recipient: "0x9999999999999999999999999999999999999999" }), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ finalityLevel: "confirmations-12" }), {}, { finalityLevel: "confirmations-12" }), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ claimTxHash: "0x1234" }), {}, { evmTxHash: "0x1234" }), config)).toBe(false);
+      // Zero output, and a status/amount mismatch in either direction.
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ verifiedAmountAtomic: "0", shortfallAtomic: "1000000" }), {}, { verifiedAmountAtomic: "0" }), config)).toBe(false);
+      expect(isPublishableGlobalProof(shortRow(shortEvidence({ verifiedAmountAtomic: "1000000", shortfallAtomic: "0" }), {}, { verifiedAmountAtomic: "1000000" }), config)).toBe(false);
+      const deliveredBelow = { ...row({ transfer: { targetAmountAtomic: "1000000" }, proof: { nimiqTxHash: NIMIQ_TX_HASH, verifiedAmountAtomic: "999556" } }), ...source, shortDeliveryEvidence: shortEvidence() };
+      expect(isPublishableGlobalProof(deliveredBelow, config)).toBe(false);
+    });
+
+    it("exact and overpaid deliveries keep the exact pre-R7 public shape", () => {
+      for (const amount of ["300000", "300542"]) {
+        const view = toPublicProof({ ...row({ proof: { nimiqTxHash: NIMIQ_TX_HASH, verifiedAmountAtomic: amount } }), ...source }, config);
+        expect(view?.status).toBe("DELIVERED");
+        expect(Object.keys(view?.destination ?? {}).sort()).toEqual(
+          ["asset", "blockHash", "blockNumber", "chainId", "decimals", "explorerTxUrl", "finalityLevel", "network", "recipient", "requestedAmountAtomic", "tokenContract", "transactionHash", "verifiedAmountAtomic", "verifiedAt"].sort(),
+        );
+      }
+    });
+  });
+
   it("does not upgrade a host-reported NIM identifier into source proof", () => {
     const candidate = row({ proof: { nimiqTxHash: `0x${"12".repeat(32)}` } });
     expect(getIndependentNimiqSourceProof(candidate)).toBeNull();

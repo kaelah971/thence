@@ -18,7 +18,8 @@ import type { getDb } from "@/lib/db";
 type Db = ReturnType<typeof getDb>;
 
 export interface ConsistencySnapshot {
-  transfer: { id: string; status: string };
+  /** targetAmountAtomic enables the R7 amount checks (absent = not checked). */
+  transfer: { id: string; status: string; targetAmountAtomic?: string };
   attachment: { satoraSwapId: string } | null;
   proof: typeof transferProofs.$inferSelect | null;
   attempts: Array<{ status: string }>;
@@ -27,6 +28,9 @@ export interface ConsistencySnapshot {
 
 export type ConsistencyCode =
   | "DELIVERED_WITHOUT_PROOF"
+  | "DELIVERED_BELOW_REQUEST"
+  | "SHORT_WITHOUT_PROOF"
+  | "SHORT_NOT_BELOW_REQUEST"
   | "PROOF_WITHOUT_DELIVERY"
   | "BOUND_STATUS_WITHOUT_SWAP"
   | "HANDOFF_WITHOUT_AUTHORIZATION"
@@ -55,6 +59,7 @@ const BOUND_STATUSES: ReadonlySet<string> = new Set([
   "NEEDS_ATTENTION",
   "REFUNDED",
   "DELIVERED",
+  "DELIVERED_SHORT",
   "FAILED",
   "EXPIRED_UNFUNDED",
 ]);
@@ -113,7 +118,20 @@ export function checkTransferConsistency(s: ConsistencySnapshot, opts: { require
   if (status === "DELIVERED" && !proofComplete(s.proof)) {
     v.push({ code: "DELIVERED_WITHOUT_PROOF", detail: "DELIVERED requires a complete on-chain ERC20 settlement proof." });
   }
-  if (status !== "DELIVERED" && s.proof && (s.proof.evidenceSource === "evm_erc20_transfer" || s.proof.verifiedAt)) {
+  if (status === "DELIVERED_SHORT" && !proofComplete(s.proof)) {
+    v.push({ code: "SHORT_WITHOUT_PROOF", detail: "DELIVERED_SHORT requires a complete on-chain ERC20 settlement proof." });
+  }
+  const target = s.transfer.targetAmountAtomic;
+  const measured = s.proof?.verifiedAmountAtomic;
+  if (target && measured && /^[0-9]+$/.test(target) && /^[0-9]+$/.test(measured) && proofComplete(s.proof)) {
+    if (status === "DELIVERED" && BigInt(measured) < BigInt(target)) {
+      v.push({ code: "DELIVERED_BELOW_REQUEST", detail: "DELIVERED proof is below the requested amount." });
+    }
+    if (status === "DELIVERED_SHORT" && (BigInt(measured) <= 0n || BigInt(measured) >= BigInt(target))) {
+      v.push({ code: "SHORT_NOT_BELOW_REQUEST", detail: "DELIVERED_SHORT proof must be positive and below the requested amount." });
+    }
+  }
+  if (status !== "DELIVERED" && status !== "DELIVERED_SHORT" && s.proof && (s.proof.evidenceSource === "evm_erc20_transfer" || s.proof.verifiedAt)) {
     v.push({ code: "PROOF_WITHOUT_DELIVERY", detail: `A verified settlement proof exists but status is ${status}.` });
   }
   if (BOUND_STATUSES.has(status) && !s.attachment) {
@@ -167,7 +185,7 @@ export function checkTransferConsistency(s: ConsistencySnapshot, opts: { require
 
 /** Load the snapshot for one transfer (read-only). */
 export async function readConsistencySnapshot(db: Pick<Db, "select">, transferId: string): Promise<ConsistencySnapshot | null> {
-  const t = (await db.select({ id: transfers.id, status: transfers.status }).from(transfers).where(eq(transfers.id, transferId)).limit(1))[0];
+  const t = (await db.select({ id: transfers.id, status: transfers.status, targetAmountAtomic: transfers.targetAmountAtomic }).from(transfers).where(eq(transfers.id, transferId)).limit(1))[0];
   if (!t) return null;
   const [attachment, proof, attempts, transitions] = await Promise.all([
     db.select({ satoraSwapId: swapAttachments.satoraSwapId }).from(swapAttachments).where(eq(swapAttachments.transferId, transferId)).limit(1),

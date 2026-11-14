@@ -182,6 +182,12 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   const stepStatus = status === "AWAITING_NIM_APPROVAL" && s.handedOff === true ? "LIGHTNING_HANDOFF" : status;
   const steps = isStatus(stepStatus) ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, awaitingFinality, sourceVerified: Boolean(s.sourceVerifiedAtMs) }) : null;
 
+  // R7: verified on-chain but below the request. Say so; never "Delivered" alone.
+  if (status === "DELIVERED_SHORT") {
+    return s.receiptReady
+      ? { headline: "Delivered — less than requested", body: "Verified on Polygon, but they received less than you asked to send. The receipt below shows both amounts and the proof. Don't pay again for this.", tone: "warn", action: "receipt", steps }
+      : { headline: "Delivered — less than requested", body: "Verified on Polygon, below the requested amount. Loading the receipt…", tone: "warn", action: "wait", steps };
+  }
   if (s.phase === "delivered" || status === "DELIVERED") {
     return s.receiptReady
       ? { headline: "Delivered", body: "Verified on Polygon. The receipt below is the proof.", tone: "done", action: "receipt", steps }

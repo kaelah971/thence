@@ -109,12 +109,14 @@ describe("activity mapping", () => {
     expect(pillLabel("NEEDS_ATTENTION")).toBe("Needs your attention");
     for (const status of TRANSFER_STATUSES) {
       expect(pillLabel(status) === "Delivered").toBe(status === "DELIVERED");
-      expect(timelineFor(status).at(-1)?.state === "done").toBe(status === "DELIVERED");
+      // R7: a verified short delivery completes the timeline, but is never labelled "Delivered".
+      expect(timelineFor(status).at(-1)?.state === "done").toBe(status === "DELIVERED" || status === "DELIVERED_SHORT");
     }
+    expect(pillLabel("DELIVERED_SHORT")).toBe("Delivered — less than requested");
   });
 
-  it("requests receipts only for delivered transfers", () => {
-    for (const status of TRANSFER_STATUSES) expect(canHaveReceipt(status as TransferStatus)).toBe(status === "DELIVERED");
+  it("requests receipts only for verified deliveries (R7: including short ones)", () => {
+    for (const status of TRANSFER_STATUSES) expect(canHaveReceipt(status as TransferStatus)).toBe(status === "DELIVERED" || status === "DELIVERED_SHORT");
   });
 
   it("groups by friendly day", () => {

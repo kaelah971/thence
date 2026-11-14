@@ -82,7 +82,8 @@ export function safeExplorerUrl(value: unknown): string | null {
 export function isDisplayableProof(value: unknown): value is ProofView {
   const proof = record(value);
   if (!proof || typeof proof["proofId"] !== "string" || proof["proofId"].length === 0) return false;
-  if (proof["status"] !== "DELIVERED") return false;
+  // R7: a short delivery is shown only with a self-consistent disclosure.
+  if (proof["status"] !== "DELIVERED" && proof["status"] !== "DELIVERED_SHORT") return false;
   const verification = record(proof["verification"]);
   if (!verification || verification["overall"] !== "VERIFIED" || verification["source"] !== "VERIFIED" || verification["destination"] !== "VERIFIED") {
     return false;
@@ -129,7 +130,29 @@ export function isDisplayableProof(value: unknown): value is ProofView {
   ) {
     return false;
   }
-  return true;
+  return shortDisclosureConsistent(proof["status"], destination);
+}
+
+/**
+ * R7: DELIVERED must not carry a short marker; DELIVERED_SHORT must carry one
+ * with requested - verified === shortfall > 0. Anything else is never shown.
+ */
+function shortDisclosureConsistent(status: unknown, destination: Record<string, unknown>): boolean {
+  const requested = destination["requestedAmountAtomic"];
+  const verified = destination["verifiedAmountAtomic"] as string;
+  if (status === "DELIVERED") {
+    if (destination["deliveryOutcome"] !== undefined || destination["shortfallAtomic"] !== undefined) return false;
+    return typeof requested !== "string" || !ATOMIC.test(requested) || BigInt(verified) >= BigInt(requested);
+  }
+  const shortfall = destination["shortfallAtomic"];
+  return (
+    destination["deliveryOutcome"] === "SHORT" &&
+    typeof requested === "string" &&
+    POSITIVE_ATOMIC.test(requested) &&
+    typeof shortfall === "string" &&
+    POSITIVE_ATOMIC.test(shortfall) &&
+    BigInt(requested) - BigInt(verified) === BigInt(shortfall)
+  );
 }
 
 /** Keeps only fully verified items, without duplicates, in server order. */
@@ -149,6 +172,12 @@ export function displayableProofs(items: unknown, seen: ReadonlySet<string> = ne
 
 export interface ProofDisplay {
   id: string;
+  /** R7: "FULL" = at least the requested amount; "SHORT" = verified but below it. */
+  outcome: "FULL" | "SHORT";
+  /** "Delivered" or "Delivered — less than requested". */
+  outcomeLabel: string;
+  /** Exact shortfall, e.g. "0.000444"; null for a full delivery. */
+  usdcShortfall: string | null;
   network: "Polygon" | "Arbitrum";
   /** Exact NIM locked in the verified HTLC, e.g. "2.50". */
   nimSent: string;
@@ -247,8 +276,12 @@ export function toProofDisplay(proof: ProofView, now: Date = new Date()): ProofD
   const at = destination.verifiedAt;
   const dayLabel = dayLabelFor(at, now);
   const timeLabel = timeLabelFor(at);
+  const short = proof.status === "DELIVERED_SHORT" && typeof destination.shortfallAtomic === "string" ? humanAmount(destination.shortfallAtomic, "USDC") : null;
   return {
     id: proof.proofId,
+    outcome: short ? "SHORT" : "FULL",
+    outcomeLabel: short ? "Delivered — less than requested" : "Delivered",
+    usdcShortfall: short ? padAmountDecimals(short, "USDC") : null,
     network: destination.network,
     nimSent: formatLuna(BigInt(source.amountLuna)).text,
     nimFee: formatLuna(BigInt(source.feeLuna)).text,

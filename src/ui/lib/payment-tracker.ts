@@ -64,7 +64,7 @@ const RECONCILABLE: ReadonlySet<string> = new Set([
   "SERVER_FUNDED",
   "CLAIMING",
 ]);
-const FUNDED: ReadonlySet<string> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "DELIVERED"]);
+const FUNDED: ReadonlySet<string> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "DELIVERED", "DELIVERED_SHORT"]);
 
 export interface TrackerError {
   kind: ApiFailureKind;

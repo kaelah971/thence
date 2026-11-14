@@ -257,7 +257,7 @@ function ProofCard({ proof, onOpen }: { proof: ProofView; onOpen: () => void }):
       className={styles.card}
       onClick={onOpen}
       aria-haspopup="dialog"
-      aria-label={`${d.nimSent} NIM sent, ${d.usdcReceived} USDC received on ${d.network}, ${d.dateTimeLabel}. Delivered and verified. Open proof.`}
+      aria-label={`${d.nimSent} NIM sent, ${d.usdcReceived} USDC received on ${d.network}, ${d.dateTimeLabel}. ${d.outcome === "SHORT" ? `Delivered, ${d.usdcShortfall} USDC less than requested` : "Delivered"} and verified. Open proof.`}
     >
       <PairMark />
       <span className={styles.main}>
@@ -292,9 +292,9 @@ function ProofCard({ proof, onOpen }: { proof: ProofView; onOpen: () => void }):
         <span className={styles.amountUsdc}>
           {d.usdcReceived} <span className={styles.unit}>USDC</span>
         </span>
-        <span className={styles.delivered}>
+        <span className={styles.delivered} data-outcome={d.outcome}>
           <span className={styles.deliveredDot} />
-          Delivered
+          {d.outcomeLabel}
         </span>
       </span>
     </button>
@@ -357,9 +357,9 @@ function ProofDetail({ proof, preview }: { proof: ProofView; preview: boolean })
           for <strong className="tabular">{d.nimSent} NIM</strong> · on {d.network}
         </p>
         <div className={styles.heroBadges}>
-          <span className={styles.delivered}>
+          <span className={styles.delivered} data-outcome={d.outcome}>
             <span className={styles.deliveredDot} />
-            Delivered
+            {d.outcomeLabel}
           </span>
           <span className={styles.verified}>
             <Icon name="shield" size={13} strokeWidth={2.2} />
@@ -390,8 +390,11 @@ function ProofDetail({ proof, preview }: { proof: ProofView; preview: boolean })
         title={`Delivered on ${d.network}`}
         rows={[
           { label: "Recipient", value: <AddressDisplay address={d.recipient} />, block: true },
+          // R7: a short delivery always discloses requested, received and shortfall.
+          ...(d.outcome === "SHORT" && d.usdcRequested ? [{ label: "Requested", value: <span className="tabular">{d.usdcRequested} USDC</span> }] : []),
           { label: "USDC received", value: <span className="tabular">{d.usdcReceived} USDC</span> },
-          ...(d.usdcRequested && d.usdcRequested !== d.usdcReceived ? [{ label: "Requested", value: <span className="tabular">{d.usdcRequested} USDC</span> }] : []),
+          ...(d.outcome === "SHORT" && d.usdcShortfall ? [{ label: "Shortfall", value: <span className="tabular">{d.usdcShortfall} USDC</span> }] : []),
+          ...(d.outcome === "FULL" && d.usdcRequested && d.usdcRequested !== d.usdcReceived ? [{ label: "Requested", value: <span className="tabular">{d.usdcRequested} USDC</span> }] : []),
           ...(d.finalityLabel && !preview ? [{ label: "Finality", value: d.finalityLabel }] : []),
         ]}
         hash={d.destinationTxHash}

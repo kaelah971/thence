@@ -1,6 +1,8 @@
 /**
  * GET /api/transfers/:id/receipt — immutable delivery receipt (B4.4).
- * Owner-only. Before DELIVERED, returns a receipt-not-ready response.
+ * Owner-only. Before DELIVERED (or R7 DELIVERED_SHORT), returns a
+ * receipt-not-ready response. A short receipt states the requested, measured
+ * and shortfall amounts; it is never presented as an exact delivery.
  * No PDF or public sharing in this slice; the frontend renders the receipt.
  */
 import { NextResponse } from "next/server";
@@ -11,7 +13,7 @@ import { getDb } from "@/lib/db";
 import { and, eq } from "drizzle-orm";
 import { swapAttachments, transferProofs, transfers } from "@/db/schema";
 import type { TransferStatus } from "@/domain/transfers";
-import { explorerTxUrl } from "@/lib/settlement";
+import { explorerTxUrl, shortfallFor } from "@/lib/settlement";
 
 function parseLogIndexes(raw: string | null): number[] {
   if (!raw) return [];
@@ -47,7 +49,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const transfer = rows[0];
     if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
     const status = transfer.status as TransferStatus;
-    if (status !== "DELIVERED") {
+    if (status !== "DELIVERED" && status !== "DELIVERED_SHORT") {
       return NextResponse.json(
         { error: "RECEIPT_NOT_READY", message: "Receipt is available after verified delivery.", status },
         { status: 409, headers: { "Cache-Control": "no-store" } },
@@ -73,6 +75,14 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         { status: 409, headers: { "Cache-Control": "no-store" } },
       );
     }
+    // R7: the outcome is derived from the measured proof, never the quote.
+    const shortfall = shortfallFor(transfer.targetAmountAtomic, proof.verifiedAmountAtomic);
+    if ((status === "DELIVERED_SHORT") !== (shortfall !== null)) {
+      return NextResponse.json(
+        { error: "RECEIPT_NOT_READY", message: "Settlement evidence does not match the delivery outcome.", status },
+        { status: 409, headers: { "Cache-Control": "no-store" } },
+      );
+    }
     return NextResponse.json(
       {
         receipt: {
@@ -83,6 +93,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
           destination: transfer.destination,
           requestedAmountAtomic: transfer.targetAmountAtomic,
           verifiedAmountAtomic: proof.verifiedAmountAtomic,
+          status,
+          deliveryOutcome: shortfall ? "SHORT" : "FULL",
+          shortfallAtomic: shortfall?.shortfallAtomic ?? null,
           provider: transfer.quoteProvider ?? "satora",
           satoraSwapId: proof.satoraSwapId ?? bound[0]?.satoraSwapId ?? null,
           settlementTxHash: proof.evmTxHash,

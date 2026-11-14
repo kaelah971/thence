@@ -7,7 +7,7 @@ import { Skeleton, TextField } from "@/ui/components/primitives";
 import { addPerson } from "@/ui/lib/recipient-actions";
 import { Timeline } from "@/ui/components/Timeline";
 import { maskAddress } from "@/ui/lib/assets";
-import { humanAmount } from "@/ui/lib/transfers-api";
+import { humanAmount, shortReceiptAmounts } from "@/ui/lib/transfers-api";
 import { paymentProgress, type ProgressView } from "@/ui/lib/payment-progress";
 import { claimActionAllowed } from "@/domain/claim-deadline";
 import type { RouteId } from "@/domain/routes";
@@ -99,6 +99,8 @@ export function usePaymentProgress({
         nowMs: now,
       })
     : null;
+  // R7: measured short delivery (null for a full delivery).
+  const shortReceipt = state.receipt ? shortReceiptAmounts(state.receipt) : null;
   const finishNeeded = view?.action === "finish" && !previewMode && Boolean(ownerUserId);
   // Both clocks must agree: the server's claimReady AND the local deadline window.
   const finishAvailable = finishNeeded && state.claimReady && claimActionAllowed(window);
@@ -162,13 +164,19 @@ export function usePaymentProgress({
         <div className={styles.receipt}>
           <div className={styles.receiptHead}>
             <Icon name="receipt" size={18} />
-            <p>Receipt</p>
+            <p>{shortReceipt ? "Receipt — less than requested" : "Receipt"}</p>
           </div>
           <dl className={styles.receiptRows}>
             <div>
               <dt>Recipient</dt>
               <dd>{state.receipt.recipientName?.trim() || "Someone new"}</dd>
             </div>
+            {shortReceipt && (
+              <div>
+                <dt>You asked to send</dt>
+                <dd className="tabular">{`${shortReceipt.requested} ${state.receipt.asset}`}</dd>
+              </div>
+            )}
             <div>
               <dt>They received</dt>
               <dd className="tabular">
@@ -178,6 +186,12 @@ export function usePaymentProgress({
                 })()}
               </dd>
             </div>
+            {shortReceipt && (
+              <div>
+                <dt>Short by</dt>
+                <dd className="tabular">{`${shortReceipt.short} ${state.receipt.asset}`}</dd>
+              </div>
+            )}
             <div>
               <dt>Network</dt>
               <dd>{state.receipt.network}</dd>

@@ -346,7 +346,7 @@ export function useSettlement(): {
     // progressForStatus maps it to "finishing" until a receipt is loaded, so
     // without this a payment delivered while only tracking (Activity, reload,
     // server cron) never showed its receipt.
-    const phase: ProgressPhase = status === "DELIVERED" ? "delivered" : progressForStatus(status);
+    const phase: ProgressPhase = status === "DELIVERED" || status === "DELIVERED_SHORT" ? "delivered" : progressForStatus(status);
     // Display only: the tracker's latest on-chain verdict (e.g. waiting for
     // confirmations) lets the screen say WHY delivery isn't final yet. It
     // never moves the payment — DELIVERED still needs the server's proof.
@@ -376,7 +376,7 @@ export function useSettlement(): {
       if (runId.current !== id) return;
       if (receiptRes.ok) {
         receiptFor.current = input.transferId;
-        setState({ ...base, phase: "delivered", claimReady: false, message: copyFor("delivered").body, receipt: receiptRes.data.receipt, verifyVerdict: "VERIFIED" });
+        setState({ ...base, phase: "delivered", claimReady: false, message: copyFor("delivered").body, receipt: receiptRes.data.receipt, verifyVerdict: status === "DELIVERED_SHORT" ? "VERIFIED_SHORT" : "VERIFIED" });
         clearClaimRecord(input.transferId, input.ownerUserId);
         clearPending(input.ownerUserId, input.transferId);
         return;

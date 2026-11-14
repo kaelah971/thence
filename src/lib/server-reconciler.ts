@@ -239,6 +239,8 @@ export interface RunSummary {
   errors: Record<string, number>;
   /** R3: reconciled transfers currently in a stalled Lightning handoff (count only). */
   stalledHandoffs?: number;
+  /** R7: transfers committed as DELIVERED_SHORT in this run (absent when 0). */
+  shortDeliveries?: number;
 }
 
 /** One bounded reconciliation run. Safe to invoke concurrently and repeatedly. */
@@ -293,6 +295,10 @@ export async function runServerReconciliation(options: RunOptions = {}): Promise
             const settled = await verifySettlementCore(candidate.transferId, { kind: "system", ownerUserId: null });
             if (settled.status === "DELIVERED" && settled.verdict === "VERIFIED") {
               summary.advanced.push({ transferId: candidate.transferId, from: result.status, to: "DELIVERED" });
+            } else if (settled.status === "DELIVERED_SHORT" && settled.verdict === "VERIFIED_SHORT") {
+              // R7: terminal, audited partial delivery; counted separately so it is never read as exact.
+              summary.advanced.push({ transferId: candidate.transferId, from: result.status, to: "DELIVERED_SHORT" });
+              summary.shortDeliveries = (summary.shortDeliveries ?? 0) + 1;
             } else if (settled.verdict === "INVALID" || settled.verdict === "UNAVAILABLE") {
               const code = `SETTLEMENT_${settled.verdict}`;
               summary.errors[code] = (summary.errors[code] ?? 0) + 1;
