@@ -15,7 +15,7 @@ import { useActivityData } from "@/ui/lib/data";
 import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
 import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
-import { canHaveReceipt, getReceipt, getTransfer, humanAmount, toActivityItem } from "@/ui/lib/transfers-api";
+import { canHaveReceipt, getReceipt, getTransfer, humanAmount, shortReceiptAmounts, toActivityItem } from "@/ui/lib/transfers-api";
 import {
   getProviderEvidence,
   needsOwnerClaim,
@@ -240,7 +240,7 @@ export function Activity(): React.JSX.Element {
   );
 }
 
-const TERMINAL_DETAIL = new Set(["DELIVERED", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED", "EXPIRED_UNFUNDED"]);
+const TERMINAL_DETAIL = new Set(["DELIVERED", "DELIVERED_SHORT", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED", "EXPIRED_UNFUNDED"]);
 /**
  * P3: the shared tracker runs for every in-flight payment opened in Activity,
  * so funding that lands while the sheet is open surfaces Finish delivery at
@@ -715,7 +715,7 @@ function TransferDetail({
   );
 }
 
-/** Loaded only for DELIVERED transfers; the server confirms the proof. */
+/** Loaded only for DELIVERED / DELIVERED_SHORT transfers; the server confirms the proof. */
 function LiveReceipt({ item }: { item: ActivityItem }): React.JSX.Element {
   const session = useSession();
   const userId = session.status === "valid" ? session.me.user.id : null;
@@ -738,17 +738,30 @@ function LiveReceipt({ item }: { item: ActivityItem }): React.JSX.Element {
   }
   const receipt = resource.data.receipt;
   const received = humanAmount(receipt.verifiedAmountAtomic, receipt.asset);
+  const short = shortReceiptAmounts(receipt);
   return (
     <div className={styles.receipt}>
       <div className={styles.receiptHead}>
         <Icon name="receipt" size={18} />
-        <p>Receipt</p>
+        <p>{short ? "Receipt — less than requested" : "Receipt"}</p>
       </div>
       <dl className={styles.receiptRows}>
+        {short && (
+          <div>
+            <dt>You asked to send</dt>
+            <dd className="tabular">{`${short.requested} ${receipt.asset}`}</dd>
+          </div>
+        )}
         <div>
           <dt>They received</dt>
           <dd className="tabular">{received ? `${received} ${receipt.asset}` : "—"}</dd>
         </div>
+        {short && (
+          <div>
+            <dt>Short by</dt>
+            <dd className="tabular">{`${short.short} ${receipt.asset}`}</dd>
+          </div>
+        )}
         <div>
           <dt>Network</dt>
           <dd>{receipt.network}</dd>

@@ -131,7 +131,7 @@ export function decideResumeAction(
     if (record && !record.outcomeReported) return { action: "none", phase: "checking" };
     return { action: "none", phase: "ready" };
   }
-  if (status === "DELIVERED") {
+  if (status === "DELIVERED" || status === "DELIVERED_SHORT") {
     // Nothing left for the handoff to do; the settlement view owns Delivered.
     // Idle handoff state keeps the receipt/progress visible without a
     // misleading attention banner.

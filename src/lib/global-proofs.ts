@@ -50,6 +50,11 @@ export interface PublicProofRow {
   sourceRecordKind?: "reconciliation" | "historical-recovery" | null;
   /** Recovery evidence's independent destination re-check (historical-recovery only). */
   recoveredDestination?: unknown;
+  /**
+   * R7: evidence of the single audited SETTLEMENT_VERIFIED_SHORT transition
+   * (written by the settlement verifier in the same transaction as the proof).
+   */
+  shortDeliveryEvidence?: unknown;
 }
 
 export interface PublicProofMethod {
@@ -209,9 +214,12 @@ function verifiedNimiqSourceFor(row: PublicProofRow, transactionHash: string): V
   };
 }
 
+/** R7: DELIVERED = verified amount >= requested; DELIVERED_SHORT = 0 < verified < requested. */
+export type PublicProofStatus = "DELIVERED" | "DELIVERED_SHORT";
+
 export interface PublicProofView {
   proofId: string;
-  status: "DELIVERED";
+  status: PublicProofStatus;
   destination: {
     asset: typeof PUBLIC_PROOF_ASSET;
     network: PublicProofNetwork;
@@ -227,6 +235,12 @@ export interface PublicProofView {
     finalityLevel: string;
     verifiedAt: string;
     explorerTxUrl: string;
+    /**
+     * R7: present ONLY on DELIVERED_SHORT records (full-delivery records keep
+     * their exact pre-R7 shape). shortfall = requested - verified, exact atomic.
+     */
+    deliveryOutcome?: "SHORT";
+    shortfallAtomic?: string;
   };
   verification: {
     destination: "VERIFIED";
@@ -380,7 +394,9 @@ export function isPublishableGlobalProof(row: PublicProofRow, config: PublicProo
   if (sourceEvidence === null || sourceEvidence.network !== "mainnet") return false;
   const identity = routeIdentityFor(row);
   const proof = row.proof;
-  if (!identity || row.transfer.status !== "DELIVERED") return false;
+  if (!identity) return false;
+  const outcome = deliveryOutcomeFor(row);
+  if (outcome === null) return false;
   if (
     proof.evidenceSource !== "evm_erc20_transfer" ||
     proof.chainId !== identity.chainId ||
@@ -398,7 +414,6 @@ export function isPublishableGlobalProof(row: PublicProofRow, config: PublicProo
     !proof.verifiedAmountAtomic ||
     !isAtomic(proof.verifiedAmountAtomic) ||
     !isAtomic(row.transfer.targetAmountAtomic) ||
-    BigInt(proof.verifiedAmountAtomic) < BigInt(row.transfer.targetAmountAtomic) ||
     !EVM_ADDRESS_RE.test(row.transfer.destination) ||
     proof.recipient.toLowerCase() !== row.transfer.destination.toLowerCase() ||
     !proof.blockHash ||
@@ -416,6 +431,38 @@ export function isPublishableGlobalProof(row: PublicProofRow, config: PublicProo
     policy !== null &&
     publishedFinalityLevel(row, policy) !== null
   );
+}
+
+/**
+ * R7: which delivery outcome a row may publish as, or null.
+ * - DELIVERED: status DELIVERED and verified >= requested (pre-R7 rule).
+ * - DELIVERED_SHORT: status DELIVERED_SHORT, 0 < verified < requested, and the
+ *   audited SETTLEMENT_VERIFIED_SHORT transition proves the claim redeemed
+ *   THIS swap and records exactly this proof's tx, amount, chain and finality.
+ * Anything else (including a short amount under DELIVERED) never publishes.
+ */
+function deliveryOutcomeFor(row: PublicProofRow): PublicProofStatus | null {
+  const proof = row.proof;
+  const target = row.transfer.targetAmountAtomic;
+  const measured = proof.verifiedAmountAtomic;
+  if (!measured || !isAtomic(measured) || !isAtomic(target)) return null;
+  const got = BigInt(measured);
+  const req = BigInt(target);
+  if (row.transfer.status === "DELIVERED") return got >= req ? "DELIVERED" : null;
+  if (row.transfer.status !== "DELIVERED_SHORT" || got <= 0n || got >= req) return null;
+  const raw = row.shortDeliveryEvidence;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const e = raw as Record<string, unknown>;
+  const ok =
+    e["swapIdentity"] === "BOUND_REDEEM_MATCH" &&
+    typeof e["claimTxHash"] === "string" &&
+    e["claimTxHash"].toLowerCase() === proof.evmTxHash?.toLowerCase() &&
+    e["chainId"] === proof.chainId &&
+    e["verifiedAmountAtomic"] === measured &&
+    e["requestedAmountAtomic"] === target &&
+    e["shortfallAtomic"] === (req - got).toString() &&
+    e["finalityLevel"] === proof.finalityLevel;
+  return ok ? "DELIVERED_SHORT" : null;
 }
 
 /**
@@ -480,9 +527,14 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
   const source = verifiedNimiqSourceFor(row, sourceHash.transactionHash)!;
   const sourceEvidence: PublicProofSourceEvidence = "VERIFIED";
   const finalityLevel = publishedFinalityLevel(row, policy)!;
+  const status = deliveryOutcomeFor(row)!;
+  const short =
+    status === "DELIVERED_SHORT"
+      ? { deliveryOutcome: "SHORT" as const, shortfallAtomic: (BigInt(row.transfer.targetAmountAtomic) - BigInt(proof.verifiedAmountAtomic!)).toString() }
+      : {};
   return {
     proofId: proof.id,
-    status: "DELIVERED",
+    status,
     destination: {
       asset: PUBLIC_PROOF_ASSET,
       network: identity.network,
@@ -498,6 +550,7 @@ function publicProofFromRow(row: PublicProofRow, config: PublicProofPublicationC
       finalityLevel,
       verifiedAt: verifiedAt.toISOString(),
       explorerTxUrl: explorerTxUrl(identity.chainId, txHash),
+      ...short,
     },
     verification: {
       destination: "VERIFIED",
@@ -590,6 +643,18 @@ function sourceVerifiedEvidenceSql(): SQL {
   )`;
 }
 
+/** R7: the audited short-settlement transition for this transfer's own proof row. */
+function shortTransitionMatchSql(): SQL {
+  const e = transferTransitions.evidence;
+  return sql`${transferTransitions.transferId} = ${transfers.id}
+      AND ${transferTransitions.toStatus} = 'DELIVERED_SHORT'
+      AND ${transferTransitions.reasonCode} = 'SETTLEMENT_VERIFIED_SHORT'
+      AND ${e}->>'swapIdentity' = 'BOUND_REDEEM_MATCH'
+      AND lower(${e}->>'claimTxHash') = lower(${transferProofs.evmTxHash})
+      AND ${e}->>'verifiedAmountAtomic' = ${transferProofs.verifiedAmountAtomic}
+      AND ${e}->>'requestedAmountAtomic' = ${transfers.targetAmountAtomic}`;
+}
+
 /** Shared projection for list and detail reads (identical publication inputs). */
 function publicProofSelection() {
   const transitionExists = sql`EXISTS (SELECT 1 FROM ${transferTransitions} WHERE ${transitionMarkerMatchSql()})`;
@@ -608,6 +673,8 @@ function publicProofSelection() {
       WHEN ${transitionExists} THEN 'reconciliation'
       WHEN ${recoveryExists} THEN 'historical-recovery'
       ELSE NULL END`,
+    shortDeliveryEvidence: sql<unknown>`(SELECT ${transferTransitions.evidence} FROM ${transferTransitions}
+      WHERE ${shortTransitionMatchSql()} ORDER BY ${transferTransitions.createdAt} DESC LIMIT 1)`,
     recoveredDestination: sql<unknown>`(SELECT jsonb_build_object(
         'destination', ${transferSourceEvidence.evidence}->'destination',
         'sourceRpc', ${transferSourceEvidence.evidence}->'source'->>'rpcOperator')
@@ -695,8 +762,20 @@ function publicationCondition(config: PublicProofPublicationConfig): SQL {
     );
   }
   const routeCondition = routeConditions.length > 0 ? or(...routeConditions) : sql`false`;
+  // R7: full deliveries keep the pre-R7 rule; short deliveries need their own
+  // status, a positive below-request amount and the audited bound-swap redeem.
+  const amount = sql`(${transferProofs.verifiedAmountAtomic})::numeric`;
+  const target = sql`(${transfers.targetAmountAtomic})::numeric`;
+  const outcomeCondition = or(
+    and(eq(transfers.status, "DELIVERED"), sql`${amount} >= ${target}`)!,
+    and(
+      eq(transfers.status, "DELIVERED_SHORT"),
+      sql`${amount} > 0`,
+      sql`${amount} < ${target}`,
+      sql`EXISTS (SELECT 1 FROM ${transferTransitions} WHERE ${shortTransitionMatchSql()})`,
+    )!,
+  )!;
   return and(
-    eq(transfers.status, "DELIVERED"),
     eq(transferProofs.evidenceSource, "evm_erc20_transfer"),
     isNotNull(transferProofs.evmTxHash),
     isNotNull(transferProofs.tokenContract),
@@ -713,7 +792,7 @@ function publicationCondition(config: PublicProofPublicationConfig): SQL {
     sql`${transfers.targetAmountAtomic} ~ '^[0-9]+$'`,
     sql`${transferProofs.blockHash} ~ '^0x[0-9a-fA-F]{64}$'`,
     sql`lower(${transferProofs.recipient}) = lower(${transfers.destination})`,
-    sql`(${transferProofs.verifiedAmountAtomic})::numeric >= (${transfers.targetAmountAtomic})::numeric`,
+    outcomeCondition,
     routeCondition,
     sourceVerificationReady,
   )!;

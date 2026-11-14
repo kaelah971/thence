@@ -36,8 +36,12 @@ describe("transfer status presentation", () => {
       const delivered = pillLabel(status) === "Delivered";
       expect(delivered).toBe(status === "DELIVERED");
       const finalStep = timelineFor(status).at(-1);
-      expect(finalStep?.state === "done").toBe(status === "DELIVERED");
+      // R7: a verified short delivery is complete too, but never labelled "Delivered".
+      expect(finalStep?.state === "done").toBe(status === "DELIVERED" || status === "DELIVERED_SHORT");
+      expect(finalStep?.label === "Delivered").toBe(status !== "DELIVERED_SHORT");
     }
+    expect(pillLabel("DELIVERED_SHORT")).toBe("Delivered — less than requested");
+    expect(timelineFor("DELIVERED_SHORT").at(-1)?.label).toBe("Delivered — less than requested");
   });
 
   it("never labels an unresolved outcome as failed or approved", () => {

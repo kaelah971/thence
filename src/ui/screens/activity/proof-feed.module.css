@@ -265,6 +265,13 @@
   white-space: nowrap;
 }
 
+/* R7: delivered below the requested amount, never styled as a full delivery. */
+.delivered[data-outcome="SHORT"] {
+  background: var(--status-wait-bg);
+  color: var(--status-wait);
+  white-space: normal;
+}
+
 .deliveredDot {
   width: 6px;
   height: 6px;

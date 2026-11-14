@@ -759,6 +759,59 @@ export function matchHtlcLifecycleLog(log: ChainLog, expectedSwapKey: string): b
   return false;
 }
 
+export type BoundRedeemVerdict = "MATCH" | "NO_REDEEM" | "IDENTITY_UNAVAILABLE";
+
+/**
+ * R7: does this claim receipt redeem THE bound swap? Requires a SwapRedeemed
+ * log emitted by the pinned HTLC the provider named, whose topic[1] is the
+ * bound hash lock and topic[2] the complete SwapKey recomputed from the
+ * provider's HTLC terms and the bound claim deadline. Pure; never reads or
+ * returns the redeem data (the preimage).
+ */
+export function matchBoundSwapRedeem(
+  logs: ChainLog[],
+  input: {
+    chainId: number;
+    htlcAddress: string | null | undefined;
+    hashLock: string;
+    locktimeSec: number | null;
+    tokenAddress: string | null | undefined;
+    amountAtomic: string | null | undefined;
+    refundAddress: string | null | undefined;
+    claimAddress: string | null | undefined;
+  },
+): BoundRedeemVerdict {
+  if (
+    !isTrustedHtlc(input.chainId, input.htlcAddress) ||
+    !HASH_LOCK_RE.test(input.hashLock) ||
+    input.locktimeSec === null || !Number.isSafeInteger(input.locktimeSec) || input.locktimeSec <= 0 ||
+    !input.tokenAddress || !EVM_ADDRESS_RE.test(input.tokenAddress) ||
+    !input.amountAtomic || !/^[0-9]+$/.test(input.amountAtomic) || BigInt(input.amountAtomic) <= 0n ||
+    !input.refundAddress || !EVM_ADDRESS_RE.test(input.refundAddress) ||
+    !input.claimAddress || !EVM_ADDRESS_RE.test(input.claimAddress)
+  ) {
+    return "IDENTITY_UNAVAILABLE";
+  }
+  const key = computeHtlcSwapKey({
+    hashLock: input.hashLock,
+    amount: BigInt(input.amountAtomic),
+    token: input.tokenAddress,
+    refundAddress: input.refundAddress,
+    claimAddress: input.claimAddress,
+    timelock: BigInt(input.locktimeSec),
+  }).toLowerCase();
+  const htlc = input.htlcAddress!.toLowerCase();
+  const lock = input.hashLock.toLowerCase();
+  const hit = logs.some(
+    (l) =>
+      l.address.toLowerCase() === htlc &&
+      l.topics[0]?.toLowerCase() === SWAP_REDEEMED_EVENT_TOPIC &&
+      l.topics[1]?.toLowerCase() === lock &&
+      l.topics[2]?.toLowerCase() === key,
+  );
+  return hit ? "MATCH" : "NO_REDEEM";
+}
+
 /**
  * P3: confirmations the fund tx needs before the owner may reveal the
  * preimage. Polygon reorgs this deep are not expected; the margin protects
@@ -1292,6 +1345,8 @@ export async function verifyHtlcRefund(input: {
 
 export type SettlementVerdict =
   | "VERIFIED"
+  // R7: finalized settlement of the bound swap, measured below the request.
+  | "VERIFIED_SHORT"
   | "PENDING"
   | "INSUFFICIENT_CONFIRMATIONS"
   | "INCONCLUSIVE"
@@ -1324,6 +1379,23 @@ export interface SettlementResult {
   claimTxHash: string | null;
   proof: SettlementProofView | null;
   confirmations: number | null;
+  /** R7: present only for VERIFIED_SHORT (exact atomic strings, never quote-derived). */
+  shortfall?: ShortfallView | null;
+}
+
+export interface ShortfallView {
+  requestedAtomic: string;
+  receivedAtomic: string;
+  shortfallAtomic: string;
+}
+
+/** R7: shortfall from the stored proof, or null when it is not a short delivery. */
+export function shortfallFor(requestedAtomic: string, receivedAtomic: string | null | undefined): ShortfallView | null {
+  if (!receivedAtomic || !/^[0-9]+$/.test(requestedAtomic) || !/^[0-9]+$/.test(receivedAtomic)) return null;
+  const req = BigInt(requestedAtomic);
+  const got = BigInt(receivedAtomic);
+  if (got <= 0n || got >= req) return null;
+  return { requestedAtomic: req.toString(), receivedAtomic: got.toString(), shortfallAtomic: (req - got).toString() };
 }
 
 const CLAIM_PROGRESS = new Set(["clientredeeming", "clientredeemed", "serverredeemed"]);
@@ -1439,6 +1511,35 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
       claimTxHash: view.claimTxHash,
       proof: view,
       confirmations: null,
+    };
+  }
+
+  // R7: an already short-delivered transfer replays its stored proof.
+  if (current === "DELIVERED_SHORT") {
+    const view = stored ? toProofView(transfer.id, attachment.satoraSwapId, stored) : null;
+    const shortfall = view ? shortfallFor(transfer.targetAmountAtomic, view.verifiedAmountAtomic) : null;
+    if (!view || !shortfall) {
+      return {
+        verdict: "INCONCLUSIVE",
+        reason: "Transfer is marked short-delivered without structured settlement evidence.",
+        transferId,
+        status: current,
+        providerStatus: "unknown",
+        claimTxHash: null,
+        proof: null,
+        confirmations: null,
+      };
+    }
+    return {
+      verdict: "VERIFIED_SHORT",
+      reason: "Already verified (below the requested amount).",
+      transferId,
+      status: current,
+      providerStatus: "unknown",
+      claimTxHash: view.claimTxHash,
+      proof: view,
+      confirmations: null,
+      shortfall,
     };
   }
 
@@ -1622,10 +1723,29 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
       confirmations: null,
     };
   }
-  if (!match.matched) {
+  // R7: a positive but short output is decided only AFTER the reorg and
+  // finality checks below, and only when the receipt redeems the bound swap.
+  const isShort = !match.matched;
+  let boundRedeem: BoundRedeemVerdict | null = null;
+  if (isShort) {
+    boundRedeem = matchBoundSwapRedeem(receipt.logs, {
+      chainId,
+      htlcAddress: facts.evmHtlcAddress,
+      hashLock: attachment.paymentHash,
+      locktimeSec: attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null,
+      tokenAddress: facts.evmHtlcTokenAddress,
+      amountAtomic: facts.evmHtlcAmountAtomic,
+      refundAddress: facts.evmHtlcRefundAddress,
+      claimAddress: facts.evmHtlcClaimAddress,
+    });
+  }
+  if (isShort && boundRedeem !== "MATCH") {
     return {
       verdict: "INVALID",
-      reason: "Verified recipient output is below the requested atomic amount.",
+      reason:
+        boundRedeem === "IDENTITY_UNAVAILABLE"
+          ? "Verified recipient output is below the requested atomic amount; the bound swap identity is unavailable, so it is not classified as a short delivery."
+          : "Verified recipient output is below the requested atomic amount, and the claim does not redeem the bound swap.",
       transferId,
       status: current,
       providerStatus: facts.status,
@@ -1766,6 +1886,21 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
         confirmations,
       } satisfies SettlementResult;
     }
+    if (freshStatus === "DELIVERED_SHORT") {
+      const prior = await tx.select().from(transferProofs).where(eq(transferProofs.transferId, fresh.id)).limit(1);
+      const view = prior[0] ? toProofView(fresh.id, attachment.satoraSwapId, prior[0]) : null;
+      return {
+        verdict: "VERIFIED_SHORT",
+        reason: "Already verified (below the requested amount).",
+        transferId,
+        status: freshStatus,
+        providerStatus: facts.status,
+        claimTxHash: claimTx,
+        proof: view,
+        confirmations,
+        shortfall: view ? shortfallFor(fresh.targetAmountAtomic, view.verifiedAmountAtomic) : null,
+      } satisfies SettlementResult;
+    }
     if (freshStatus !== "CLAIMING" && freshStatus !== "SERVER_FUNDED") {
       throw new AuthError(409, "NOT_VERIFIABLE", "Transfer left a verifiable state before commit.");
     }
@@ -1815,9 +1950,22 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
           verifiedAt,
         },
       });
-    const next = transition(freshStatus, "DELIVERED", {
-      evidence: { destinationTxHash: claimTx, amountVerified: true },
-    });
+    // R7: the short outcome is re-derived from the locked row's own amount.
+    const freshRequired = BigInt(fresh.targetAmountAtomic);
+    const short = match.totalAtomic < freshRequired;
+    if (short !== isShort) throw new AuthError(409, "NOT_VERIFIABLE", "Transfer amount changed before commit.");
+    const next = short
+      ? transition(freshStatus, "DELIVERED_SHORT", {
+          shortEvidence: {
+            destinationTxHash: claimTx,
+            requestedAtomic: freshRequired,
+            receivedAtomic: match.totalAtomic,
+            swapIdentityVerified: boundRedeem === "MATCH",
+          },
+        })
+      : transition(freshStatus, "DELIVERED", {
+          evidence: { destinationTxHash: claimTx, amountVerified: true },
+        });
     await tx.update(transfers).set({ status: next, updatedAt: new Date() }).where(eq(transfers.id, fresh.id));
     // P5 audit: same transaction as the proof row and the status write, so a
     // DELIVERED transfer always carries both (or neither, on rollback).
@@ -1827,7 +1975,7 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
       to: next,
       actor: actor.kind === "system" ? "reconciler" : "owner",
       actorUserId: actor.ownerUserId,
-      reasonCode: "SETTLEMENT_VERIFIED",
+      reasonCode: short ? "SETTLEMENT_VERIFIED_SHORT" : "SETTLEMENT_VERIFIED",
       evidence: {
         providerStatus: facts.status,
         chainId,
@@ -1836,9 +1984,30 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
         logIndexes: match.logIndexes,
         verifiedAmountAtomic: match.totalAtomic.toString(),
         finalityLevel,
+        ...(short
+          ? {
+              requestedAmountAtomic: freshRequired.toString(),
+              shortfallAtomic: (freshRequired - match.totalAtomic).toString(),
+              swapIdentity: "BOUND_REDEEM_MATCH",
+            }
+          : {}),
       },
     });
     const saved = await tx.select().from(transferProofs).where(eq(transferProofs.transferId, fresh.id)).limit(1);
+    const savedView = saved[0] ? toProofView(fresh.id, attachment.satoraSwapId, saved[0]) : null;
+    if (short) {
+      return {
+        verdict: "VERIFIED_SHORT",
+        reason: "Destination settlement verified on-chain, below the requested amount.",
+        transferId,
+        status: next,
+        providerStatus: facts.status,
+        claimTxHash: claimTx,
+        proof: savedView,
+        confirmations,
+        shortfall: shortfallFor(fresh.targetAmountAtomic, match.totalAtomic.toString()),
+      } satisfies SettlementResult;
+    }
     return {
       verdict: "VERIFIED",
       reason: "Destination settlement independently verified on-chain.",
@@ -1846,7 +2015,7 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
       status: next,
       providerStatus: facts.status,
       claimTxHash: claimTx,
-      proof: saved[0] ? toProofView(fresh.id, attachment.satoraSwapId, saved[0]) : null,
+      proof: savedView,
       confirmations,
     } satisfies SettlementResult;
   });

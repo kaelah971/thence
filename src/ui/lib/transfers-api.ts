@@ -42,6 +42,9 @@ export interface ApiReceipt {
   destination: string;
   requestedAmountAtomic: string;
   verifiedAmountAtomic: string;
+  /** R7: FULL = at least the requested amount; SHORT = verified but below it. */
+  deliveryOutcome?: "FULL" | "SHORT";
+  shortfallAtomic?: string | null;
   settlementTxHash: string;
   chainId: number;
   verifiedAt: string;
@@ -59,9 +62,24 @@ export function getTransfer(id: string, opts: Opts = {}): Promise<ApiResult<{ tr
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}`, opts);
 }
 
-/** Receipts exist only for verified deliveries. Never request one before. */
+/** Receipts exist only for verified deliveries (R7: including verified short ones). Never request one before. */
 export function canHaveReceipt(status: TransferStatus): boolean {
-  return status === "DELIVERED";
+  return status === "DELIVERED" || status === "DELIVERED_SHORT";
+}
+
+/**
+ * R7: display amounts for a verified SHORT receipt, from the server's measured
+ * values only. Null for a full delivery (or anything malformed), so a short
+ * delivery can never be rendered as an exact-amount receipt by accident.
+ */
+export function shortReceiptAmounts(
+  receipt: Pick<ApiReceipt, "deliveryOutcome" | "shortfallAtomic" | "requestedAmountAtomic" | "verifiedAmountAtomic" | "asset">,
+): { requested: string; received: string; short: string } | null {
+  if (receipt.deliveryOutcome !== "SHORT" || !receipt.shortfallAtomic) return null;
+  const requested = humanAmount(receipt.requestedAmountAtomic, receipt.asset);
+  const received = humanAmount(receipt.verifiedAmountAtomic, receipt.asset);
+  const short = humanAmount(receipt.shortfallAtomic, receipt.asset);
+  return requested && received && short ? { requested, received, short } : null;
 }
 
 export function getReceipt(id: string, opts: Opts = {}): Promise<ApiResult<{ receipt: ApiReceipt }>> {

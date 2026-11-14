@@ -21,6 +21,7 @@ import { apiRequest, type ApiOptions, type ApiResult } from "./api";
 
 export type SettlementVerdict =
   | "VERIFIED"
+  | "VERIFIED_SHORT"
   | "PENDING"
   | "INSUFFICIENT_CONFIRMATIONS"
   | "INCONCLUSIVE"
@@ -343,6 +344,7 @@ export function progressForStatus(status: string, opts: { receiptReady?: boolean
     case "CLAIMING":
       return "finishing";
     case "DELIVERED":
+    case "DELIVERED_SHORT":
       return opts.receiptReady === true ? "delivered" : "finishing";
     case "NEEDS_ATTENTION":
     case "FAILED":
@@ -407,6 +409,8 @@ export function verdictCopy(verdict: SettlementVerdict): string {
   switch (verdict) {
     case "VERIFIED":
       return "Delivery is confirmed on their network.";
+    case "VERIFIED_SHORT":
+      return "Delivery is confirmed on their network, but they received less than requested.";
     case "PENDING":
       return "The payment is still being confirmed. Check back shortly.";
     case "INSUFFICIENT_CONFIRMATIONS":

@@ -21,6 +21,8 @@ export const STAGE_OF: Record<TransferStatus, TransferStage> = {
   NEEDS_ATTENTION: "attention",
   FAILED: "attention",
   DELIVERED: "delivered",
+  // R7: a verified delivery, but below the request (never the plain "Delivered" pill).
+  DELIVERED_SHORT: "delivered",
 };
 
 export const STAGE_LABEL: Record<Exclude<TransferStage, "closed">, string> = {
@@ -69,6 +71,7 @@ export function pillLabel(status: TransferStatus): string {
   // Funds are being locked on Polygon; the owner's tap comes next.
   if (status === "CLIENT_FUNDED") return "Preparing delivery";
   if (status === "LIGHTNING_HANDOFF") return "Confirming approval";
+  if (status === "DELIVERED_SHORT") return USER_FACING_LABEL.DELIVERED_SHORT;
   const stage = STAGE_OF[status];
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];
 }
@@ -127,6 +130,7 @@ function progressIndex(status: TransferStatus, ctx: TimelineContext): number {
     case "CLAIMING":
       return 2;
     case "DELIVERED":
+    case "DELIVERED_SHORT":
       return 4;
     default:
       // Preparing, approval, handoff, checking, attention and closed states:
@@ -167,7 +171,10 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
       label: "Verifying on Polygon",
       detail: ctx.awaitingFinality ? "Waiting for confirmations." : "Usually about 10 minutes.",
     },
-    delivered: { label: "Delivered", detail: "Confirmed on their network." },
+    delivered:
+      status === "DELIVERED_SHORT"
+        ? { label: "Delivered — less than requested", detail: "Confirmed on their network, below the requested amount." }
+        : { label: "Delivered", detail: "Confirmed on their network." },
   };
   return STEP_ORDER.map((key, i) => {
     let state: StepState = i < index ? "done" : i === index ? "current" : "upcoming";

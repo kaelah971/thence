@@ -207,3 +207,40 @@ describe("preview fixtures", () => {
     }
   });
 });
+
+describe("R7 short deliveries in the public feed", () => {
+  const short = (destination: Partial<ProofView["destination"]> = {}) =>
+    proof({ status: "DELIVERED_SHORT", destination: { requestedAmountAtomic: "1000000", verifiedAmountAtomic: "999556", shortfallAtomic: "444", deliveryOutcome: "SHORT", ...destination } });
+
+  it("shows a self-consistent short delivery with its own label and exact amounts", () => {
+    expect(isDisplayableProof(short())).toBe(true);
+    const d = toProofDisplay(short());
+    expect(d.outcome).toBe("SHORT");
+    expect(d.outcomeLabel).toBe("Delivered — less than requested");
+    expect(d.usdcRequested).toBe("1.00");
+    expect(d.usdcReceived).toBe("0.999556");
+    expect(d.usdcShortfall).toBe("0.000444");
+  });
+
+  it("drops any short record whose disclosure does not add up", () => {
+    expect(isDisplayableProof(short({ shortfallAtomic: "443" }))).toBe(false);
+    const without = (key: "shortfallAtomic" | "deliveryOutcome"): ProofView => {
+      const p = short();
+      const destination = { ...p.destination };
+      delete destination[key];
+      return { ...p, destination };
+    };
+    expect(isDisplayableProof(without("shortfallAtomic"))).toBe(false);
+    expect(isDisplayableProof(without("deliveryOutcome"))).toBe(false);
+    expect(isDisplayableProof(short({ verifiedAmountAtomic: "1000000", shortfallAtomic: "0" }))).toBe(false);
+  });
+
+  it("never lets a full-delivery record carry a short marker or a below-request amount", () => {
+    expect(isDisplayableProof(proof({ destination: { shortfallAtomic: "444", deliveryOutcome: "SHORT" } }))).toBe(false);
+    expect(isDisplayableProof(proof({ destination: { requestedAmountAtomic: "1000000", verifiedAmountAtomic: "999556" } }))).toBe(false);
+    const full = toProofDisplay(proof());
+    expect(full.outcome).toBe("FULL");
+    expect(full.outcomeLabel).toBe("Delivered");
+    expect(full.usdcShortfall).toBeNull();
+  });
+});

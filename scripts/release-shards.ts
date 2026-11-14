@@ -70,6 +70,7 @@ export const SHARDS: Record<string, string[]> = {
     "p6-server-reconciler",
     "r3-handoff-stall",
     "r4-host-swap-id",
+    "r7-short-delivery",
     "f41-prepare-flow",
     "f41-recovery-vault",
   ],

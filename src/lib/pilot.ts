@@ -171,7 +171,7 @@ const FUNDING_ACTIVE_EXPOSURE: ReadonlySet<TransferStatus> = new Set([
   "CLAIMING",
   "NEEDS_ATTENTION",
 ]);
-const ACTUAL_SPEND: ReadonlySet<TransferStatus> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "DELIVERED"]);
+const ACTUAL_SPEND: ReadonlySet<TransferStatus> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING", "DELIVERED", "DELIVERED_SHORT"]);
 export function isFundingExposureStatus(status: string): boolean {
   return FUNDING_ACTIVE_EXPOSURE.has(status as TransferStatus);
 }

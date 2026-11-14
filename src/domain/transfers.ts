@@ -13,6 +13,9 @@
  *    that quote; a fresh QUOTE is required).
  * 5. A single BOLT11 invoice receives one handoff attempt (no re-handoff
  *    edge from LIGHTNING_HANDOFF back to itself or to a new handoff).
+ * 6. DELIVERED_SHORT (R7) is a verified delivery BELOW the requested amount.
+ *    It is never DELIVERED: it requires the same destination evidence plus a
+ *    measured shortfall (`assertShortDeliveryEvidence()`), and is terminal.
  */
 
 export const TRANSFER_STATUSES = [
@@ -31,6 +34,10 @@ export const TRANSFER_STATUSES = [
   "NEEDS_ATTENTION",
   "REFUNDED",
   "DELIVERED",
+  // R7: settlement independently verified on-chain for the bound swap, but the
+  // recipient's measured output is below the requested amount. Terminal and
+  // never counted as an exact delivery.
+  "DELIVERED_SHORT",
   "FAILED",
   // P4: authorized payment whose provider swap expired with independently
   // verified evidence that nothing was funded on the provider/EVM side.
@@ -46,6 +53,7 @@ export const TERMINAL_STATUSES: ReadonlySet<TransferStatus> = new Set([
   "USER_CANCELLED",
   "REFUNDED",
   "DELIVERED",
+  "DELIVERED_SHORT",
   "FAILED",
   "EXPIRED_UNFUNDED",
 ]);
@@ -79,11 +87,12 @@ export const TRANSITIONS: Readonly<Record<TransferStatus, ReadonlyArray<Transfer
   // automatic advance).
   RECONCILING: ["CLIENT_FUNDED", "SERVER_FUNDED", "NEEDS_ATTENTION", "CLAIMING", "REFUNDED", "OUTCOME_UNKNOWN", "EXPIRED_UNFUNDED"],
   CLIENT_FUNDED: ["SERVER_FUNDED", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED"],
-  SERVER_FUNDED: ["CLAIMING", "DELIVERED", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED"],
-  CLAIMING: ["DELIVERED", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED", "FAILED"],
+  SERVER_FUNDED: ["CLAIMING", "DELIVERED", "DELIVERED_SHORT", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED"],
+  CLAIMING: ["DELIVERED", "DELIVERED_SHORT", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION", "REFUNDED", "FAILED"],
   NEEDS_ATTENTION: ["RECONCILING", "REFUNDED", "FAILED"],
   REFUNDED: [],
   DELIVERED: [],
+  DELIVERED_SHORT: [],
   FAILED: [],
   EXPIRED_UNFUNDED: [],
 };
@@ -120,6 +129,34 @@ export function assertDeliveredEvidence(evidence: DestinationEvidence): void {
   }
 }
 
+export interface ShortDeliveryEvidence {
+  destinationTxHash?: string | null;
+  /** Requested (target) atomic amount of the transfer. */
+  requestedAtomic?: bigint | null;
+  /** Independently measured recipient output, never a quote amount. */
+  receivedAtomic?: bigint | null;
+  /** The claim receipt redeemed the bound swap (pinned HTLC, hash lock, SwapKey). */
+  swapIdentityVerified?: boolean;
+}
+
+/**
+ * R7: enforce the DELIVERED_SHORT evidence rule. A short delivery needs a
+ * destination tx, a bound-swap redeem, and 0 < received < requested.
+ */
+export function assertShortDeliveryEvidence(evidence: ShortDeliveryEvidence): void {
+  if (!evidence.destinationTxHash || evidence.destinationTxHash.trim().length === 0) {
+    throw new Error("DELIVERED_SHORT requires verified destination evidence (destinationTxHash)");
+  }
+  if (evidence.swapIdentityVerified !== true) {
+    throw new Error("DELIVERED_SHORT requires the claim to redeem the bound swap");
+  }
+  const req = evidence.requestedAtomic;
+  const got = evidence.receivedAtomic;
+  if (typeof req !== "bigint" || typeof got !== "bigint" || req <= 0n || got <= 0n || got >= req) {
+    throw new Error("DELIVERED_SHORT requires 0 < received < requested");
+  }
+}
+
 /**
  * Attempt a transition, returning the next state or throwing with a safe
  * message (no secrets). For `to === "DELIVERED"`, `evidence` is mandatory
@@ -128,13 +165,16 @@ export function assertDeliveredEvidence(evidence: DestinationEvidence): void {
 export function transition(
   from: TransferStatus,
   to: TransferStatus,
-  opts?: { evidence?: DestinationEvidence },
+  opts?: { evidence?: DestinationEvidence; shortEvidence?: ShortDeliveryEvidence },
 ): TransferStatus {
   if (!canTransition(from, to)) {
     throw new Error(`Illegal transfer transition: ${from} -> ${to}`);
   }
   if (to === "DELIVERED") {
     assertDeliveredEvidence(opts?.evidence ?? {});
+  }
+  if (to === "DELIVERED_SHORT") {
+    assertShortDeliveryEvidence(opts?.shortEvidence ?? {});
   }
   return to;
 }
@@ -157,6 +197,7 @@ export const USER_FACING_LABEL: Record<TransferStatus, string> = {
   NEEDS_ATTENTION: "Needs attention",
   REFUNDED: "Not delivered — Polygon lock refunded",
   DELIVERED: "Delivered",
+  DELIVERED_SHORT: "Delivered — less than requested",
   FAILED: "Needs attention",
   EXPIRED_UNFUNDED: "Expired — not delivered",
 };
