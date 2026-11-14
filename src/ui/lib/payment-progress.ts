@@ -214,8 +214,12 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   if (!nimVerified && (status === 'RECONCILING' || status === 'OUTCOME_UNKNOWN') && !s.receiptReady && !s.claimReady) {
     return {
       headline: "Payment status still being verified",
+      // An actionable tracker message (rate limiting, session ended, network) must stay visible:
+      // it is the only part of this state the owner can act on. It never replaces the neutral
+      // description of what is and is not proven.
       body:
-        "Nimiq Pay's response for this payment was inconclusive, so Thence has not independently confirmed NIM funding yet. "
+        (s.message ? `${s.message.trim()} ` : "")
+        + "Nimiq Pay's response for this payment was inconclusive, so Thence has not independently confirmed NIM funding yet. "
         + "That is not proof that funds moved, and it is not proof that they stayed put. "
         + "Don't pay the same invoice again while the outcome is unresolved.",
       tone: "neutral",

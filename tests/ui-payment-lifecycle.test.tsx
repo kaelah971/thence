@@ -419,7 +419,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     expect(api.count("POST", "/reconcile")).toBeLessThanOrEqual(4);
     expect(document.body.textContent).toContain("Too many tries at once");
     // The last good server status is still shown (never a guessed outcome).
-    expect(screen.getAllByText("Checking your payment").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Payment status still being verified").length).toBeGreaterThan(0);
   });
 
   it("P1: an unknown outcome keeps tracking (bounded) and surfaces funding as soon as it is seen", async () => {
@@ -427,7 +427,7 @@ describe("Send settlement screen — Nov 2 incident: approval → funded swap �
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "OUTCOME_UNKNOWN", providerStatus: "pending", observedAt: INCIDENT.attempt.handoff_authorized_at! } });
     renderSend();
     await advance(0);
-    expect(screen.getAllByText("Checking your payment").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Payment status still being verified").length).toBeGreaterThan(0);
     await advance(5 * 60_000);
     expect(api.count("POST", "/reconcile")).toBeLessThanOrEqual(26);
     api.set(INCIDENT.transfer.id, { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FIRST_OBSERVED });
