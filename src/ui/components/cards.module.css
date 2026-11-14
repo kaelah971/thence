@@ -428,6 +428,8 @@
     inset 0 0 0 1px rgba(255, 255, 255, 0.1),
     0 12px 30px -10px rgba(0, 0, 0, 0.5);
   color: var(--on-ink);
+  /* Small phones: the estimate rows never clip; the panel scrolls instead. */
+  overflow-y: auto;
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   opacity: 0;

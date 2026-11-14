@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { BalanceState } from "@/ui/lib/balance";
-import { nimUsdcPreview } from "@/ui/lib/conversion";
+import { nimUsdcPreview, PARTIAL_BALANCE_NOTE, type PriceState } from "@/ui/lib/conversion";
 import { formatLuna, shortNimiqAddress } from "@/ui/lib/luna";
 import type { WalletConnection } from "@/ui/lib/wallet";
 import { Icon } from "./Icon";
@@ -13,6 +13,8 @@ import styles from "./cards.module.css";
 interface WalletCardsProps {
   wallet: WalletConnection;
   balance: BalanceState;
+  /** Display-only NIM/USDC indicative rate (Home owns the single fetch). */
+  price?: PriceState;
   onRetryBalance: () => void;
   onOpenAccount: () => void;
 }
@@ -58,7 +60,7 @@ export function nimCardNote(balance: BalanceState): string | null {
  * card brings it forward. Every number shown is a real, retrieved value —
  * USDT has no readable balance in Thence today, and says so.
  */
-export function WalletCards({ wallet, balance, onRetryBalance, onOpenAccount }: WalletCardsProps): React.JSX.Element {
+export function WalletCards({ wallet, balance, price = { status: "unavailable" }, onRetryBalance, onOpenAccount }: WalletCardsProps): React.JSX.Element {
   const [front, setFront] = useState<WalletAsset>("NIM");
   const [animate, setAnimate] = useState(false);
   const bring = (asset: WalletAsset) => {
@@ -69,7 +71,7 @@ export function WalletCards({ wallet, balance, onRetryBalance, onOpenAccount }: 
   return (
     <section className={styles.deck} data-animate={animate} aria-label="Your wallet cards">
       <Slot asset="NIM" front={front} onBring={bring}>
-        <NimFace wallet={wallet} balance={balance} isFront={front === "NIM"} onRetry={onRetryBalance} onOpenAccount={onOpenAccount} />
+        <NimFace wallet={wallet} balance={balance} price={price} isFront={front === "NIM"} onRetry={onRetryBalance} onOpenAccount={onOpenAccount} />
       </Slot>
       <Slot asset="USDT" front={front} onBring={bring}>
         <UsdtFace isFront={front === "USDT"} />
@@ -107,12 +109,13 @@ function PeekHint(): React.JSX.Element {
 interface NimFaceProps {
   wallet: WalletConnection;
   balance: BalanceState;
+  price: PriceState;
   isFront: boolean;
   onRetry: () => void;
   onOpenAccount: () => void;
 }
 
-function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFaceProps): React.JSX.Element {
+function NimFace({ wallet, balance, price, isFront, onRetry, onOpenAccount }: NimFaceProps): React.JSX.Element {
   const connected = wallet.status === "connected" ? wallet : null;
   const [convWanted, setConvOpen] = useState(false);
   // The panel belongs to the front card only.
@@ -232,6 +235,7 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
           id={panelId}
           open={convOpen}
           balance={balance}
+          price={price}
           onClose={() => {
             setConvOpen(false);
             toggleRef.current?.focus();
@@ -243,13 +247,15 @@ function NimFace({ wallet, balance, isFront, onRetry, onOpenAccount }: NimFacePr
 }
 
 /**
- * A3c.2 — expandable conversion preview inside the NIM card. It overlays the
- * card (fixed size, nothing reflows) and states plainly that no trusted
- * NIM→USDC rate exists, instead of inventing one. Never a quote.
+ * Expandable conversion preview inside the NIM card. It overlays the card
+ * (fixed size, nothing reflows). With a fresh market rate it shows an
+ * approximate USDC value with its source and age; otherwise it says plainly
+ * that no value is shown. Never a quote and never an owned USDC balance.
  */
-function ConversionPanel({ id, open, balance, onClose }: { id: string; open: boolean; balance: BalanceState; onClose: () => void }): React.JSX.Element {
+function ConversionPanel({ id, open, balance, price, onClose }: { id: string; open: boolean; balance: BalanceState; price: PriceState; onClose: () => void }): React.JSX.Element {
   const closeRef = useRef<HTMLButtonElement>(null);
-  const preview = nimUsdcPreview(balance);
+  const preview = nimUsdcPreview(balance, price);
+  const nimText = preview.status === "rate-unavailable" || preview.status === "estimate" ? `${preview.nim.text} NIM` : preview.status === "loading" ? "Loading…" : "—";
   useEffect(() => {
     if (open) closeRef.current?.focus();
   }, [open]);
@@ -268,7 +274,7 @@ function ConversionPanel({ id, open, balance, onClose }: { id: string; open: boo
       }}
     >
       <div className={styles.convHead}>
-        <p className={styles.convTitle}>USDC value</p>
+        <p className={styles.convTitle}>Estimated USDC value</p>
         <button ref={closeRef} type="button" className={styles.convClose} onClick={onClose} aria-label="Hide USDC value">
           <Icon name="chevron-down" size={16} strokeWidth={2.4} />
         </button>
@@ -276,16 +282,32 @@ function ConversionPanel({ id, open, balance, onClose }: { id: string; open: boo
       <dl className={styles.convRows}>
         <div>
           <dt>NIM balance</dt>
-          <dd className="tabular">
-            {preview.status === "rate-unavailable" ? `${preview.nim.text} NIM` : preview.status === "loading" ? "Loading…" : "—"}
-          </dd>
+          <dd className="tabular">{nimText}</dd>
         </div>
         <div>
-          <dt>Estimated USDC</dt>
-          <dd data-muted="true">Unavailable</dd>
+          <dt>Market value</dt>
+          {preview.status === "estimate" ? (
+            <dd className="tabular">≈ {preview.usdc} USDC</dd>
+          ) : (
+            <dd data-muted="true">{preview.status === "loading" ? "Loading…" : "Unavailable"}</dd>
+          )}
         </div>
+        {preview.status === "estimate" && (
+          <div>
+            <dt>Rate</dt>
+            <dd data-muted="true">
+              {preview.source} · {preview.freshness}
+            </dd>
+          </div>
+        )}
       </dl>
-      {preview.status !== "loading" && <p className={styles.convNote}>{preview.message}</p>}
+      {preview.status === "estimate" ? (
+        <p className={styles.convNote}>
+          {preview.partial ? `${PARTIAL_BALANCE_NOTE} ` : ""}Not an owned USDC balance. Final amount and fees are confirmed at approval.
+        </p>
+      ) : (
+        preview.status !== "loading" && <p className={styles.convNote}>{preview.message}</p>
+      )}
     </div>
   );
 }

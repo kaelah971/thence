@@ -152,6 +152,24 @@ button.hello:active {
   color: var(--text-3);
 }
 
+.estimateValue[data-live="true"] {
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.estimateLabel,
+.estimateMeta {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.estimateMeta a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .estimateHint {
   display: flex;
   gap: 6px;
