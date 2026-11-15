@@ -36,6 +36,7 @@ import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-hando
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as closePost } from "../app/api/transfers/[id]/close-expired/route";
+import { GET as evidenceGet } from "../app/api/transfers/[id]/provider-evidence/route";
 
 const HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
 const ARBITRUM_HTLC = TRUSTED_HTLC_CONTRACTS[42161]![0]!;
@@ -330,6 +331,33 @@ describe.skipIf(!LIVE)("P4 close-expired (isolated test database)", () => {
     expect(res.body["error"]).toBe("NIM_FUNDING_RECORDED");
     expect(await statusOf(id)).toBe("RECONCILING");
   });
+
+  it("recovery: the provider-evidence close preview agrees with what close-expired then does (read-only, no writes)", async () => {
+    const readGates = async (id: string, cookie: string, tag: string) => {
+      const res = await evidenceGet(new Request(`http://localhost/api/transfers/${id}/provider-evidence`, { headers: { cookie, ...client(tag) } }), params(id));
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { evidence: { closeEligibility: { expiredUnfunded: { eligible: boolean; reason: string | null }; nimReturn: { eligible: boolean; reason: string | null } } } }).evidence.closeEligibility;
+    };
+    // Eligible: the preview passes, nothing changes until the owner closes, and the close then succeeds.
+    const ok = await stuckReconciling("preview-ok");
+    const gatesOk = await readGates(ok.id, ok.cookie, "preview-ok");
+    expect(gatesOk.expiredUnfunded).toEqual({ eligible: true, reason: null, message: null });
+    expect(gatesOk.nimReturn).toMatchObject({ eligible: false, reason: "NIM_SOURCE_NOT_VERIFIED" });
+    expect(await statusOf(ok.id)).toBe("RECONCILING");
+    expect((await close(ok.id, ok.cookie, "preview-ok")).status).toBe(200);
+    // Recorded NIM funding: the preview refuses P4 with the same code the close action returns.
+    const nim = await stuckReconciling("preview-nim");
+    await getDb().update(transferProofs).set({ nimiqTxHash: "nim-test-hash" }).where(eq(transferProofs.transferId, nim.id));
+    const gatesNim = await readGates(nim.id, nim.cookie, "preview-nim");
+    expect(gatesNim.expiredUnfunded).toMatchObject({ eligible: false, reason: "NIM_FUNDING_RECORDED" });
+    expect((await close(nim.id, nim.cookie, "preview-nim")).body["error"]).toBe("NIM_FUNDING_RECORDED");
+    // Provider still pending: never eligible.
+    const pending = await stuckReconciling("preview-pending");
+    swapOverrides = { status: "pending" };
+    expect((await readGates(pending.id, pending.cookie, "preview-pending")).expiredUnfunded).toMatchObject({ eligible: false, reason: "PROVIDER_NOT_EXPIRED" });
+    swapOverrides = {};
+    expect(await statusOf(pending.id)).toBe("RECONCILING");
+  }, 240_000);
 
   it("refuses on provider funding evidence, earlier movement, recent expiry, or an unreadable chain", async () => {
     const { id, cookie } = await stuckReconciling("provider");

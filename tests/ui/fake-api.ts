@@ -69,6 +69,15 @@ export interface FakeApi {
   settlementVerdict: "VERIFIED" | "PENDING" | "INSUFFICIENT_CONFIRMATIONS" | "INVALID" | "UNAVAILABLE";
   /** P3: server claim lease expiry (ms epoch) per transfer. */
   claimLeaseUntil: Record<string, number>;
+  /**
+   * Recovery: override the server's close-gate preview on GET /provider-evidence.
+   * Default mirrors the P4 non-chain gates for these fixtures (RECONCILING,
+   * provider `expired`, invoice expired, no EVM tx, no recorded NIM funding)
+   * and an R2 refusal (no verified NIM source).
+   */
+  closeEligibility: Partial<Record<"expiredUnfunded" | "nimReturn", { eligible: boolean; reason: string | null; message: string | null }>>;
+  /** R2: what POST /close-nim-returned answers. */
+  nimReturnOutcome: { kind: "verified" } | { kind: "refused"; status: number; error: string; message: string };
   restore(): void;
 }
 
@@ -160,8 +169,20 @@ function reconciliationView(c: Case, s: ServerTransferState, now: number) {
   };
 }
 
-function providerEvidence(c: Case, s: ServerTransferState, now: number) {
+function providerEvidence(c: Case, s: ServerTransferState, now: number, override: FakeApi["closeEligibility"]) {
   const swap = c.satora.getSwap;
+  const invoiceExpired = new Date(c.attachment.invoice_expires_at!).getTime() <= now;
+  const p4 =
+    s.status !== "RECONCILING"
+      ? { eligible: false, reason: "NOT_RESOLVABLE", message: "This payment can't be closed this way. Check its status in Activity." }
+      : swap.evm_fund_txid !== null || swap.evm_claim_txid !== null
+        ? { eligible: false, reason: "PROVIDER_REPORTS_EVM_TX", message: "The provider reports activity for this payment. It stays open — don't resend." }
+        : swap.status !== "expired"
+          ? { eligible: false, reason: "PROVIDER_NOT_EXPIRED", message: "The provider doesn't show this payment as expired. It stays open." }
+          : !invoiceExpired
+            ? { eligible: false, reason: "INVOICE_NOT_SETTLED", message: "This payment only just expired. Check again in a few minutes." }
+            : { eligible: true, reason: null, message: null };
+  const r2 = { eligible: false, reason: "NIM_SOURCE_NOT_VERIFIED", message: "Thence hasn't verified the NIM payment for this transfer, so it can't confirm a return. It stays open." };
   return {
     transferId: c.transfer.id,
     transferStatus: s.status,
@@ -174,6 +195,7 @@ function providerEvidence(c: Case, s: ServerTransferState, now: number) {
     hasEvmFundingTx: swap.evm_fund_txid !== null,
     hasEvmClaimTx: swap.evm_claim_txid !== null,
     observedAt: c.satora.fetchedAt,
+    closeEligibility: { expiredUnfunded: override.expiredUnfunded ?? p4, nimReturn: override.nimReturn ?? r2 },
   };
 }
 
@@ -235,7 +257,7 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
       if (api.rateLimitReconcile) return json(429, { error: "RATE_LIMITED", message: "Too many requests. Try again shortly." });
       return json(200, { reconciliation: { ...latest(c, s, now), advanced: false, advancedPath: [] } });
     }
-    if (sub === "provider-evidence" && method === "GET") return json(200, { evidence: providerEvidence(c, s, now) });
+    if (sub === "provider-evidence" && method === "GET") return json(200, { evidence: providerEvidence(c, s, now, api.closeEligibility) });
     if (sub === "receipt") {
       if (s.status !== "DELIVERED") return json(409, { error: "NOT_DELIVERED" });
       return json(200, {
@@ -316,6 +338,13 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
       state[id] = { ...s, status: "EXPIRED_UNFUNDED", observedAt: new Date(now).toISOString() };
       return json(200, { resolution: { transferId: id, status: "EXPIRED_UNFUNDED", deduplicated: false } });
     }
+    if (sub === "close-nim-returned" && method === "POST") {
+      const outcome = api.nimReturnOutcome;
+      if (outcome.kind === "refused") return json(outcome.status, { error: outcome.error, message: outcome.message });
+      const nimReturn = { refundTxHash: "ab".repeat(32), returnedLuna: "411800000", feeLuna: "0" };
+      state[id] = { ...s, status: "EXPIRED_UNFUNDED", observedAt: new Date(now).toISOString() };
+      return json(200, { resolution: { transferId: id, status: "EXPIRED_UNFUNDED", deduplicated: false, nimReturn } });
+    }
     // Anything else (claims, cancels, new payments) is outside what these
     // lifecycle tests allow: record it and refuse.
     return json(403, { error: "FORBIDDEN_IN_TEST" });
@@ -330,6 +359,8 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
     claimIntentOutcome: { kind: "server" },
     settlementVerdict: "PENDING",
     claimLeaseUntil: {},
+    closeEligibility: {},
+    nimReturnOutcome: { kind: "refused", status: 409, error: "NIM_STILL_LOCKED", message: "Your NIM is still locked in Nimiq Pay's swap. Thence can close this only after it is returned to you." },
     maxInFlight: 0,
     aborted: 0,
     count: (method, suffix) => calls.filter((c) => c.method === method && c.path.endsWith(suffix)).length,

@@ -32,6 +32,7 @@ export const SHARDS: Record<string, string[]> = {
     "proxy-origin",
     "activity-archive",
     "provider-evidence-ui",
+    "recovery-milestone",
     "money",
     "nimiq",
     "address-format",

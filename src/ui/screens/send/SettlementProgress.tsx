@@ -39,6 +39,8 @@ export interface PaymentProgressParts {
   view: ProgressView | null;
   /** Server status as last read (null until the first read). */
   transferStatus: string | null;
+  /** Server: NIM source independently verified on-chain (never inferred client-side). */
+  sourceVerified: boolean;
 }
 
 /**
@@ -251,7 +253,7 @@ export function usePaymentProgress({
     );
   }
 
-  return { content, action, view, transferStatus: state.transferStatus };
+  return { content, action, view, transferStatus: state.transferStatus, sourceVerified: typeof state.sourceVerifiedAtMs === "number" && state.sourceVerifiedAtMs > 0 };
 }
 
 /** Standalone progress (content followed by its action), for screens without a sticky footer. */

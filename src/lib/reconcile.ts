@@ -824,6 +824,8 @@ export async function readBoundProviderEvidence(
   hasEvmFundingTx: boolean;
   hasEvmClaimTx: boolean;
   observedAt: string;
+  /** Server-side preview of the P4/R2 close gates (the actions re-verify everything). */
+  closeEligibility: import("@/lib/close-eligibility").CloseEligibility;
 }> {
   const db = getDb();
   const rows = await db
@@ -854,15 +856,19 @@ export async function readBoundProviderEvidence(
     facts.direction === "lightning_to_evm" &&
     facts.targetAtomic === transfer.targetAmountAtomic &&
     facts.targetAddress.toLowerCase() === transfer.destination.toLowerCase();
+  let routeMatches = false;
   try {
     const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
-    identityMatch =
-      identityMatch &&
+    routeMatches =
       String(resolved.chainId) === String(facts.evmChainId) &&
       resolved.tokenAddress.toLowerCase() === facts.targetTokenAddress.toLowerCase();
   } catch {
-    identityMatch = false;
+    routeMatches = false;
   }
+  identityMatch = identityMatch && routeMatches;
+  // Fail closed: if the gate preview can't be read, nothing is offered as closable.
+  const { readCloseEligibility, CLOSE_PREVIEW_UNAVAILABLE } = await import("@/lib/close-eligibility");
+  const closeEligibility = await readCloseEligibility(db, { transfer, attachment, facts, routeMatches }).catch(() => CLOSE_PREVIEW_UNAVAILABLE);
   const invoiceExpiresAt = facts.invoiceExpiresAt?.toISOString() ?? null;
   return {
     transferId,
@@ -876,6 +882,7 @@ export async function readBoundProviderEvidence(
     hasEvmFundingTx: facts.evmFundTxid !== null,
     hasEvmClaimTx: facts.evmClaimTxid !== null,
     observedAt: new Date().toISOString(),
+    closeEligibility,
   };
 }
 
