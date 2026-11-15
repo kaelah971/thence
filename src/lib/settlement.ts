@@ -80,7 +80,14 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
  */
 export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
   137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
-  42161: ["0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748"],
+  // Arbitrum runs BOTH Satora HTLCErc20 deployments (satoraHQ/lendaswap-contracts
+  // README: v7 current, v6 legacy kept for existing swaps). Verified on-chain
+  // 2026-11-15: each one's EIP-712 domain separator binds name "HTLCErc20",
+  // its version (7 / 6), chain 42161 and its own address. The v6 bytecode equals
+  // Polygon's v6 (137 above) except for that chain-bound separator. The live
+  // swap e2eb54fd… was funded on v6 by the same Satora operator that funds v7,
+  // and the same SwapCreated layout and SwapKey checks apply to both.
+  42161: ["0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748", "0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
 };
 
 const HTLC_STATE_ABI = [
