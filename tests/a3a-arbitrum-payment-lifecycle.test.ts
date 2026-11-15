@@ -513,7 +513,12 @@ describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated dat
     finalizedBlock = FUND_BLOCK - 1n;
     response = await authorizeClaim(p);
     expect(response.status).toBe(409);
-    expect(await errorCode(response)).toBe("FUNDING_NOT_CONFIRMED");
+    // L1-finality wait: no Polygon "N of 32" count, an explicit finality kind instead.
+    const pending = (await response.json()) as { error: string; message: string; details?: Record<string, string> };
+    expect(pending.error).toBe("FUNDING_NOT_CONFIRMED");
+    expect(pending.details).toEqual({ finality: "l1", network: "Arbitrum" });
+    expect(pending.message).toMatch(/Arbitrum funding is waiting for Ethereum finality/);
+    expect(pending.message).not.toMatch(/Polygon|confirmations/);
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
     finalizedBlock = FUND_BLOCK;
 

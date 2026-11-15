@@ -181,6 +181,15 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
   if (ev.facts.status !== "serverfunded") refuse(409, "NOT_CLAIMABLE", "The provider no longer reports this payment as funded and waiting.");
   if (ev.funding.verdict === "INVALID") refuse(409, "FUNDING_INVALID", `${ev.funding.reason} Do not continue.`);
   if (ev.funding.verdict === "PENDING") {
+    // Arbitrum: only L1-finalized funding authorizes a claim (~20 min), so a
+    // confirmation count would mislead. The client keeps waiting on
+    // `finality: "l1"`; the deadline gates above still end the wait.
+    if (ev.facts.evmChainId === 42161) {
+      throw new AuthError(409, "FUNDING_NOT_CONFIRMED", "The Arbitrum funding is waiting for Ethereum finality, usually about 20 minutes. Keep this screen open.", {
+        finality: "l1",
+        network: "Arbitrum",
+      });
+    }
     // F9.1: progress figures (public chain counts only) let the app show
     // "N of 32" while one tap waits for the funding to settle.
     const seen = ev.funding.confirmations;
