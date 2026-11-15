@@ -24,13 +24,13 @@ import {
   postHandoffCancel,
   EXPIRED_UNFUNDED_BODY,
   expiredNimReturnedBody,
-  NIM_RETURN_CLOSABLE,
   postReconcile,
   providerEvidenceDisposition,
   providerStatusLabel,
   type ProviderEvidence,
-  type ProviderEvidenceDisposition,
 } from "@/ui/lib/settlement-client";
+import { friendlyMessage } from "@/ui/lib/api";
+import { recoveryState, type RecoveryView } from "@/ui/lib/recovery-state";
 import { invalidateData } from "@/ui/lib/resource";
 import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { usePaymentProgress } from "@/ui/screens/send/SettlementProgress";
@@ -265,13 +265,34 @@ function LiveTransferDetail({
   const fresh = resource.status === "ready" ? toActivityItem(resource.data.transfer) : null;
   const item = fresh ?? initial;
   const [checking, setChecking] = useState(false);
-  const [checkedNote, setCheckedNote] = useState<string | null>(null);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
   const [providerEvidence, setProviderEvidence] = useState<ProviderEvidence | null>(null);
-  const [providerEvidenceLoading, setProviderEvidenceLoading] = useState(false);
-  const [providerEvidenceError, setProviderEvidenceError] = useState<string | null>(null);
-  // Money-moving payments are tracked live by the card below; a manual
-  // "Check for updates" next to it only duplicates that.
-  const canCheck = !TERMINAL_DETAIL.has(item.status) && !LIVE_PROGRESS_DETAIL.has(item.status) && resource.status !== "loading";
+  const [live, setLive] = useState<LiveFacts>({ sourceVerified: false, action: null });
+  // ONE status check (it replaces "Check for updates" + "Check payment status",
+  // which each ran half of this): the server reconciles first (it may advance
+  // the payment), then a fresh provider read refreshes the evidence and the
+  // server's close-gate preview. A failed read clears old evidence, so a stale
+  // read can never keep a close action on screen.
+  const checkStatus = () => {
+    if (checking) return;
+    setChecking(true);
+    setCheckNote(null);
+    void (async () => {
+      const reconciled = await postReconcile(item.id);
+      if (!reconciled.ok && reconciled.kind === "unauthorized") {
+        setCheckNote("Your session has ended. Sign in again.");
+        return;
+      }
+      if ("refresh" in resource) resource.refresh();
+      const evidence = await getProviderEvidence(item.id);
+      setProviderEvidence(evidence.ok ? evidence.data.evidence : null);
+      if (!reconciled.ok && reconciled.kind === "rate-limited") setCheckNote(friendlyMessage(reconciled));
+      else if (!evidence.ok && evidence.kind === "rate-limited") setCheckNote(friendlyMessage(evidence));
+      else if (!evidence.ok && evidence.code === "NOT_RECONCILABLE") setCheckNote("No provider swap is linked to this payment yet, so there is nothing more to check.");
+      else if (!evidence.ok || !reconciled.ok) setCheckNote("Part of the check is temporarily unavailable. The payment stays as shown — don't pay again. Try again shortly.");
+      else setCheckNote("Checked just now.");
+    })().finally(() => setChecking(false));
+  };
   return (
     <>
       {resource.status === "error" && (
@@ -279,65 +300,36 @@ function LiveTransferDetail({
           {resource.message}
         </Notice>
       )}
-      {canCheck && (
-        <div style={{ marginBottom: 12 }}>
-          <Button
-            variant="soft"
-            size="md"
-            icon="refresh"
-            block
-            disabled={checking}
-            onClick={() => {
-              setChecking(true);
-              setCheckedNote(null);
-              void postReconcile(item.id)
-                .then((result) => {
-                  if (!result.ok && result.kind === "unauthorized") setCheckedNote("Your session has ended. Sign in again.");
-                  else if (!result.ok) setCheckedNote("The network check is temporarily unavailable. Try again shortly.");
-                  else setCheckedNote("Checked just now. The latest status is shown below.");
-                  if ("refresh" in resource) resource.refresh();
-                })
-                .finally(() => setChecking(false));
-            }}
-          >
-            {checking ? "Checking…" : "Check for updates"}
-          </Button>
-          {checkedNote && <p className={styles.latest}>{checkedNote}</p>}
-        </div>
-      )}
       {userId && TRACKED_DETAIL.has(item.status) && (
         <ActivityClaimRecovery
           transferId={item.id}
           ownerUserId={userId}
           knownStatus={item.status}
           routeId={item.routeId}
+          onLive={setLive}
           onStatusChange={() => {
             if ("refresh" in resource) resource.refresh();
           }}
         />
       )}
-      <ProviderEvidencePanel
-        transferId={item.id}
-        evidence={providerEvidence}
-        loading={providerEvidenceLoading}
-        error={providerEvidenceError}
-        onCheck={() => {
-          setProviderEvidenceLoading(true);
-          setProviderEvidenceError(null);
-          void getProviderEvidence(item.id)
-            .then((result) => {
-              if (result.ok) setProviderEvidence(result.data.evidence);
-              else {
-                setProviderEvidence(null);
-                setProviderEvidenceError(result.kind === "unauthorized" ? "Your session has ended. Evidence is UNKNOWN." : "Evidence is unavailable. Funding status is UNKNOWN.");
-              }
-            })
-            .finally(() => setProviderEvidenceLoading(false));
-        }}
+      <TransferDetail
+        item={item}
+        preview={false}
+        providerEvidence={providerEvidence}
+        live={live}
+        statusCheck={{ run: checkStatus, checking, note: checkNote }}
+        archived={archived}
+        onArchiveChange={onArchiveChange}
       />
-      <TransferDetail item={item} preview={false} providerEvidence={providerEvidence} archived={archived} onArchiveChange={onArchiveChange} />
     </>
   );
+}
+
+/** What the live tracker knows that the list row doesn't (server facts only). */
+interface LiveFacts {
+  sourceVerified: boolean;
+  /** The live card's own next action ("check" means it waits on the single status check). */
+  action: string | null;
 }
 
 /** Statuses where money is moving after approval: the live progress card speaks for the payment. */
@@ -349,12 +341,14 @@ function ActivityClaimRecovery({
   knownStatus,
   routeId,
   onStatusChange,
+  onLive,
 }: {
   transferId: string;
   ownerUserId: string;
   knownStatus: string;
   routeId: ActivityItem["routeId"];
   onStatusChange: () => void;
+  onLive: (facts: LiveFacts) => void;
 }): React.JSX.Element | null {
   // Same single view as the Send screen (status, deadline, ONE action); the
   // detail below already shows the timeline and receipt, so compact here.
@@ -376,6 +370,11 @@ function ActivityClaimRecovery({
     if (liveStatus && liveStatus !== knownStatus) onStatusChange();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveStatus]);
+  const liveAction = progress.view?.action ?? null;
+  useEffect(() => {
+    onLive({ sourceVerified: progress.sourceVerified, action: liveAction });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress.sourceVerified, liveAction]);
 
   // Before approval the detail below explains the next step; the tracker runs silently.
   const live = LIVE_PROGRESS_DETAIL.has(liveStatus ?? knownStatus) || progress.view?.action === "finish";
@@ -384,57 +383,40 @@ function ActivityClaimRecovery({
   return (
     <div style={{ marginBottom: 12 }} data-recovery-transfer-id={transferId}>
       {progress.content}
-      {progress.action}
+      {/* Finish delivery only: the sheet's single "Check payment status" replaces the card's own check. */}
+      {liveAction === "check" ? null : progress.action}
     </div>
   );
 }
 
-function ProviderEvidencePanel({
-  transferId,
-  evidence,
-  loading,
-  error,
-  onCheck,
-}: {
-  transferId: string;
-  evidence: ProviderEvidence | null;
-  loading: boolean;
-  error: string | null;
-  onCheck: () => void;
-}): React.JSX.Element {
-  const disposition: ProviderEvidenceDisposition = providerEvidenceDisposition(evidence);
-  const expiry = evidence?.invoiceExpiresAt ? new Date(evidence.invoiceExpiresAt) : null;
-  const expiryLabel = !evidence || !expiry || Number.isNaN(expiry.getTime()) ? "UNKNOWN" : evidence.invoiceExpired ? "Expired" : `Live until ${expiry.toLocaleString()}`;
-  const tone = disposition === "UNKNOWN" || disposition === "REFUNDED" ? "warn" : "info";
-  const title = disposition === "EXPIRED_UNFUNDED"
-    ? "Funding evidence: EXPIRED — SAFE TO CLOSE"
-    : disposition === "REFUNDED"
-      ? "Funding evidence: REFUNDED — NO DELIVERY"
-      : `Funding evidence: ${disposition}`;
+/** Facts from the latest provider read. The recovery card says what they mean. */
+function ProviderEvidenceFacts({ evidence }: { evidence: ProviderEvidence }): React.JSX.Element {
+  const expiry = evidence.invoiceExpiresAt ? new Date(evidence.invoiceExpiresAt) : null;
+  const expiryLabel = !expiry || Number.isNaN(expiry.getTime()) ? "Unknown" : evidence.invoiceExpired ? "Expired" : `Live until ${expiry.toLocaleString()}`;
+  const disposition = providerEvidenceDisposition(evidence);
   return (
-    <div style={{ marginBottom: 12 }} data-transfer-id={transferId}>
-      <Button variant="soft" size="md" icon="refresh" block disabled={loading} onClick={onCheck}>
-        {loading ? "Checking payment status…" : "Check payment status"}
-      </Button>
-      {error && (
-        <Notice tone="warn" icon="alert" title="Funding evidence: UNKNOWN" live>
-          {error}
-        </Notice>
-      )}
-      {evidence && (
-        <Notice tone={tone} icon={disposition === "UNKNOWN" || disposition === "REFUNDED" ? "alert" : "info"} title={title} live>
-          <dl className={styles.facts}>
-            <div><dt>Provider status</dt><dd>{providerStatusLabel(evidence.providerStatus)}</dd></div>
-            <div><dt>Invoice expiry</dt><dd>{expiryLabel}</dd></div>
-            <div><dt>Swap identity</dt><dd>{evidence.identityMatch ? "MATCH" : "MISMATCH — UNKNOWN"}</dd></div>
-            <div><dt>Funding transaction</dt><dd>{evidence.hasEvmFundingTx ? "Present" : "Not reported"}</dd></div>
-            <div><dt>{disposition === "REFUNDED" ? "Refund transaction" : "Claim transaction"}</dt><dd>{evidence.hasEvmClaimTx ? "Present" : "Not reported"}</dd></div>
-          </dl>
-          {disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
-          {disposition === "REFUNDED" && <p className={styles.latest}>The provider reports that its Polygon lock was refunded to the provider. That is not a refund of your NIM. Do not claim or start another payment; keep this payment open for reconciliation.</p>}
-          {disposition === "EXPIRED_UNFUNDED" && <p className={styles.latest}>Satora reports this swap expired without funding. The server will re-check that evidence before closing it.</p>}
-        </Notice>
-      )}
+    <div className={styles.timelineCard} data-provider-evidence={disposition}>
+      <div className={styles.timelineHead}>
+        <p className={styles.timelineTitle}>Latest provider check</p>
+      </div>
+      <dl className={styles.facts}>
+        <div><dt>Provider status</dt><dd>{providerStatusLabel(evidence.providerStatus)}</dd></div>
+        <div><dt>Invoice expiry</dt><dd>{expiryLabel}</dd></div>
+        <div><dt>Swap identity</dt><dd>{evidence.identityMatch ? "Matches this payment" : "Doesn't match — kept open"}</dd></div>
+        <div><dt>Funding transaction</dt><dd>{evidence.hasEvmFundingTx ? "Reported" : "Not reported"}</dd></div>
+        <div><dt>Claim transaction</dt><dd>{evidence.hasEvmClaimTx ? "Reported" : "Not reported"}</dd></div>
+      </dl>
+      {evidence.invoiceExpired && disposition === "UNKNOWN" && <p className={styles.latest}>Invoice expiry alone is not proof that funding did not happen.</p>}
+    </div>
+  );
+}
+
+function RecoveryCard({ view }: { view: RecoveryView }): React.JSX.Element {
+  return (
+    <div data-recovery-kind={view.kind} data-recovery-primary={view.primary}>
+      <Notice tone={view.tone === "warn" ? "warn" : "info"} icon={view.tone === "warn" ? "alert" : view.kind === "uncertain" ? "clock" : "info"} title={view.title}>
+        {view.body}
+      </Notice>
     </div>
   );
 }
@@ -443,49 +425,64 @@ function TransferDetail({
   item,
   preview,
   providerEvidence = null,
+  live = null,
+  statusCheck = null,
   archived = false,
   onArchiveChange,
 }: {
   item: ActivityItem;
   preview: boolean;
   providerEvidence?: ProviderEvidence | null;
+  live?: LiveFacts | null;
+  /** The single status check (server reconcile + fresh provider read); absent in preview. */
+  statusCheck?: { run: () => void; checking: boolean; note: string | null } | null;
   archived?: boolean;
   onArchiveChange?: (archived: boolean) => void;
 }): React.JSX.Element {
   const destination = destinationFor(item.routeId);
-  const stage = STAGE_OF[item.status];
   const [closing, setClosing] = useState(false);
   const [closedNote, setClosedNote] = useState<string | null>(null);
-  const evidenceDisposition = providerEvidenceDisposition(providerEvidence);
-  // The server re-verifies every close. A fresh, identity-matched Satora
-  // `expired` result is the only post-approval close affordance; funding and
-  // uncertain evidence stay open.
-  const canRetire = !preview && canShowCancelUnpaid(item.status, evidenceDisposition === "EXPIRED_UNFUNDED");
-  // P4: an authorized payment stuck in "checking" whose fresh provider
-  // evidence says it expired unfunded. The server re-proves everything
-  // (including an independent chain scan) before closing.
-  const canCloseExpired = !preview && item.status === "RECONCILING" && evidenceDisposition === "EXPIRED_UNFUNDED";
   const [closedExpired, setClosedExpired] = useState(false);
-  // The server's re-check outranks the provider read: once a close is refused
-  // (e.g. network activity found), stop saying no money moved and restore the
-  // "do not resend" warning. The button stays so a transient refusal can retry.
-  const [closeRefused, setCloseRefused] = useState(false);
-  const [closeRefusedCode, setCloseRefusedCode] = useState<string | null>(null);
-  const expiredClaimShown = canCloseExpired && !closeRefused;
-  // R2: a failed Lightning handoff whose NIM was locked. Offered only when the
-  // provider's fresh evidence says expired; in RECONCILING only after P4 itself
-  // refused because a NIM payment is recorded. The server proves the NIM
-  // return on-chain before closing; nothing here claims a refund.
+  // The server's close re-check outranks its own earlier preview: once a close
+  // is refused (e.g. network activity found), the close gate is treated as
+  // refused with the server's reason until the owner checks again.
+  const [closeRefusal, setCloseRefusal] = useState<{ evidence: ProviderEvidence; reason: string | null; message: string } | null>(null);
+  const evidence: ProviderEvidence | null =
+    providerEvidence && closeRefusal?.evidence === providerEvidence && providerEvidence.closeEligibility
+      ? {
+          ...providerEvidence,
+          closeEligibility: {
+            ...providerEvidence.closeEligibility,
+            expiredUnfunded: { eligible: false, reason: closeRefusal.reason, message: closeRefusal.message },
+          },
+        }
+      : providerEvidence;
+  const evidenceDisposition = providerEvidenceDisposition(evidence);
+  // ONE classification, ONE primary action. Close actions surface only from the
+  // server's close-gate preview; the actions themselves re-verify everything.
+  const recovery = recoveryState({ status: item.status, evidence, sourceVerified: live?.sourceVerified === true, readOnly: preview });
+  const canRetire = !preview && canShowCancelUnpaid(item.status, evidenceDisposition === "EXPIRED_UNFUNDED");
+  const canCloseExpired = !preview && recovery.primary === "close-expired";
+  // R2: a failed Lightning handoff whose NIM was locked. The server proves the
+  // NIM return on-chain before closing; nothing here claims a refund.
   const [returnedResult, setReturnedResult] = useState<{ refundTxHash: string; returnedLuna: string; feeLuna: string } | null>(null);
   const [returnNote, setReturnNote] = useState<string | null>(null);
   const [checkingReturn, setCheckingReturn] = useState(false);
-  const canCloseReturned =
-    !preview &&
-    returnedResult === null &&
-    NIM_RETURN_CLOSABLE.has(item.status) &&
-    evidenceDisposition === "EXPIRED_UNFUNDED" &&
-    (item.status !== "RECONCILING" || closeRefusedCode === "NIM_FUNDING_RECORDED");
+  const canCloseReturned = !preview && returnedResult === null && recovery.primary === "check-nim-return";
   const verifiedReturn = returnedResult ?? (item.status === "EXPIRED_UNFUNDED" ? (item.nimReturn ?? null) : null);
+  const closedNow = closedExpired || verifiedReturn !== null;
+  // The live progress card already speaks for a payment that is moving; the
+  // recovery card speaks for everything else (and for an eligible close).
+  const liveCovers = !preview && LIVE_PROGRESS_DETAIL.has(item.status) && recovery.kind !== "expired-closable";
+  const showRecoveryCard = !closedNow && !liveCovers && (recovery.kind !== "closed" || item.status === "FAILED");
+  // The single status check: primary while the outcome is uncertain; secondary
+  // while waiting for approval (an expired swap can then be cancelled), and
+  // when the live card is waiting on a check.
+  const showStatusCheck =
+    !preview &&
+    statusCheck !== null &&
+    !closedNow &&
+    (recovery.primary === "check-status" || (recovery.kind === "funds-moved" && live?.action === "check") || item.status === "AWAITING_NIM_APPROVAL");
   return (
     <div className={styles.detail}>
       <div className={styles.detailHero}>
@@ -512,12 +509,7 @@ function TransferDetail({
         </div>
       )}
 
-      {expiredClaimShown && !closedExpired && (
-        <Notice tone="info" icon="info" title="This payment expired before any money moved">
-          The provider reports this payment expired without being funded. You can close it — Thence checks the provider and the
-          network again first, and keeps it open if anything doesn&apos;t match.
-        </Notice>
-      )}
+      {showRecoveryCard && <RecoveryCard view={recovery} />}
       {verifiedReturn ? (
         <Notice tone="info" icon="info" title="Not delivered — NIM return verified on the Nimiq blockchain">
           {expiredNimReturnedBody(verifiedReturn)}
@@ -529,15 +521,56 @@ function TransferDetail({
           </Notice>
         )
       )}
+
+      {canCloseExpired && !closedExpired && (
+        <div style={{ marginTop: 12 }}>
+          <Button
+            variant="ink"
+            size="md"
+            icon="close"
+            block
+            disabled={closing}
+            onClick={() => {
+              setClosing(true);
+              setClosedNote(null);
+              const readAt = providerEvidence;
+              void postCloseExpired(item.id)
+                .then((result) => {
+                  if (result.ok && result.data.resolution.status === "EXPIRED_UNFUNDED") {
+                    setClosedExpired(true);
+                    setClosedNote("Closed. Nothing reached their network, and the payment is no longer counted as in progress.");
+                    invalidateData();
+                    return;
+                  }
+                  const message =
+                    !result.ok && result.kind === "unauthorized"
+                      ? "Your session has ended. Sign in again."
+                      : !result.ok && result.message
+                        ? result.message
+                        : "We couldn't close it right now. It stays open — don't resend.";
+                  if (readAt) setCloseRefusal({ evidence: readAt, reason: !result.ok ? result.code : null, message });
+                  setClosedNote(message);
+                  invalidateData();
+                })
+                .finally(() => setClosing(false));
+            }}
+          >
+            {closing ? "Checking before closing…" : "Close expired payment"}
+          </Button>
+          <p className={styles.latest}>{closedNote ?? "History is kept. This never sends or refunds money."}</p>
+        </div>
+      )}
+      {/* A refusal's reason is shown once, inside the recovery card. */}
+      {closedExpired && closedNote && (
+        <p className={styles.latest} role="status">
+          {closedNote}
+        </p>
+      )}
+
       {canCloseReturned && (
         <div style={{ marginTop: 12 }} data-nim-return-close>
-          <Notice tone="warn" icon="clock" title="Not delivered — waiting for your NIM to come back">
-            The provider reports this payment expired. Your NIM was locked in Nimiq Pay&apos;s swap. Thence can close this payment
-            only after it verifies on the Nimiq blockchain that the full amount was returned to your Nimiq address. Until then it stays open —
-            don&apos;t pay again.
-          </Notice>
           <Button
-            variant="soft"
+            variant="ink"
             size="md"
             icon="refresh"
             block
@@ -568,29 +601,8 @@ function TransferDetail({
           )}
         </div>
       )}
-      {stage === "checking" && !expiredClaimShown && !closedExpired && (
-        <Notice tone="warn" icon="clock" title="Checking your payment — do not resend">
-          We can&apos;t confirm the outcome yet. Starting another payment could pay them twice.
-        </Notice>
-      )}
-      {stage === "attention" && (
-        <Notice tone="error" icon="alert" title="Needs your attention">
-          Follow the next step before starting another payment.
-        </Notice>
-      )}
-      {stage === "approval" && (
-        <Notice tone="info" icon="info" title="Approve in Nimiq Pay">
-          Nimiq Pay shows the exact NIM debit before you confirm.
-        </Notice>
-      )}
-      {((stage === "moving" && preview) || stage === "ready") && (
-        <Notice tone="info" icon="clock" title={stage === "moving" ? "Payment in progress" : "Ready to continue"}>
-          {stage === "moving"
-            ? "Thence is still checking this payment. A receipt appears once delivery is confirmed on their network."
-            : "No approval is recorded for this payment yet. You can continue where you left off."}
-        </Notice>
-      )}
-      {!preview && resumeLabelFor(item.status) !== null && evidenceDisposition !== "EXPIRED_UNFUNDED" && (
+
+      {!preview && recovery.primary === "resume" && resumeLabelFor(item.status) !== null && (
         <div style={{ marginTop: 12 }}>
           <ButtonLink href={`/app/send?resume=${item.id}`} variant="ink" size="md" icon="arrow-right" block>
             {resumeLabelFor(item.status)}
@@ -598,49 +610,36 @@ function TransferDetail({
           <p className={styles.latest}>Continues the same payment — never starts a new one.</p>
         </div>
       )}
-      {canCloseExpired && !closedExpired && (
+
+      {showStatusCheck && statusCheck && (
         <div style={{ marginTop: 12 }}>
           <Button
-            variant="soft"
+            variant={recovery.primary === "check-status" ? "ink" : "soft"}
             size="md"
-            icon="close"
+            icon="refresh"
             block
-            disabled={closing}
-            onClick={() => {
-              setClosing(true);
-              setClosedNote(null);
-              void postCloseExpired(item.id)
-                .then((result) => {
-                  if (result.ok && result.data.resolution.status === "EXPIRED_UNFUNDED") {
-                    setClosedExpired(true);
-                    setClosedNote("Closed. Nothing reached their network, and the payment is no longer counted as in progress.");
-                    invalidateData();
-                    return;
-                  }
-                  setCloseRefused(true);
-                  setCloseRefusedCode(!result.ok ? result.code : null);
-                  if (!result.ok && result.kind === "unauthorized") {
-                    setClosedNote("Your session has ended. Sign in again.");
-                  } else if (!result.ok && result.message) {
-                    setClosedNote(result.message);
-                  } else {
-                    setClosedNote("We couldn't close it right now. It stays open — don't resend.");
-                  }
-                  invalidateData();
-                })
-                .finally(() => setClosing(false));
-            }}
+            disabled={statusCheck.checking}
+            onClick={statusCheck.run}
           >
-            {closing ? "Checking before closing…" : "Close expired payment"}
+            {statusCheck.checking ? "Checking payment status…" : "Check payment status"}
           </Button>
-          <p className={styles.latest}>{closedNote ?? "History is kept. This never sends or refunds money."}</p>
+          <p className={styles.latest} role="status">
+            {statusCheck.note ?? "Asks the provider and the network again. It never sends, closes or refunds anything."}
+          </p>
         </div>
       )}
-      {closedExpired && closedNote && <p className={styles.latest}>{closedNote}</p>}
+
+      {/* The check's outcome (e.g. rate limiting) stays visible even when it surfaced a different action. */}
+      {!showStatusCheck && statusCheck?.note && !closedNow && (
+        <p className={styles.latest} role="status">
+          {statusCheck.note}
+        </p>
+      )}
+
       {canRetire && (
         <div style={{ marginTop: 12 }}>
           <Button
-            variant="soft"
+            variant={recovery.primary === "cancel-unpaid" ? "ink" : "soft"}
             size="md"
             icon="close"
             block
@@ -692,6 +691,8 @@ function TransferDetail({
           )}
         </div>
       )}
+
+      {!preview && evidence && !closedNow && recovery.kind !== "closed" && <ProviderEvidenceFacts evidence={evidence} />}
 
       <div className={styles.timelineCard}>
         <div className={styles.timelineHead}>

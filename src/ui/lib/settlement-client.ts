@@ -128,6 +128,21 @@ export interface ProviderEvidence {
   hasEvmFundingTx: boolean;
   hasEvmClaimTx: boolean;
   observedAt: string;
+  /**
+   * Server preview of the close gates (P4 expired-unfunded, R2 NIM return).
+   * The ONLY input that may surface a close action; absent on older servers,
+   * which means "not eligible". The actions re-verify everything themselves.
+   */
+  closeEligibility?: {
+    expiredUnfunded: CloseGate;
+    nimReturn: CloseGate;
+  };
+}
+
+export interface CloseGate {
+  eligible: boolean;
+  reason: string | null;
+  message: string | null;
 }
 
 export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "REFUNDED" | "EXPIRED_UNFUNDED" | "UNKNOWN";
