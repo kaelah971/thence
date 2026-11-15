@@ -14,7 +14,7 @@ import { loadActivityArchive, setActivityArchived } from "@/ui/lib/activity-arch
 import { useActivityData } from "@/ui/lib/data";
 import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
-import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, STAGE_OF, timelineFor, type ActivityFilter } from "@/ui/lib/status";
+import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, timelineFor, type ActivityFilter } from "@/ui/lib/status";
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, shortReceiptAmounts, toActivityItem } from "@/ui/lib/transfers-api";
 import {
   getProviderEvidence,
@@ -240,7 +240,6 @@ export function Activity(): React.JSX.Element {
   );
 }
 
-const TERMINAL_DETAIL = new Set(["DELIVERED", "DELIVERED_SHORT", "USER_CANCELLED", "QUOTE_EXPIRED", "REFUNDED", "FAILED", "EXPIRED_UNFUNDED"]);
 /**
  * P3: the shared tracker runs for every in-flight payment opened in Activity,
  * so funding that lands while the sheet is open surfaces Finish delivery at
