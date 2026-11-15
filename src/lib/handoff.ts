@@ -50,6 +50,18 @@ import { checkDestination } from "@/lib/recipients";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 
+/**
+ * Arbitrum claims are authorized only on L1-finalized funding read from a
+ * trusted 42161 RPC, and Delivered needs the same RPC. Without one, a funded
+ * payment could never be finished and would only end in a provider refund, so
+ * nothing may start. Pure. Polygon keeps its existing behaviour unchanged.
+ */
+export function settlementChainVerifiable(routeId: string, rpcs: Record<string, string> | null | undefined): boolean {
+  if (routeId !== "usdc-arbitrum") return true;
+  const url = rpcs?.["42161"];
+  return typeof url === "string" && url.trim().length > 0;
+}
+
 export const ATTEMPT_TOKEN_BYTES = 16;
 const INVOICE_RE = /^(lnbc|lnbcrt|lntb|lntbs)/i;
 
@@ -201,6 +213,9 @@ export async function prepareHandoff(
     const env = getEnv();
     if (!parseEnabledRoutes(env.THENCE_ENABLED_ROUTES).includes(transfer.routeId)) {
       throw new AuthError(409, "ROUTE_DISABLED", "Route is no longer enabled.");
+    }
+    if (!settlementChainVerifiable(transfer.routeId, env.THENCE_EVM_RPCS_JSON as Record<string, string>)) {
+      throw new AuthError(409, "ROUTE_NOT_VERIFIABLE", "This network can't be verified right now, so no payment starts on it.");
     }
     // Request linkage revalidated (snapshot terms themselves are immutable).
     if (transfer.requestId) {

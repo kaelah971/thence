@@ -99,7 +99,11 @@ type ChainOptions = {
   finalized?: bigint | null;
   state?: number | ((key: string, block: bigint) => number);
   latestSequence?: bigint[];
+  /** Finalized height per call (last value repeats); overrides `finalized`. */
+  finalizedSequence?: bigint[];
   blockHashes?: Record<string, string | null>;
+  /** Header hash per call for a height (last value repeats): models a reorg. */
+  blockHashSequence?: Record<string, string[]>;
   failLogs?: boolean;
 };
 
@@ -113,6 +117,8 @@ function fixtureChain(options: ChainOptions = {}): ChainReads {
   };
   const latest = options.latest ?? HEAD;
   let latestCalls = 0;
+  let finalizedCalls = 0;
+  const hashCalls = new Map<string, number>();
   return {
     async getTransaction() {
       return null;
@@ -126,9 +132,18 @@ function fixtureChain(options: ChainOptions = {}): ChainReads {
       return latest;
     },
     async getFinalizedBlockNumber() {
+      const sequence = options.finalizedSequence;
+      if (sequence && sequence.length > 0) return sequence[Math.min(finalizedCalls++, sequence.length - 1)]!;
       return options.finalized === undefined ? latest : options.finalized;
     },
     async getBlockHash(_chainId, number) {
+      const key = number.toString();
+      const sequence = options.blockHashSequence?.[key];
+      if (sequence && sequence.length > 0) {
+        const call = hashCalls.get(key) ?? 0;
+        hashCalls.set(key, call + 1);
+        return sequence[Math.min(call, sequence.length - 1)]!;
+      }
       if (Object.prototype.hasOwnProperty.call(options.blockHashes ?? {}, number.toString())) return options.blockHashes![number.toString()] ?? null;
       return blockHash(number);
     },
@@ -306,9 +321,21 @@ describe("A2b2 Arbitrum v7 unspent and retry evidence", () => {
     await expect(verifyHtlcUnspent(unspentInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE" });
   });
 
-  it("refuses when the Arbitrum head changes during the retry scan", async () => {
-    setSettlementChainForTests(fixtureChain({ logs: [createdLog()], latestSequence: [HEAD, HEAD, HEAD, HEAD + 1n] }));
-    await expect(verifyHtlcUnspent(unspentInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE" });
+  it("accepts a head that keeps advancing during the retry scan (mainnet adds ~4 blocks/s)", async () => {
+    // 2026-11-15, arb1.arbitrum.io: the old "head must not move" rule refused
+    // every real check. The scan is pinned to a hash-anchored tip instead.
+    setSettlementChainForTests(fixtureChain({ logs: [createdLog()], latestSequence: [HEAD, HEAD + 3n, HEAD + 7n, HEAD + 11n, HEAD + 15n] }));
+    await expect(verifyHtlcUnspent(unspentInput())).resolves.toMatchObject({ verdict: "UNSPENT" });
+  });
+
+  it("refuses when the scanned Arbitrum tip is reorged or the head moves backwards", async () => {
+    setSettlementChainForTests(fixtureChain({ logs: [createdLog()], blockHashSequence: { [HEAD.toString()]: [blockHash(HEAD), blockHash(HEAD), blockHash(HEAD), blockHash(HEAD), `0x${"ee".repeat(32)}`] } }));
+    await expect(verifyHtlcUnspent(unspentInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE", reason: expect.stringMatching(/anchored Arbitrum block changed during the retry scan/) });
+    setSettlementChainForTests(fixtureChain({ logs: [createdLog()], latestSequence: [HEAD, HEAD, HEAD, HEAD, HEAD - 1n] }));
+    await expect(verifyHtlcUnspent(unspentInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE", reason: expect.stringMatching(/moved backwards during the retry scan/) });
+    // The pinned lifecycle head is anchored the same way.
+    setSettlementChainForTests(fixtureChain({ logs: [createdLog()], blockHashSequence: { [HEAD.toString()]: [blockHash(HEAD), blockHash(HEAD), `0x${"ee".repeat(32)}`] } }));
+    await expect(verifyHtlcUnspent(unspentInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE", reason: expect.stringMatching(/anchored Arbitrum block changed during lifecycle verification/) });
   });
 });
 
@@ -344,8 +371,21 @@ describe("A2b2 Arbitrum v7 no-activity recovery evidence", () => {
     await expect(verifyNoHtlcActivity(noActivityInput({ windowStart: new Date(0), windowEnd: new Date(blockTimestamp(100_000n) * 1000) }))).resolves.toMatchObject({ verdict: "INCONCLUSIVE" });
     setSettlementChainForTests(fixtureChain({ failLogs: true, logs: [] }));
     await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "UNAVAILABLE" });
-    setSettlementChainForTests(fixtureChain({ latestSequence: [HEAD, HEAD + 1n], logs: [] }));
+    // The finalized anchor must survive the scan: a changed header hash or a
+    // finality regression refuses; head growth alone does not.
+    setSettlementChainForTests(fixtureChain({ logs: [], blockHashSequence: { [HEAD.toString()]: [blockHash(HEAD), `0x${"ee".repeat(32)}`] } }));
+    await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE", reason: expect.stringMatching(/anchored Arbitrum block changed/) });
+    setSettlementChainForTests(fixtureChain({ logs: [], finalizedSequence: [HEAD, HEAD - 1n] }));
+    await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE", reason: expect.stringMatching(/finality regressed/) });
+    setSettlementChainForTests(fixtureChain({ logs: [], finalizedSequence: [HEAD, null as unknown as bigint] }));
     await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "INCONCLUSIVE" });
+  });
+
+  it("decides on a finalized window while the head keeps advancing (mainnet adds ~4 blocks/s)", async () => {
+    setSettlementChainForTests(fixtureChain({ latestSequence: [HEAD, HEAD + 4n, HEAD + 8n], logs: [] }));
+    await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "NO_ACTIVITY" });
+    setSettlementChainForTests(fixtureChain({ latestSequence: [HEAD, HEAD + 4n, HEAD + 8n], logs: [refundLog()] }));
+    await expect(verifyNoHtlcActivity(noActivityInput())).resolves.toMatchObject({ verdict: "ACTIVITY_FOUND" });
   });
 
   it("keeps Polygon on its existing hash-lock behavior", async () => {

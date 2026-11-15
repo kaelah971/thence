@@ -475,6 +475,32 @@ async function blockAtOrBefore(getTs: TimestampReader, chainId: number, ts: numb
 }
 
 /**
+ * Arbitrum anchor re-check after a multi-read verification. Arbitrum's head
+ * advances ~4 blocks/s, so "the head did not move" is never observable on
+ * mainnet; the safety property is that the block the evidence is pinned to
+ * is still canonical. Returns a refusal reason, or null when:
+ *  - the anchor height still carries the same header hash (no reorg and no
+ *    inconsistent RPC backend), and
+ *  - the reference tag has not regressed below the anchor (finalized by
+ *    default, or the head for a head-pinned read).
+ */
+async function arbitrumAnchorProblem(
+  chain: ChainReads,
+  anchor: bigint,
+  anchorHash: string,
+  options: { mustNotRegress?: "finalized" | "head" } = {},
+): Promise<string | null> {
+  const head = options.mustNotRegress === "head";
+  const reference = head ? await chain.getLatestBlockNumber(42161) : await chain.getFinalizedBlockNumber(42161);
+  if (reference === null) return "Arbitrum finality evidence became unavailable";
+  if (reference < anchor) return head ? "Arbitrum head moved backwards" : "Arbitrum finality regressed";
+  const again = await chain.getBlockHash(42161, anchor);
+  if (!again) return "Arbitrum anchor header evidence became unavailable";
+  if (again.toLowerCase() !== anchorHash.toLowerCase()) return "The anchored Arbitrum block changed";
+  return null;
+}
+
+/**
  * Prove that the bound HTLC contract emitted NO event for `hashLock` in the
  * window [windowStart, windowEnd]. Read-only. Any doubt is not "no activity":
  * missing chain capabilities, an unbounded range, unreadable chunks or a
@@ -515,12 +541,14 @@ export async function verifyNoHtlcActivity(input: {
   try {
     const latest = await chain.getLatestBlockNumber(input.chainId);
     let finalized: bigint | null = null;
+    let finalizedHash: string | null = null;
     if (input.chainId === 42161) {
       // Never substitute a confirmation count for Arbitrum's L1-finalized tag.
       finalized = await chain.getFinalizedBlockNumber(input.chainId);
       if (finalized === null) return { ...base, verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide." };
       if (finalized > latest) return { ...base, verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide." };
-      if (!(await chain.getBlockHash(input.chainId, finalized))) return { ...base, verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide." };
+      finalizedHash = await chain.getBlockHash(input.chainId, finalized);
+      if (!finalizedHash) return { ...base, verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide." };
     }
     const startTs = Math.floor(input.windowStart.getTime() / 1000);
     const endTs = Math.ceil(input.windowEnd.getTime() / 1000);
@@ -565,8 +593,13 @@ export async function verifyNoHtlcActivity(input: {
         matches.push(log);
       }
     }
-    if (input.chainId === 42161 && (await chain.getLatestBlockNumber(input.chainId)) !== latest) {
-      return { ...base, ...span, verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during the activity scan; refusing to decide." };
+    if (input.chainId === 42161) {
+      // The whole window is at or below the finalized anchor, so blocks the
+      // sequencer adds meanwhile (~4/s) cannot change it. What must hold is
+      // the anchor itself: same header hash and no finality regression.
+      op = "finalityAnchor";
+      const anchorProblem = await arbitrumAnchorProblem(chain, finalized!, finalizedHash!);
+      if (anchorProblem) return { ...base, ...span, verdict: "INCONCLUSIVE", reason: `${anchorProblem} during the activity scan; refusing to decide.` };
     }
     if (matches.length > 0) {
       return {
@@ -1040,17 +1073,20 @@ export async function verifyHtlcLifecycle(input: HtlcLifecycleInput): Promise<Ht
     if (!(await chain.getBlockHash(input.chainId, finalizedBlock))) return { verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide." };
 
     const finalized = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, finalizedBlock);
-    let head = initialHead;
-    let latest = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, head);
+    // Arbitrum adds a block roughly every 0.25 s, so a head that stays put
+    // across two RPC round trips is never observed on mainnet (15/15 refusals
+    // against arb1.arbitrum.io, 2026-11-15). The current state is instead read
+    // AT an explicit pinned height: the newest head seen after the finalized
+    // read (so a change landing meanwhile is still observed), anchored by its
+    // header hash before and after the state read.
     const observedHead = await chain.getLatestBlockNumber(input.chainId);
-    if (observedHead < head) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head moved backwards during lifecycle verification; refusing to decide." };
-    if (observedHead > head) {
-      head = observedHead;
-      latest = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, head);
-      const stableHead = await chain.getLatestBlockNumber(input.chainId);
-      if (stableHead !== head) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during lifecycle verification; retry required." };
-    }
-    if (!(await chain.getBlockHash(input.chainId, head))) return { verdict: "INCONCLUSIVE", reason: "Current Arbitrum head evidence is unavailable; refusing to decide." };
+    if (observedHead < initialHead) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head moved backwards during lifecycle verification; refusing to decide." };
+    const head = observedHead;
+    const headHash = await chain.getBlockHash(input.chainId, head);
+    if (!headHash) return { verdict: "INCONCLUSIVE", reason: "Current Arbitrum head evidence is unavailable; refusing to decide." };
+    const latest = await chain.getHtlcSwapState(input.chainId, input.htlcAddress!, key, head);
+    const headProblem = await arbitrumAnchorProblem(chain, head, headHash, { mustNotRegress: "head" });
+    if (headProblem) return { verdict: "INCONCLUSIVE", reason: `${headProblem} during lifecycle verification; refusing to decide.` };
 
     const finalizedState = htlcStateName(finalized.state);
     const latestState = htlcStateName(latest.state);
@@ -1159,6 +1195,11 @@ export async function verifyHtlcUnspent(input: {
     }
     const latest = await chain.getLatestBlockNumber(input.chainId);
     if (latest < receipt.blockNumber || latest - receipt.blockNumber + 1n > MAX_HTLC_SCAN_BLOCKS) return { verdict: "INCONCLUSIVE", reason: "Scan range exceeds the bound." };
+    let latestHash: string | null = null;
+    if (input.chainId === 42161) {
+      latestHash = await chain.getBlockHash(input.chainId, latest);
+      if (!latestHash) return { verdict: "INCONCLUSIVE", reason: "Arbitrum scan-tip header evidence is unavailable; refusing to retry." };
+    }
     let sawFunding = false;
     for (let s = receipt.blockNumber; s <= latest; s += HTLC_LOG_CHUNK_BLOCKS) {
       const e = s + HTLC_LOG_CHUNK_BLOCKS - 1n > latest ? latest : s + HTLC_LOG_CHUNK_BLOCKS - 1n;
@@ -1179,7 +1220,11 @@ export async function verifyHtlcUnspent(input: {
       }
     }
     if (input.chainId === 42161) {
-      if ((await chain.getLatestBlockNumber(input.chainId)) !== latest) return { verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during the retry scan; refusing to retry." };
+      // The scan covers [funding, latest] exactly; the lifecycle gate above
+      // already read the key ACTIVE at a pinned head. The scanned tip must
+      // still be canonical and the head must not have regressed below it.
+      const tipProblem = await arbitrumAnchorProblem(chain, latest, latestHash!, { mustNotRegress: "head" });
+      if (tipProblem) return { verdict: "INCONCLUSIVE", reason: `${tipProblem} during the retry scan; refusing to retry.` };
       if (!sawFunding) return { verdict: "INCONCLUSIVE", reason: "The bounded Arbitrum scan did not prove the complete SwapKey was funded." };
     }
     return { verdict: "UNSPENT", reason: input.chainId === 42161 ? "The complete original Arbitrum SwapKey has only its funding event through a stable current head." : "Only the funding event exists for this lock on the pinned HTLC." };
@@ -1290,6 +1335,7 @@ export async function verifyHtlcRefund(input: {
       return { ...none, verdict: "INCONCLUSIVE", reason: "Refund scan window starts before chain history.", confirmations: null };
     }
     let toBlock = latest;
+    let refundAnchorHash: string | null = null;
     if (input.chainId === 42161) {
       // Missing or misleading provider pointers are recoverable only through a
       // complete scan ending at finalized ancestry. Never truncate Arbitrum's
@@ -1297,7 +1343,8 @@ export async function verifyHtlcRefund(input: {
       const finalized = await chain.getFinalizedBlockNumber(input.chainId);
       if (finalized === null) return { ...none, verdict: "INCONCLUSIVE", reason: "RPC cannot provide Arbitrum finalized-block evidence; refusing to decide.", confirmations: null };
       if (finalized > latest) return { ...none, verdict: "INCONCLUSIVE", reason: "RPC finality evidence is inconsistent (finalized above head); refusing to decide.", confirmations: null };
-      if (!(await chain.getBlockHash(input.chainId, finalized))) return { ...none, verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide.", confirmations: null };
+      refundAnchorHash = await chain.getBlockHash(input.chainId, finalized);
+      if (!refundAnchorHash) return { ...none, verdict: "INCONCLUSIVE", reason: "Finalized Arbitrum header evidence is unavailable; refusing to decide.", confirmations: null };
       toBlock = finalized;
       if (toBlock < fromBlock) return { ...none, verdict: "INCONCLUSIVE", reason: "Arbitrum has not finalized the refund scan window.", confirmations: null };
       if (toBlock - fromBlock + 1n > MAX_HTLC_SCAN_BLOCKS) return { ...none, verdict: "INCONCLUSIVE", reason: "Arbitrum refund scan window exceeds the bounded complete range.", confirmations: null };
@@ -1317,8 +1364,10 @@ export async function verifyHtlcRefund(input: {
         if (log.transactionHash && TX_HASH_RE.test(log.transactionHash)) found.add(log.transactionHash.toLowerCase());
       }
     }
-    if (input.chainId === 42161 && (await chain.getLatestBlockNumber(input.chainId)) !== latest) {
-      return { ...none, verdict: "INCONCLUSIVE", reason: "Arbitrum head changed during refund discovery; refusing to decide.", confirmations: null };
+    if (input.chainId === 42161) {
+      // The scan ends at the finalized anchor; head growth cannot change it.
+      const anchorProblem = await arbitrumAnchorProblem(chain, toBlock, refundAnchorHash!);
+      if (anchorProblem) return { ...none, verdict: "INCONCLUSIVE", reason: `${anchorProblem} during refund discovery; refusing to decide.`, confirmations: null };
     }
   } catch {
     return { ...none, verdict: "UNAVAILABLE", reason: "Chain data is temporarily unavailable.", confirmations: null };

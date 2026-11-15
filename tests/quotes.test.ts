@@ -130,14 +130,26 @@ describe("quote contracts (pure)", () => {
 
 describe.skipIf(!LIVE)("live exact-receive quotes (read-only)", () => {
   const ROUTES = "usdc-polygon,usdc-arbitrum,usdc-base,usdt-polygon";
+  // The suite pins its own approved-token map (only the two verified USDC
+  // contracts) instead of inheriting whatever the developer's .env carries:
+  // usdc-base and usdt-polygon stay unapproved, so they remain unquoteable.
+  const TOKENS = JSON.stringify({
+    "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+    "usdc-arbitrum": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+  });
   let previous: string | undefined;
-  const setRoutes = (value: string): void => {
+  let previousTokens: string | undefined;
+  const setRoutes = (value: string, tokens: string = TOKENS): void => {
     previous = process.env["THENCE_ENABLED_ROUTES"];
+    previousTokens = process.env["THENCE_ROUTE_TOKENS_JSON"];
     process.env["THENCE_ENABLED_ROUTES"] = value;
+    process.env["THENCE_ROUTE_TOKENS_JSON"] = tokens;
   };
   const restoreRoutes = (): void => {
     if (previous === undefined) delete process.env["THENCE_ENABLED_ROUTES"];
     else process.env["THENCE_ENABLED_ROUTES"] = previous;
+    if (previousTokens === undefined) delete process.env["THENCE_ROUTE_TOKENS_JSON"];
+    else process.env["THENCE_ROUTE_TOKENS_JSON"] = previousTokens;
   };
 
   it("returns a native exact-output quote for USDC/Polygon", async () => {
@@ -192,6 +204,25 @@ describe.skipIf(!LIVE)("live exact-receive quotes (read-only)", () => {
       expect(q["network"]).toBe("Arbitrum");
     } finally {
       restoreRoutes();
+    }
+  });
+
+  it("keeps an enabled Arbitrum route unquoteable without its approved native USDC token", async () => {
+    // Enabled is not enough: no approved token, or the bridged USDC.e
+    // contract, must both refuse before any provider quote is requested.
+    for (const tokens of [
+      JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" }),
+      JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", "usdc-arbitrum": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8" }),
+    ]) {
+      setRoutes(ROUTES, tokens);
+      try {
+        const { cookie } = await login("arb-gate");
+        const res = await authedQuote(cookie, "arb-gate", { routeId: "usdc-arbitrum", targetAmountAtomic: "5000000" });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: string }).error).toBe("ROUTE_NOT_QUOTEABLE");
+      } finally {
+        restoreRoutes();
+      }
     }
   });
 

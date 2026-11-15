@@ -282,14 +282,21 @@ describe.skipIf(!LIVE)("stale-serving fallback (test seam)", () => {
 });
 
 describe.skipIf(!LIVE)("live multi-route exact quotes (read-only)", () => {
-  const setRoutes = (value: string): string | undefined => {
-    const previous = process.env["THENCE_ENABLED_ROUTES"];
+  // Pin the approved-token map the suite asserts against (only the two
+  // verified USDC contracts) rather than inheriting the developer's .env.
+  const TOKENS = JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", "usdc-arbitrum": ARBITRUM_NATIVE_USDC });
+  type Saved = { routes: string | undefined; tokens: string | undefined };
+  const setRoutes = (value: string, tokens: string = TOKENS): Saved => {
+    const saved = { routes: process.env["THENCE_ENABLED_ROUTES"], tokens: process.env["THENCE_ROUTE_TOKENS_JSON"] };
     process.env["THENCE_ENABLED_ROUTES"] = value;
-    return previous;
+    process.env["THENCE_ROUTE_TOKENS_JSON"] = tokens;
+    return saved;
   };
-  const restoreRoutes = (previous: string | undefined): void => {
-    if (previous === undefined) delete process.env["THENCE_ENABLED_ROUTES"];
-    else process.env["THENCE_ENABLED_ROUTES"] = previous;
+  const restoreRoutes = (saved: Saved): void => {
+    if (saved.routes === undefined) delete process.env["THENCE_ENABLED_ROUTES"];
+    else process.env["THENCE_ENABLED_ROUTES"] = saved.routes;
+    if (saved.tokens === undefined) delete process.env["THENCE_ROUTE_TOKENS_JSON"];
+    else process.env["THENCE_ROUTE_TOKENS_JSON"] = saved.tokens;
   };
 
   it("quotes USDC/Ethereum exact with L1 fee units", async () => {
@@ -353,6 +360,20 @@ describe.skipIf(!LIVE)("live multi-route exact quotes (read-only)", () => {
       expect(byId.get("usdc-polygon")?.limitsSats).not.toBeNull();
       expect(typeof byId.get("usdc-polygon")?.tokenAddress).toBe("string");
       expect(byId.get("usdt-polygon")?.availabilityReason).toMatch(/not offered/i);
+    } finally {
+      restoreRoutes(previous);
+    }
+  });
+
+  it("shows an enabled Arbitrum route as unavailable without its approved token, leaving Polygon live", async () => {
+    const previous = setRoutes(ALL_ROUTES, JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" }));
+    try {
+      const res = await routesGet(new Request("http://localhost/api/routes/public"));
+      const body = (await res.json()) as { routes: { id: string; status: string; quoteable: boolean; availabilityReason: string }[] };
+      const byId = new Map(body.routes.map((r) => [r.id, r]));
+      expect(byId.get("usdc-arbitrum")).toMatchObject({ status: "unavailable-token", quoteable: false });
+      expect(byId.get("usdc-arbitrum")?.availabilityReason).toMatch(/approved token/i);
+      expect(byId.get("usdc-polygon")).toMatchObject({ status: "live", quoteable: true });
     } finally {
       restoreRoutes(previous);
     }
