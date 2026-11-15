@@ -574,3 +574,69 @@ describe("amount display consistency (0.3 vs 0.30) — display only", () => {
     expect(padAmountDecimals("0.3", "NIM")).toBe("0.3");
   });
 });
+
+describe('unverified NIM funding (transfer 75f05d35 shape)', () => {
+  // 2026-11-14: Nimiq Pay returned INVALID_TRANSACTION -32602 and the client reported unknown.
+  // The transfer is RECONCILING. Absence of source verification is NOT proof that preparation
+  // failed, and NOT proof that nothing left the wallet.
+  const base = { phase: 'handoff', providerStatus: 'pending', claimReady: false, receiptReady: false }
+
+  it.each(['RECONCILING', 'OUTCOME_UNKNOWN'])('%s without source proof stays neutral', (status) => {
+    const view = paymentProgress({ ...base, transferStatus: status, sourceVerifiedAtMs: null })
+    expect(view.headline).toBe('Payment status still being verified')
+    expect(view.tone).toBe('neutral')
+    expect(view.action).toBe('check')
+  })
+
+  it('never asserts locked funds, moved funds or stayed-put funds', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'RECONCILING', sourceVerifiedAtMs: null })
+    const text = `${view.headline} ${view.body}`
+    expect(text).not.toMatch(/locked/i)
+    expect(view.body).toMatch(/not proof that funds moved/i)
+    expect(view.body).toMatch(/not proof that they stayed put/i)
+  })
+
+  it('does not claim preparation failed without a specific diagnostic', () => {
+    // Even when a tracker message is present, ProgressInput carries no trustworthy
+    // pre-signing signal, so the view must not conclude that preparation failed.
+    const view = paymentProgress({ ...base, transferStatus: 'RECONCILING', sourceVerifiedAtMs: null, message: 'Cannot create swap' })
+    expect(view.headline).not.toMatch(/preparation/i)
+    expect(view.body).not.toMatch(/could not be prepared/i)
+  })
+
+  it('tells the owner not to retry the same invoice', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'OUTCOME_UNKNOWN', sourceVerifiedAtMs: null })
+    expect(view.body).toMatch(/same invoice again/i)
+  })
+
+  it('keeps the timeline when the status is known', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'RECONCILING', sourceVerifiedAtMs: null })
+    expect(view.steps).not.toBeNull()
+  })
+})
+
+describe('paths that must not be affected by the unverified branch', () => {
+  const base = { phase: 'handoff', providerStatus: 'pending', claimReady: false, receiptReady: false }
+
+  it('an initiated payment awaiting verification keeps its existing copy', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'LIGHTNING_HANDOFF', sourceVerifiedAtMs: null, claimDeadlineMs: Date.now() + 3_600_000 })
+    expect(view.headline).not.toBe('Payment status still being verified')
+  })
+
+  it('independently verified NIM funding keeps the locked-funds copy', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'LIGHTNING_HANDOFF', sourceVerifiedAtMs: Date.now(), handoffAtMs: Date.now(), claimDeadlineMs: Date.now() + 3_600_000 })
+    expect(view.headline).not.toBe('Payment status still being verified')
+    expect(`${view.headline} ${view.body}`).toMatch(/locked/i)
+  })
+
+  it('delivered still wins', () => {
+    const view = paymentProgress({ ...base, phase: 'delivered', transferStatus: 'DELIVERED', sourceVerifiedAtMs: null, receiptReady: true })
+    expect(view.headline).toBe('Delivered')
+  })
+
+  it('refunded still wins', () => {
+    const view = paymentProgress({ ...base, phase: 'refunded', transferStatus: 'REFUNDED', sourceVerifiedAtMs: null })
+    expect(view.headline).toMatch(/refunded/i)
+    expect(view.action).toBe('none')
+  })
+})
