@@ -379,6 +379,9 @@ describe.skipIf(!LIVE)("P6 server reconciliation (isolated test database)", () =
 
   it("P2: the cron backfills a missing claim deadline only after identity verification", async () => {
     const p = await authorizedPayment("backfill");
+    // Attach now requires and stores the deadline (HTLC preflight), so recreate
+    // the legacy pre-P2 binding shape (no stored deadline) in the TEST database.
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: null }).where(eq(swapAttachments.transferId, p.id));
     const locktime = nowSec() + 3500;
     provider.set(p.swapId, swapShape(p.swapId, p.sourceSats, { evm_refund_locktime: locktime }));
     await runServerReconciliation({ scope: [p.id], leaseName: lease("backfill") });

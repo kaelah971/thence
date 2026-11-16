@@ -400,7 +400,8 @@ describe.skipIf(!LIVE)("P3 claim authorization (isolated test database)", () => 
     await expectRefused(409, "DEADLINE_TOO_CLOSE");
     expect((await reasonsOf(p.id)).filter((r) => r === "CLAIM_AUTHORIZED")).toHaveLength(0);
     expect((await getDb().select().from(jobLeases).where(eq(jobLeases.name, `claim:${p.id}`))).length).toBe(0);
-  });
+    // ~15 sequential live round trips plus a funded setup.
+  }, 180_000);
 
   it("every transfer this suite created is consistent under the strict checker", async () => {
     for (const id of createdTransferIds) await expectConsistent(id);
