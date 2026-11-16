@@ -294,15 +294,15 @@ export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiRe
  * the owner can check their NIM.
  */
 export const EXPIRED_UNFUNDED_BODY =
-  "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on Polygon for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+  "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on the settlement network for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
 
 /**
- * P5: a verified REFUNDED is the POLYGON side only — the provider's USDC lock
+ * P5: a verified REFUNDED is the EVM side only — the provider's HTLC lock
  * returned to the provider. It is never a NIM refund: Thence cannot observe
  * Nimiq Pay's NIM HTLC, so the two refunds are always described separately.
  */
 export const REFUNDED_BODY =
-  "Nothing reached their wallet. The USDC locked on Polygon for this payment went back to the provider, and Thence verified that on-chain. That is not a refund of your NIM. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+  "Nothing reached their wallet. The provider's lock for this payment went back to the provider, and Thence verified that on-chain. That is not a refund of your NIM. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
 
 const OWNER_CLAIM_PROVIDER = new Set(["serverfunded", "clientredeeming", "clientredeemed"]);
 
@@ -407,7 +407,7 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
     body: "This payment was cancelled. The server confirmed no settlement.",
   },
   refunded: {
-    title: "Not delivered — Polygon lock refunded",
+    title: "Not delivered — provider lock refunded",
     body: REFUNDED_BODY,
   },
   expired: {

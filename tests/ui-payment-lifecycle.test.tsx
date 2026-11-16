@@ -561,11 +561,12 @@ describe("Activity — the two real incident payments", () => {
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
   });
 
-  it("refunded 077770a1: closed with 'Not delivered — Polygon lock refunded'; no check or finish actions", async () => {
+  it("refunded 077770a1: closed with the refunded pill (provider lock, not NIM); no check or finish actions", async () => {
     vi.setSystemTime(new Date("2026-11-03T13:00:00.000Z"));
     api = installFakeApi({ [INCIDENT.transfer.id]: { status: "REFUNDED", providerStatus: "clientfundedserverrefunded", observedAt: INCIDENT.observations[1]!.observed_at } });
     await openActivityDetail(/They/);
-    expect(screen.getAllByText("Not delivered — Polygon lock refunded").length).toBeGreaterThan(0);
+    // The status pill is shared by Polygon and Arbitrum, so it names the provider's lock, never the NIM.
+    expect(screen.getAllByText("Not delivered — provider lock refunded").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Finish delivery" })).toBeNull();
   });

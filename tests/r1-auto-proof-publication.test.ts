@@ -40,6 +40,9 @@ import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route
 import { POST as verifySettlementPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
 import { GET as reconciliationGet } from "../app/api/transfers/[id]/reconciliation/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const INC = fixture.incident_077770a1;
 const HASH_LOCK = INC.attachment.payment_hash;
@@ -137,6 +140,8 @@ function installNimiqRpc(): void {
 const provider = new Map<string, Record<string, unknown>>();
 function swapShape(id: string, sourceSats: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id, direction: "lightning_to_evm", bolt11_invoice: "lnbc3980n1p4testinvoice", hash_lock: HASH_LOCK,
     source_amount: sourceSats, target_amount: "300000", evm_chain_id: 137, evm_htlc_address: HTLC,
     target_evm_address: EVM_A,

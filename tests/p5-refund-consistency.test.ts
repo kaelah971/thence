@@ -191,7 +191,9 @@ describe("P5 refund wording keeps the Polygon and Nimiq sides separate", () => {
       expect(text).not.toMatch(/(your )?NIM (was|has been|is) (refunded|returned)/i);
     }
     expect(USER_FACING_LABEL.REFUNDED).toMatch(/not delivered/i);
-    expect(USER_FACING_LABEL.REFUNDED).toMatch(/polygon/i);
+    // The label is shared by Polygon and Arbitrum: it names the provider's lock, never the NIM.
+    expect(USER_FACING_LABEL.REFUNDED).toMatch(/provider lock refunded/i);
+    expect(USER_FACING_LABEL.REFUNDED).not.toMatch(/nim/i);
     expect(REFUNDED_BODY).toMatch(/not a refund of your NIM/i);
     expect(REFUNDED_BODY).toMatch(/can't see inside Nimiq Pay/i);
     // Same Nimiq-side honesty as the expired-unfunded case.

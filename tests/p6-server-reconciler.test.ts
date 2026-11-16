@@ -38,6 +38,9 @@ import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-hando
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { GET as cronGet } from "../app/api/cron/reconcile/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const INC = fixture.incident_077770a1;
 const REAL_HASH_LOCK = INC.attachment.payment_hash;
@@ -172,6 +175,8 @@ function installProvider(): void {
 /** Satora-shaped swap carrying the REAL 077770a1 hash lock and HTLC. */
 function swapShape(id: string, sourceSats: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc3980n1p4testinvoice",

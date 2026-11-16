@@ -31,6 +31,9 @@ import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/rou
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as closeExpiredPost } from "../app/api/transfers/[id]/close-expired/route";
 import { POST as closeReturnedPost } from "../app/api/transfers/[id]/close-nim-returned/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
 /** HTLC funding event topic (same constant as tests/p4-expiry-resolution.test.ts). */
@@ -102,6 +105,8 @@ async function incident(tag: string, opts: { reportHash?: boolean } = {}): Promi
   const swapId = `r2-swap-${RUN}-${tag}`;
   const hashLock = `0x${txHash(`lock-${RUN}-${tag}`)}`;
   swaps.set(swapId, {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id: swapId, direction: "lightning_to_evm", bolt11_invoice: "lnbc-test-redacted", hash_lock: hashLock,
     source_amount: transfer.quote.sourceSats, target_amount: "300000", evm_chain_id: 137, evm_htlc_address: HTLC,
     target_evm_address: EVM_A, target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" },

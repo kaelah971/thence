@@ -338,6 +338,10 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "QUOTE_STALE":
     case "QUOTE_EXPIRED":
       return { title: "That price has expired", body: "Prices only last a few minutes. Refresh the price, then continue.", retryable: true, action: "requote" };
+    case "REQUEST_ALREADY_PAID":
+      return { title: "This request was already paid", body: "Someone already completed a payment for this request, so this one was stopped before Nimiq Pay asked you to approve anything. Ask for a new link if more is owed.", retryable: false, action: "abort" };
+    case "REQUEST_PAYMENT_IN_PROGRESS":
+      return { title: "This request is already being paid", body: "Another payment for this request is in progress, so this one was stopped before Nimiq Pay asked you to approve anything. Check with the requester before paying again.", retryable: false, action: "abort" };
     case "REQUEST_EXPIRED":
     case "REQUEST_CANCELLED":
     case "REQUEST_NOT_FOUND":

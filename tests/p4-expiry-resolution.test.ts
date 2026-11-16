@@ -37,6 +37,9 @@ import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/rou
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as closePost } from "../app/api/transfers/[id]/close-expired/route";
 import { GET as evidenceGet } from "../app/api/transfers/[id]/provider-evidence/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
 const ARBITRUM_HTLC = TRUSTED_HTLC_CONTRACTS[42161]![0]!;
@@ -90,6 +93,8 @@ function swapFor(
   const chainId = options.chainId ?? 137;
   const tokenAddress = options.tokenAddress ?? "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
   return {
+    ...declaredHtlc(chainId === 42161 ? 42161 : 137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc-test-redacted",

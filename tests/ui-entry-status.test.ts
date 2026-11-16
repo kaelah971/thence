@@ -47,7 +47,7 @@ describe("transfer status presentation", () => {
   it("never labels an unresolved outcome as failed or approved", () => {
     expect(pillLabel("OUTCOME_UNKNOWN")).toBe("Checking your payment");
     expect(pillLabel("RECONCILING")).toBe("Checking your payment");
-    expect(pillLabel("REFUNDED")).toBe("Not delivered — Polygon lock refunded");
+    expect(pillLabel("REFUNDED")).toBe("Not delivered — provider lock refunded");
     expect(matchesFilter("REFUNDED", "progress")).toBe(false);
     // Unresolved outcomes leave approval itself unconfirmed (paused), never done or failed.
     expect(timelineFor("OUTCOME_UNKNOWN")[0]).toMatchObject({ label: "Approve in Nimiq Pay", state: "paused" });

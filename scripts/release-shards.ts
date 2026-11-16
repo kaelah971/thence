@@ -53,6 +53,7 @@ export const SHARDS: Record<string, string[]> = {
     "arbitrum-ux-gates",
     "arbitrum-htlc-v6-trust",
     "arbitrum-incident-af9dc922",
+    "request-single-payment",
     "payments-mode",
   ],
   S2: ["reconciliation", "settlement", "f42-handoff", "f45-nimiq-pay-failure-reasons", "f812-attach-recovery", "f812-retire-replace"],

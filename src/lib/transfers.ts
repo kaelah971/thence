@@ -39,6 +39,7 @@ import { pairForRouteId } from "@/domain/routes";
 import { checkDestination, displayNameSchema, readJsonBody, rejectForbiddenKeys } from "@/lib/recipients";
 import { createQuote } from "@/lib/quotes";
 import { recordedReturn, type RecordedNimReturn } from "@/lib/nim-return-record";
+import { assertRequestPayable } from "@/lib/request-payment";
 
 export const MAX_BODY_BYTES = 8_192;
 
@@ -373,6 +374,9 @@ export async function createTransfer(
     if (!same) throw new AuthError(409, "IDEMPOTENCY_CONFLICT", "Idempotency key was already used for a different transfer.");
     return { transfer: await toView(db, prior[0]), deduplicated: true };
   }
+  // One payment per request: refuse once another linked transfer delivered or
+  // is already authorized for payment (re-checked under a lock at authorize).
+  if (intent.requestId) await assertRequestPayable(db, intent.requestId, null);
 
   if (!canTransition("DRAFT", "QUOTED")) {
     throw new AuthError(500, "LIFECYCLE_FORBIDDEN", "Transfer preparation is not permitted.");

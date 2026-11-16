@@ -41,6 +41,62 @@ export const HANDOFF_MIN_CLAIM_RUNWAY_MS: Readonly<Record<number, number>> = {
   42161: CLAIM_UNSAFE_WINDOW_MS + 30 * 60_000,
 };
 
+/**
+ * The provider-declared settlement terms as BOUND at attach. Recorded in the
+ * SWAP_ATTACHED audit row (same transaction as the binding) and compared with
+ * the fresh provider read at authorize: the deployment the owner's recovery
+ * material was created against must be the one Nimiq Pay pays into.
+ */
+export interface BoundHtlcTerms {
+  chainId: number;
+  htlcAddress: string;
+  version: number;
+  kind: string;
+  coordinator: string;
+  lockToken: string;
+  lockAmount: string;
+  refundAddress: string;
+  claimAddress: string;
+  targetToken: string;
+  // The source amount is deliberately NOT bound here: a changed price is the
+  // repricing guard's decision (never above the quoted or explicitly accepted
+  // figure), so the owner sees "The price moved" rather than a terms refusal.
+}
+
+const low = (v: string | null | undefined): string => (v ?? "").toLowerCase();
+
+/** Snapshot of the terms to bind (call only after `htlcPreflight` passed). */
+export function boundHtlcTermsOf(facts: VerifiedSwapFacts): BoundHtlcTerms {
+  return {
+    chainId: facts.evmChainId,
+    htlcAddress: low(facts.evmHtlcAddress),
+    version: facts.evmHtlcVersion ?? -1,
+    kind: facts.evmHtlcKind ?? "",
+    coordinator: low(facts.evmCoordinatorAddress),
+    lockToken: low(facts.evmHtlcTokenAddress),
+    lockAmount: facts.evmHtlcAmountAtomic ?? "",
+    refundAddress: low(facts.evmHtlcRefundAddress),
+    claimAddress: low(facts.evmHtlcClaimAddress),
+    targetToken: low(facts.targetTokenAddress),
+  };
+}
+
+/**
+ * First bound term the fresh provider read no longer matches, "missing" when
+ * no complete bound record exists (bound before this check, or malformed), or
+ * null when every term is unchanged. Pure.
+ */
+export function boundTermsDrift(bound: unknown, facts: VerifiedSwapFacts): keyof BoundHtlcTerms | "missing" | null {
+  if (typeof bound !== "object" || bound === null) return "missing";
+  const b = bound as Record<string, unknown>;
+  const live = boundHtlcTermsOf(facts);
+  for (const key of Object.keys(live) as (keyof BoundHtlcTerms)[]) {
+    if (!(key in b) || b[key] === "" || b[key] === null) return "missing";
+    if (b[key] !== live[key]) return key;
+  }
+  return null;
+}
+
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const HASH_LOCK_RE = /^0x[0-9a-fA-F]{64}$/;
 

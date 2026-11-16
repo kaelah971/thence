@@ -17,7 +17,7 @@
  * replaced with synthetic values.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { htlcPreflight, HANDOFF_MIN_CLAIM_RUNWAY_MS } from "@/lib/htlc-preflight";
+import { boundHtlcTermsOf, boundTermsDrift, htlcPreflight, HANDOFF_MIN_CLAIM_RUNWAY_MS } from "@/lib/htlc-preflight";
 import {
   HTLC_DEPLOYMENTS,
   SWAP_REDEEMED_EVENT_TOPIC,
@@ -142,6 +142,24 @@ describe("pre-handoff HTLC preflight (before Nimiq Pay commits NIM)", () => {
     expect(htlcPreflight(incidentFacts({ evmRefundLocktime: DEADLINE + 1 }), { ...AT_CREATION, bound })).toMatchObject({ ok: false, code: "HTLC_TERMS_MISMATCH" });
     expect(htlcPreflight(incidentFacts({ paymentHash: `0x${"d1".repeat(32)}` }), { ...AT_CREATION, bound })).toMatchObject({ ok: false, code: "HTLC_TERMS_MISMATCH" });
     expect(htlcPreflight(incidentFacts(), { ...AT_CREATION, bound: { ...bound, evmRefundLocktime: null } })).toMatchObject({ ok: false, code: "HTLC_TERMS_MISMATCH" });
+  });
+
+  it("binds every settlement term at attach and reports the first one that drifts by authorize", () => {
+    const bound = boundHtlcTermsOf(incidentFacts());
+    expect(bound).toMatchObject({ chainId: 42161, htlcAddress: V6, version: 6, kind: "erc20", coordinator: COORD_V4, lockToken: TBTC_ARBITRUM, refundAddress: SATORA_REFUND });
+    expect(boundTermsDrift(bound, incidentFacts())).toBeNull();
+    // Same terms, different letter case from the provider: not drift.
+    expect(boundTermsDrift(bound, incidentFacts({ evmHtlcRefundAddress: SATORA_REFUND.toUpperCase().replace("0X", "0x") }))).toBeNull();
+    // Both deployments are trusted on Arbitrum, yet a switch after binding is refused.
+    expect(boundTermsDrift(bound, incidentFacts({ evmHtlcAddress: V7, evmHtlcVersion: 7, evmCoordinatorAddress: COORD_V5 }))).toBe("htlcAddress");
+    expect(boundTermsDrift(bound, incidentFacts({ evmHtlcAmountAtomic: "1" }))).toBe("lockAmount");
+    expect(boundTermsDrift(bound, incidentFacts({ evmHtlcClaimAddress: "0x00000000000000000000000000000000000000c2" }))).toBe("claimAddress");
+    // A price change is the repricing guard's decision, not a terms refusal.
+    expect(boundTermsDrift(bound, incidentFacts({ sourceSats: "3005" }))).toBeNull();
+    expect(boundTermsDrift(bound, incidentFacts({ targetTokenAddress: "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8" }))).toBe("targetToken");
+    // No bound record (bound before this check, or tampered): never authorizes.
+    expect(boundTermsDrift(undefined, incidentFacts())).toBe("missing");
+    expect(boundTermsDrift({ ...bound, coordinator: "" }, incidentFacts())).toBe("missing");
   });
 
   it("requires a claim runway that covers Arbitrum's L1 finality", () => {
