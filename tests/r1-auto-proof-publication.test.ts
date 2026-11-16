@@ -396,7 +396,10 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
     const lines: string[] = [];
     setStallAlertSinkForTests((line) => lines.push(line));
     try {
-      const FASTSPOT_ID = "fs-swap-0001-abcdef";
+      // Per run: the shared test database may still hold rows from an interrupted
+      // earlier run, and this test asserts no OTHER transfer carries the id.
+      const FASTSPOT_ID = `fs-${RUN}-0001-abcdef`;
+      const CONFLICT_ID = `fs-${RUN}-9999-zzzzzz`;
       const reportWith = (p: Paid, body: Record<string, unknown>) =>
         reportPost(postJson(`http://localhost/api/transfers/${p.id}/handoff-result`, body, { cookie: p.cookie, ...client(p.tag) }), params(p.id));
       const hintRows = async (id: string) =>
@@ -419,9 +422,9 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
       expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: FASTSPOT_ID })).status).toBe(200);
       expect(await hintRows(p.id)).toHaveLength(1);
       // Mismatch: kept as a flagged conflict; the first id is never replaced.
-      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: "fs-swap-9999-zzzzzz" })).status).toBe(200);
+      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: CONFLICT_ID })).status).toBe(200);
       let hint = await readHostSwapHint(getDb(), p.id);
-      expect(hint).toMatchObject({ hostSwapId: FASTSPOT_ID, conflictingIds: ["fs-swap-9999-zzzzzz"], reportedOnOtherTransfer: false });
+      expect(hint).toMatchObject({ hostSwapId: FASTSPOT_ID, conflictingIds: [CONFLICT_ID], reportedOnOtherTransfer: false });
       // Bounded: at most HOST_SWAP_HINT_MAX_ROWS rows per transfer.
       for (const n of [1, 2, 3]) await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: `fs-swap-extra-${n}` });
       expect(await hintRows(p.id)).toHaveLength(HOST_SWAP_HINT_MAX_ROWS);
