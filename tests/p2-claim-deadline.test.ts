@@ -18,6 +18,7 @@ import { POST as attachPost } from "../app/api/transfers/[id]/attach/route";
 import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-handoff/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { GET as resumeGet } from "../app/api/transfers/[id]/reconciliation/route";
+import { declaredHtlc } from "./htlc-fixture";
 
 const EVM_A = "0x0000000000000000000000000000000000000001";
 const createdUserIds: string[] = [];
@@ -59,6 +60,7 @@ beforeEach(() => {
 /** Satora-shaped swap: created now, Polygon locktime +1 h, invoice expiry +1.5 h (as observed in production). */
 function satoraSwap(id: string, hashLock: string, sourceSats: string, locktime: number | undefined): Record<string, unknown> {
   const swap: Record<string, unknown> = {
+    ...declaredHtlc(137),
     id,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc3980n1p4testinvoice",
@@ -146,8 +148,20 @@ describe.skipIf(!LIVE)("P2 claim deadline (isolated test database)", () => {
     expect((await getDb().select({ s: transfers.status }).from(transfers).where(eq(transfers.id, tooSoon.id)))[0]?.s).toBe("QUOTED");
   });
 
-  it("an unreported locktime binds as unknown and is backfilled by reconciliation only after identity verification", async () => {
-    const { id, cookie } = await bind("backfill", undefined);
+  it("an unreported locktime is refused before payment (HTLC preflight): nothing bound, transfer stays QUOTED", async () => {
+    const r = await bind("no-deadline", undefined, false);
+    expect(r.attachStatus).toBe(409);
+    expect(r.attachBody["error"]).toBe("HTLC_TERMS_INCOMPLETE");
+    expect(await storedDeadline(r.id)).toBeNull();
+    expect((await getDb().select({ s: transfers.status }).from(transfers).where(eq(transfers.id, r.id)))[0]?.s).toBe("QUOTED");
+  });
+
+  it("a legacy binding without a stored locktime is backfilled by reconciliation only after identity verification", async () => {
+    const bound = nowSec() + 3500;
+    const { id, cookie } = await bind("backfill", bound, false);
+    // Rows bound before P2 have no stored deadline: recreate that shape in the TEST database.
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: null }).where(eq(swapAttachments.transferId, id));
+    overrides = { evm_refund_locktime: undefined };
     expect(await storedDeadline(id)).toBeNull();
     let view = await resume(id, cookie);
     expect(view.latest["claimWindow"]).toBe("unknown");

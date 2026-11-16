@@ -55,6 +55,7 @@ import {
   verifyNimiqSourceTransaction,
   type VerifiedNimiqSource,
 } from "@/lib/nimiq-source";
+import { CLAIM_ACTIVITY_STATUSES, PROVIDER_REFUND_STATUSES } from "@/domain/provider-status";
 
 type Db = ReturnType<typeof getDb>;
 type TxLike = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -67,13 +68,7 @@ const MAIN_LINE: TransferStatus[] = [
   "CLAIMING",
 ];
 
-const REFUNDED_PROVIDER_STATUSES = new Set([
-  "clientrefunded",
-  "clientfundedserverrefunded",
-  "clientrefundedserverfunded",
-  "clientrefundedserverrefunded",
-  "clientredeemedandclientrefunded",
-]);
+const REFUNDED_PROVIDER_STATUSES = PROVIDER_REFUND_STATUSES;
 
 const REFUND_NEGATIVE = new Set([
   ...REFUNDED_PROVIDER_STATUSES,
@@ -190,7 +185,7 @@ export function planReconciliation(
       ? { action: "none", reason: "Already at or beyond server-funded." }
       : { action: "advance", path, reason: "Provider-confirmed server funding." };
   }
-  if (["clientredeeming", "clientredeemed", "serverredeemed"].includes(providerStatus)) {
+  if (CLAIM_ACTIVITY_STATUSES.has(providerStatus)) {
     const path = walkMainLine("CLAIMING");
     if (path === null) return { action: "none", reason: "No legal forward path from current state." };
     return path.length === 0

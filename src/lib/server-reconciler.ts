@@ -34,6 +34,7 @@ import { reconcileCore } from "@/lib/reconcile";
 import { verifySettlementCore } from "@/lib/settlement";
 import { claimWindowAt } from "@/domain/claim-deadline";
 import type { TransferStatus } from "@/domain/transfers";
+import { CLAIM_ACTIVITY_STATUSES } from "@/domain/provider-status";
 
 export const RECONCILER_LEASE = "server-reconciler";
 /** Lease TTL: longer than the function's max duration so a crashed run cannot block forever. */
@@ -213,7 +214,7 @@ export async function releaseLease(name: string, holder: string, summary: Record
 /* ---------------- run ---------------- */
 
 /** Provider statuses that mean a claim was submitted or settled (verify delivery). */
-const CLAIM_PROGRESS: ReadonlySet<string> = new Set(["clientredeeming", "clientredeemed", "serverredeemed"]);
+const CLAIM_PROGRESS = CLAIM_ACTIVITY_STATUSES;
 
 export interface RunOptions {
   maxTransfers?: number;

@@ -24,6 +24,7 @@
  */
 import { isTerminal, TRANSFER_STATUSES, type TransferStatus } from "@/domain/transfers";
 import { providerEvidenceDisposition, type ProviderEvidence } from "./settlement-client";
+import type { SettlementNetwork } from "./network-copy";
 
 export type RecoveryKind = "preparation" | "uncertain" | "funds-moved" | "expired-closable" | "closed";
 
@@ -62,10 +63,23 @@ export interface RecoveryInput {
   sourceVerified?: boolean;
   /** Archived/preview screens never offer actions. */
   readOnly?: boolean;
+  /** Settlement network of the payment's route (copy only; defaults to Polygon). */
+  network?: SettlementNetwork;
 }
 
+/**
+ * The provider's EVM refund returns the PROVIDER's lock. The owner's NIM sits
+ * in Nimiq Pay's own HTLC, which only Nimiq Pay (or its timeout) releases.
+ */
+export const NIM_RETURN_NOTE =
+  "Your NIM is returned separately: Nimiq Pay's lock releases it to your wallet after its own timeout. Thence can't see that step, so check your Nimiq Pay balance; if it isn't back after the timeout, refund the expired swap in Nimiq Pay.";
+
 const PREPARATION: ReadonlySet<TransferStatus> = new Set(["DRAFT", "QUOTED", "SWAP_CREATED", "AWAITING_NIM_APPROVAL"]);
-/** Polygon side funded or claimed: verified by the server before these statuses exist. */
+/**
+ * Provider-reported funding (CLIENT_FUNDED / SERVER_FUNDED follow the
+ * provider's status) or an authorized claim (CLAIMING: claim-intent verified
+ * the funding on-chain first). Copy must not call provider funding verified.
+ */
 const FUNDED: ReadonlySet<TransferStatus> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING"]);
 /** P4 accepts only RECONCILING; R2 accepts a failed handoff in any of these. */
 const P4_FROM: ReadonlySet<TransferStatus> = new Set(["RECONCILING"]);
@@ -90,14 +104,14 @@ export function closeActionFor(status: TransferStatus, evidence: ProviderEvidenc
 
 export function recoveryState(input: RecoveryInput): RecoveryView {
   const { status, evidence } = input;
-  const view = classify(status, evidence, input.sourceVerified === true);
+  const view = classify(status, evidence, input.sourceVerified === true, input.network ?? "Polygon");
   if (input.readOnly && view.primary !== "receipt") return { ...view, primary: "none" };
   return view;
 }
 
-function classify(status: TransferStatus, evidence: ProviderEvidence | null, sourceVerified: boolean): RecoveryView {
+function classify(status: TransferStatus, evidence: ProviderEvidence | null, sourceVerified: boolean, network: SettlementNetwork): RecoveryView {
   // 5. Closed — terminal states never offer recovery actions.
-  if (isTerminal(status)) return closedView(status);
+  if (isTerminal(status)) return closedView(status, network);
 
   // 4. Expired and eligible to close — only when the server's own gates pass.
   const close = closeActionFor(status, evidence);
@@ -107,8 +121,8 @@ function classify(status: TransferStatus, evidence: ProviderEvidence | null, sou
       primary: "close-expired",
       title: "Expired without funding — you can close it",
       body:
-        "The provider reports this payment expired without being funded, and Thence has no record of a NIM payment or a Polygon transaction for it. " +
-        "Closing it checks the provider and the Polygon network again first, and keeps it open if anything doesn't match.",
+        `The provider reports this payment expired without being funded, and Thence has no record of a NIM payment or a ${network} transaction for it. ` +
+        `Closing it checks the provider and the ${network} network again first, and keeps it open if anything doesn't match.`,
       tone: "info",
     };
   }
@@ -124,7 +138,11 @@ function classify(status: TransferStatus, evidence: ProviderEvidence | null, sou
     };
   }
 
-  // 3. Funds independently verified as moved.
+  // A provider refund reported while the transfer still looks funded (e.g. the
+  // claim was refused and the deadline passed) must never read as "funded".
+  if (FUNDED.has(status) && providerEvidenceDisposition(evidence) === "REFUNDED") return uncertainView(status, evidence, network);
+
+  // 3. Funds reported as moved (provider funding) or verified (NIM source / authorized claim).
   if (FUNDED.has(status) || (status === "LIGHTNING_HANDOFF" && sourceVerified)) {
     return {
       kind: "funds-moved",
@@ -133,7 +151,9 @@ function classify(status: TransferStatus, evidence: ProviderEvidence | null, sou
       body:
         status === "LIGHTNING_HANDOFF"
           ? "Thence verified your NIM payment on the Nimiq blockchain. Delivery follows the steps below — don't pay again."
-          : "Funding is verified on Polygon. Delivery follows the steps below — don't pay again.",
+          : status === "CLAIMING"
+            ? `Funding was verified on ${network} before delivery was started. Delivery follows the steps below — don't pay again.`
+            : `The provider reports this payment is funded on ${network}. Thence checks that funding on-chain before delivery can be finished — don't pay again.`,
       tone: "info",
     };
   }
@@ -169,10 +189,10 @@ function classify(status: TransferStatus, evidence: ProviderEvidence | null, sou
   }
 
   // 2. Uncertain — includes provider-reported funding the server hasn't verified yet.
-  return uncertainView(status, evidence);
+  return uncertainView(status, evidence, network);
 }
 
-function uncertainView(status: TransferStatus, evidence: ProviderEvidence | null): RecoveryView {
+function uncertainView(status: TransferStatus, evidence: ProviderEvidence | null, network: SettlementNetwork): RecoveryView {
   const base = { kind: "uncertain" as const, primary: "check-status" as const, tone: "warn" as const };
   const disposition = providerEvidenceDisposition(evidence);
   if (disposition === "REFUNDED") {
@@ -180,8 +200,9 @@ function uncertainView(status: TransferStatus, evidence: ProviderEvidence | null
       ...base,
       title: "Not delivered — provider reports a refund",
       body:
-        "The provider reports that its Polygon lock was refunded to the provider. That is not a refund of your NIM. " +
-        "Thence keeps this payment open until it can verify what happened. Don't pay again.",
+        `The provider reports that its ${network} lock was refunded to the provider, so nothing reached their wallet. That is not a refund of your NIM. ` +
+        "Thence keeps this payment open until it verifies the refund on-chain. Don't pay again. " +
+        NIM_RETURN_NOTE,
     };
   }
   if (disposition === "FUNDING_DETECTED" || disposition === "SETTLEMENT_DETECTED") {
@@ -208,21 +229,27 @@ function uncertainView(status: TransferStatus, evidence: ProviderEvidence | null
   };
 }
 
-function closedView(status: TransferStatus): RecoveryView {
+function closedView(status: TransferStatus, network: SettlementNetwork): RecoveryView {
   const kind = "closed" as const;
   switch (status) {
     case "DELIVERED":
-      return { kind, primary: "receipt", title: "Delivered", body: "Verified on Polygon. The receipt is the proof.", tone: "done" };
+      return { kind, primary: "receipt", title: "Delivered", body: `Verified on ${network}. The receipt is the proof.`, tone: "done" };
     case "DELIVERED_SHORT":
       return {
         kind,
         primary: "receipt",
         title: "Delivered — less than requested",
-        body: "Verified on Polygon, but they received less than you asked to send. The receipt shows both amounts. Don't pay again for this.",
+        body: `Verified on ${network}, but they received less than you asked to send. The receipt shows both amounts. Don't pay again for this.`,
         tone: "warn",
       };
     case "REFUNDED":
-      return { kind, primary: "none", title: "Not delivered — Polygon lock refunded", body: "The provider's Polygon lock was refunded, so nothing reached their wallet.", tone: "warn" };
+      return {
+        kind,
+        primary: "none",
+        title: `Not delivered — ${network} lock refunded`,
+        body: `Thence verified on ${network} that the provider's lock was refunded to the provider, so nothing reached their wallet. ` + NIM_RETURN_NOTE,
+        tone: "warn",
+      };
     case "EXPIRED_UNFUNDED":
       return { kind, primary: "none", title: "Payment expired — not delivered", body: "Closed after Thence verified nothing reached their network.", tone: "info" };
     case "USER_CANCELLED":

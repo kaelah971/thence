@@ -11,7 +11,10 @@
  *            quotes resolve through the production resolver with the trusted
  *            identity (USDC.e is refused).
  *  chain     The RPC really serves chain 42161; native USDC / USDC.e contract
- *            identity on-chain; the pinned HTLC has code; the `finalized` tag
+ *            identity on-chain; EVERY pinned HTLC deployment's identity
+ *            (code present, EIP-712 domain separator = "HTLCErc20" + its
+ *            declared version + chain 42161 + its own address, and its paired
+ *            coordinator embedding exactly that HTLC address); the `finalized` tag
  *            works and how far it trails; the measured block rate against the
  *            40 000-block scan bound; and an exact-production P4 no-activity
  *            scan (`verifyNoHtlcActivity`) over a realistic finalized window
@@ -19,19 +22,47 @@
  *            claim lifecycle gate (`verifyHtlcLifecycle`) for a random key,
  *            which must decide (NONE) despite the moving head.
  *
+ * Provider-selected contract (what the incident af9dc922 needed): Satora picks
+ * the HTLC deployment PER SWAP at creation (`evm_htlc_address`,
+ * `evm_htlc_version`, `evm_coordinator_address`). A read-only canary cannot
+ * learn what the NEXT swap will use without creating one, which it never does.
+ * That decision is enforced per payment by the pre-handoff preflight
+ * (src/lib/htlc-preflight.ts, at attach and again at authorize). Here, pass
+ * existing swap ids with --swap-id (repeatable) to replay the production
+ * preflight's identity checks against their provider records (read-only).
+ *
  * Usage:
- *   npx tsx scripts/probe-arbitrum-route.ts [--rpc https://…] [--invoice-minutes 90]
+ *   npx tsx scripts/probe-arbitrum-route.ts [--rpc https://…] [--invoice-minutes 90] [--swap-id <id> …]
  * The RPC defaults to THENCE_EVM_RPCS_JSON["42161"]. Its URL is never printed
  * (host only), so a keyed endpoint can be used safely.
  */
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
-import { createPublicClient, http, keccak256, parseAbi } from "viem";
+import { createPublicClient, encodeAbiParameters, http, keccak256, parseAbi, toHex } from "viem";
 import { arbitrum } from "viem/chains";
 
 const NATIVE_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
 const BRIDGED_USDC_E = "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8";
 const ERC20 = parseAbi(["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)"]);
+
+function args(name: string): string[] {
+  const out: string[] = [];
+  process.argv.forEach((v, i) => {
+    if (v === `--${name}` && process.argv[i + 1]) out.push(process.argv[i + 1]!);
+  });
+  return out;
+}
+
+/** EIP-712 domain separator for HTLCErc20 at (version, chain, address). */
+function domainSeparator(version: number, chainId: number, address: string): string {
+  const typeHash = keccak256(toHex("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"));
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "uint256" }, { type: "address" }],
+      [typeHash, keccak256(toHex("HTLCErc20")), keccak256(toHex(String(version))), BigInt(chainId), address as `0x${string}`],
+    ),
+  );
+}
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -60,7 +91,7 @@ async function main(): Promise<void> {
   process.env["THENCE_ROUTE_TOKENS_JSON"] = JSON.stringify({ "usdc-arbitrum": NATIVE_USDC });
 
   const { getExactQuote, getProviderPairs, getProviderTokens, resolveRouteWith, TRUSTED_ROUTE_TOKEN_IDENTITIES } = await import("@/lib/satora");
-  const { verifyHtlcLifecycle, verifyNoHtlcActivity, TRUSTED_HTLC_CONTRACTS, MAX_HTLC_SCAN_BLOCKS } = await import("@/lib/settlement");
+  const { verifyHtlcLifecycle, verifyNoHtlcActivity, TRUSTED_HTLC_CONTRACTS, HTLC_DEPLOYMENTS, MAX_HTLC_SCAN_BLOCKS } = await import("@/lib/settlement");
   const { SCAN_LEAD_MS, SCAN_TAIL_MS } = await import("@/lib/expiry-resolution");
 
   console.log(`== provider (Satora, read-only)  observedAt=${new Date().toISOString()}`);
@@ -108,9 +139,34 @@ async function main(): Promise<void> {
   const bridgedSymbol = await client.readContract({ address: BRIDGED_USDC_E, abi: ERC20, functionName: "symbol" });
   const providerListsBridged = arbUsdc.some((t) => t.address.toLowerCase() === BRIDGED_USDC_E);
   check(!providerListsBridged, "provider does not list bridged USDC.e (0xff97…5cc8) on 42161", `USDC.e on-chain symbol=${bridgedSymbol} — address-only separation`);
-  for (const htlc of TRUSTED_HTLC_CONTRACTS[42161] ?? []) {
-    const code = await client.getCode({ address: htlc as `0x${string}` });
-    check(code !== undefined && code.length > 2, `pinned HTLC ${htlc} has code`, code ? `bytes=${(code.length - 2) / 2} codehash=${keccak256(code)}` : "no code");
+  for (const dep of HTLC_DEPLOYMENTS[42161] ?? []) {
+    const code = (await client.getCode({ address: dep.address as `0x${string}` })) ?? "0x";
+    check(code.length > 2, `pinned HTLC v${dep.version} ${dep.address} has code`, code.length > 2 ? `bytes=${(code.length - 2) / 2} codehash=${keccak256(code as `0x${string}`)}` : "no code");
+    const sep = domainSeparator(dep.version, 42161, dep.address).slice(2).toLowerCase();
+    check(code.toLowerCase().includes(sep), `HTLC v${dep.version} EIP-712 domain = HTLCErc20 / "${dep.version}" / 42161 / its own address`, `separator ${sep.slice(0, 10)}…`);
+    const coord = ((await client.getCode({ address: dep.coordinator as `0x${string}` })) ?? "0x").toLowerCase();
+    check(coord.length > 2 && coord.includes(dep.address.slice(2).toLowerCase()), `coordinator ${dep.coordinator} has code and embeds HTLC v${dep.version}`);
+  }
+
+  // Provider-selected identity of EXISTING swaps (read-only). Never creates one.
+  const swapIds = args("swap-id");
+  if (swapIds.length === 0) {
+    console.log("  LIMITATION  no --swap-id given: the provider's choice for future swaps is unknowable read-only; the pre-handoff preflight enforces it per payment.");
+  } else {
+    const { getProviderSwap } = await import("@/lib/satora");
+    const { htlcPreflight, HANDOFF_MIN_CLAIM_RUNWAY_MS } = await import("@/lib/htlc-preflight");
+    for (const id of swapIds) {
+      try {
+        const f = await getProviderSwap(id);
+        // Identity only: evaluate at the moment the runway was still available.
+        const at = f.evmRefundLocktime !== null ? f.evmRefundLocktime * 1000 - (HANDOFF_MIN_CLAIM_RUNWAY_MS[f.evmChainId] ?? 0) : Date.now();
+        const r = htlcPreflight(f, { nowMs: at });
+        const label = `swap ${id.slice(0, 8)}… declared chain=${f.evmChainId} htlc=${f.evmHtlcAddress} v${f.evmHtlcVersion} ${f.evmHtlcKind} coordinator=${f.evmCoordinatorAddress}`;
+        console.log(`  ${r.ok ? "WOULD PASS" : `WOULD REFUSE ${r.code}`}  ${label}${r.ok ? "" : ` — ${r.reason}`}`);
+      } catch (error) {
+        check(false, `provider read swap ${id.slice(0, 8)}…`, error instanceof Error ? error.message : "unknown error");
+      }
+    }
   }
 
   const latest = await client.getBlock({ blockTag: "latest" });

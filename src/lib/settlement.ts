@@ -32,6 +32,7 @@ import { getProviderSwap, resolveRoute } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { getEnv } from "@/lib/env";
 import { recordTransition } from "@/lib/transitions";
+import { CLAIM_ACTIVITY_STATUSES } from "@/domain/provider-status";
 
 /** ERC20 Transfer(address,address,uint256) event topic (protocol constant). */
 export const TRANSFER_EVENT_TOPIC =
@@ -72,23 +73,62 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
 };
 
 /**
- * HTLC contracts the verifier trusts per chain. Polygon keeps the deployed v6
- * address used by the pilot; Arbitrum uses the independently verified current
- * v7 deployment. Provider-named addresses outside this set are refused for
- * both P4 no-activity proofs and P5 refund attribution: a provider pointer to
- * another contract is never evidence about this swap.
+ * Satora HTLC deployments Thence trusts, pinned per chain. Identity is the
+ * whole tuple: (chain, HTLCErc20 address, EIP-712 version, kind, the
+ * HTLCCoordinator that wraps it, and the token locked in it). A provider swap
+ * that names anything else is refused BEFORE Nimiq Pay is asked to pay
+ * (src/lib/htlc-preflight.ts) and is never evidence for P4 no-activity proofs
+ * or P5 refund attribution.
+ *
+ * Sources (verified 2026-11-15/16): satoraHQ/lendaswap-contracts README
+ * (v7 + coordinator v5 current; v6 + coordinator v4 "legacy, still live");
+ * on-chain EIP-712 domain separators binding name "HTLCErc20", the version,
+ * the chain and the address; each coordinator's bytecode embedding exactly its
+ * paired HTLC address; and provider-declared `evm_htlc_version` on 18 Polygon
+ * swaps and the Arbitrum incident swap e2eb54fd… (all v6 / coordinator v4).
+ *
+ * Polygon deliberately trusts only v6: v7 is deployed there too, but no
+ * Polygon settlement on it has been verified end to end. Until it is, a
+ * Polygon swap on v7 is refused before payment (fail closed, no NIM locked).
  */
-export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = {
-  137: ["0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
-  // Arbitrum runs BOTH Satora HTLCErc20 deployments (satoraHQ/lendaswap-contracts
-  // README: v7 current, v6 legacy kept for existing swaps). Verified on-chain
-  // 2026-11-15: each one's EIP-712 domain separator binds name "HTLCErc20",
-  // its version (7 / 6), chain 42161 and its own address. The v6 bytecode equals
-  // Polygon's v6 (137 above) except for that chain-bound separator. The live
-  // swap e2eb54fd… was funded on v6 by the same Satora operator that funds v7,
-  // and the same SwapCreated layout and SwapKey checks apply to both.
-  42161: ["0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748", "0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948"],
+export interface HtlcDeployment {
+  /** HTLCErc20 address, lowercase. */
+  readonly address: string;
+  /** EIP-712 domain version, as the provider declares in `evm_htlc_version`. */
+  readonly version: number;
+  readonly kind: "erc20";
+  /** HTLCCoordinator paired with this HTLC (redeemAndExecute), lowercase. */
+  readonly coordinator: string;
+}
+
+const V6 = "0xf12a26a6cefc1f5a0772faf09f94c5e5662a3948";
+const V7 = "0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748";
+const COORDINATOR_V4 = "0xdb76f29f1d04d1202f56a34549869b070dfcbff0";
+const COORDINATOR_V5 = "0xb79118233552d4b7ed5c8d2d1e2bba7e8eecb71f";
+
+export const HTLC_DEPLOYMENTS: Readonly<Record<number, readonly HtlcDeployment[]>> = {
+  137: [{ address: V6, version: 6, kind: "erc20", coordinator: COORDINATOR_V4 }],
+  // Arbitrum: v7 is current; v6 is the legacy deployment the live swap
+  // e2eb54fd… used (refused FUNDING_INVALID while only v7 was trusted). The
+  // v6 bytecode equals Polygon's v6 except for the chain-bound separator, and
+  // the same SwapCreated layout and SwapKey checks apply to both.
+  42161: [
+    { address: V7, version: 7, kind: "erc20", coordinator: COORDINATOR_V5 },
+    { address: V6, version: 6, kind: "erc20", coordinator: COORDINATOR_V4 },
+  ],
 };
+
+/** HTLC addresses trusted per chain (derived from HTLC_DEPLOYMENTS). */
+export const TRUSTED_HTLC_CONTRACTS: Readonly<Record<number, readonly string[]>> = Object.fromEntries(
+  Object.entries(HTLC_DEPLOYMENTS).map(([chain, deps]) => [Number(chain), deps.map((d) => d.address)]),
+);
+
+/** The pinned deployment for (chain, address), or null when untrusted. */
+export function trustedHtlcDeployment(chainId: number, address: string | null | undefined): HtlcDeployment | null {
+  if (!address) return null;
+  const a = address.toLowerCase();
+  return (HTLC_DEPLOYMENTS[chainId] ?? []).find((d) => d.address === a) ?? null;
+}
 
 const HTLC_STATE_ABI = [
   {
@@ -1454,7 +1494,7 @@ export function shortfallFor(requestedAtomic: string, receivedAtomic: string | n
   return { requestedAtomic: req.toString(), receivedAtomic: got.toString(), shortfallAtomic: (req - got).toString() };
 }
 
-const CLAIM_PROGRESS = new Set(["clientredeeming", "clientredeemed", "serverredeemed"]);
+const CLAIM_PROGRESS = CLAIM_ACTIVITY_STATUSES;
 
 function toProofView(
   transferId: string,

@@ -36,6 +36,7 @@ import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { usePaymentProgress } from "@/ui/screens/send/SettlementProgress";
 import styles from "./activity.module.css";
 import { ProofFeed } from "./ProofFeed";
+import { settlementNetworkFor } from "@/ui/lib/network-copy";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -459,7 +460,7 @@ function TransferDetail({
   const evidenceDisposition = providerEvidenceDisposition(evidence);
   // ONE classification, ONE primary action. Close actions surface only from the
   // server's close-gate preview; the actions themselves re-verify everything.
-  const recovery = recoveryState({ status: item.status, evidence, sourceVerified: live?.sourceVerified === true, readOnly: preview });
+  const recovery = recoveryState({ status: item.status, evidence, sourceVerified: live?.sourceVerified === true, readOnly: preview, network: settlementNetworkFor(item.routeId) });
   const canRetire = !preview && canShowCancelUnpaid(item.status, evidenceDisposition === "EXPIRED_UNFUNDED");
   const canCloseExpired = !preview && recovery.primary === "close-expired";
   // R2: a failed Lightning handoff whose NIM was locked. The server proves the

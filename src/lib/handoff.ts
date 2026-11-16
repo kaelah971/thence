@@ -28,6 +28,7 @@
  * - Only the server-side lifecycle may change transfer status, using the
  *   existing domain transitions (QUOTED→SWAP_CREATED→AWAITING_NIM_APPROVAL).
  */
+import { htlcPreflight, type HtlcPreflightResult } from "@/lib/htlc-preflight";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db";
@@ -124,6 +125,16 @@ export interface BoundSwapView {
   claimDeadline: string | null;
   providerStatus: string | null;
   verifiedAt: string;
+}
+
+/** Refuse a handoff whose provider-selected HTLC failed the preflight. Nothing has been paid. */
+export function assertHtlcPreflight(result: HtlcPreflightResult): void {
+  if (result.ok) return;
+  throw new AuthError(
+    409,
+    result.code,
+    `${result.reason} Nothing was sent to Nimiq Pay and no NIM was spent. Don't retry this payment on this route for now.`,
+  );
 }
 
 /**
@@ -358,6 +369,9 @@ export async function attachSwap(
       targetAmountAtomic: transfer.targetAmountAtomic,
       swap: facts,
     });
+    // Refuse to bind a swap whose settlement contract or terms Thence could
+    // not verify later: binding is the step before the invoice is released.
+    assertHtlcPreflight(htlcPreflight(facts, { nowMs: Date.now() }));
     const attached = await tx
       .insert(swapAttachments)
       .values({
@@ -588,6 +602,12 @@ export async function authorizeHandoff(
     if (!facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now()) {
       throw new AuthError(409, "INVOICE_EXPIRED", "Provider swap invoice is missing or expired.");
     }
+    // The last gate before Nimiq Pay commits NIM: the live provider swap must
+    // still name a pinned HTLC deployment with complete terms equal to the
+    // bound hash lock and deadline, with enough time left to claim.
+    assertHtlcPreflight(
+      htlcPreflight(facts, { nowMs: Date.now(), bound: { paymentHash: attachment.paymentHash, evmRefundLocktime: attachment.evmRefundLocktime } }),
+    );
     // Repricing guard: never silently approve a larger obligation. The owner
     // may explicitly accept the live figure (acceptRepricedSourceSats must
     // cover it exactly); without that, any increase fails closed here.

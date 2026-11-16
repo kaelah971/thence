@@ -16,7 +16,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
 import fixture from "./fixtures/incidents-2026-11-02.json";
 import { getDb } from "@/lib/db";
-import { reconciliationObservations, transferTransitions, transfers, users } from "@/db/schema";
+import { reconciliationObservations, swapAttachments, transferTransitions, transfers, users } from "@/db/schema";
 import { setSatoraFetchersForTests } from "@/lib/satora";
 import { TRANSFER_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
 import { checkTransferConsistency, readConsistencySnapshot } from "@/lib/consistency";
@@ -28,6 +28,7 @@ import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-hando
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as verifySettlementPost } from "../app/api/transfers/[id]/verify-settlement/route";
+import { declaredHtlc } from "./htlc-fixture";
 
 const INC = fixture.incident_077770a1;
 const REAL_HASH_LOCK = INC.attachment.payment_hash;
@@ -133,8 +134,12 @@ function gate(swapId: string, then: Record<string, unknown>): { started: Promise
 }
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = nowSec() + 3600;
 function swapShape(id: string, sourceSats: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc3980n1p4testinvoice",
@@ -381,7 +386,12 @@ describe.skipIf(!LIVE)("P5 audit coverage, duplicates and rollback", () => {
 describe.skipIf(!LIVE)("P5 refund state is set only by independent Polygon evidence", () => {
   async function serverFunded(tag: string): Promise<Prepared> {
     const p = await authorizedPayment(tag);
-    provider.set(p.swapId, swapShape(p.swapId, p.sourceSats, { status: "serverfunded", evm_fund_txid: REAL_FUND_TX }));
+    // These cases replay the real 2026-11-02 Polygon refund, whose deadline is
+    // in the past. A payment can no longer be AUTHORIZED without a live
+    // deadline (HTLC preflight), so recreate the pre-P2 legacy binding shape
+    // (no stored deadline) in the TEST database before replaying it.
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: null }).where(eq(swapAttachments.transferId, p.id));
+    provider.set(p.swapId, swapShape(p.swapId, p.sourceSats, { status: "serverfunded", evm_fund_txid: REAL_FUND_TX, evm_refund_locktime: undefined }));
     expect((await reconcile(p)).status).toBe(200);
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
     await ageObservations(p.id, 10);
