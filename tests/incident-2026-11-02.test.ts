@@ -356,7 +356,7 @@ describe("P4 evidence gates on real evidence", () => {
     } as never;
     return { transfer, attachment };
   }
-  const cleanLocal = { movementObservations: 0, identityMismatchObservations: 0, evmProofRecorded: false, nimiqFundingRecorded: false, activeReservations: 0 };
+  const cleanLocal = { movementObservations: 0, serverSideMovementObservations: 0, identityMismatchObservations: 0, evmProofRecorded: false, nimiqFundingRecorded: false, activeReservations: 0 };
 
   it("eddaa6de: real provider + local evidence passes every non-chain gate; the chain scan finds NO_ACTIVITY", async () => {
     setSettlementChainForTests(scanningChain());

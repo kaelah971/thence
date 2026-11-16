@@ -268,7 +268,7 @@ function facts(over: Partial<VerifiedSwapFacts> = {}): VerifiedSwapFacts {
     ...over,
   } as VerifiedSwapFacts;
 }
-const NO_LOCAL: LocalEvidence = { movementObservations: 0, identityMismatchObservations: 0, evmProofRecorded: false, nimiqFundingRecorded: false, activeReservations: 0 };
+const NO_LOCAL: LocalEvidence = { movementObservations: 0, serverSideMovementObservations: 0, identityMismatchObservations: 0, evmProofRecorded: false, nimiqFundingRecorded: false, activeReservations: 0 };
 const assess = (status: TransferStatus, over: { facts?: Partial<VerifiedSwapFacts>; local?: Partial<LocalEvidence>; routeMatches?: boolean; now?: number } = {}) =>
   assessCloseEligibility({
     transfer: transferRow(status),
@@ -316,6 +316,29 @@ describe("server close-gate preview", () => {
     const ev = evidence("RECONCILING", { closeEligibility: CLOSE_PREVIEW_UNAVAILABLE });
     expect(closeActionFor("RECONCILING", ev)).toBeNull();
     expect(view({ status: "RECONCILING", evidence: ev })).toMatchObject({ kind: "uncertain", primary: "check-status" });
+  });
+
+  it("D4: NEEDS_ATTENTION after a provider refusal to fund has an R2 exit, with the same proof", () => {
+    const funded = { nimiqFundingRecorded: true, movementObservations: 2 };
+    for (const status of ["clientfundedtoolate", "serverwontfund", "clientinvalidfunded", "expired"]) {
+      // Client-side movement (Lightning paid, then refused) is expected here.
+      expect(assess("NEEDS_ATTENTION", { facts: { status }, local: funded }).nimReturn, status).toEqual({ eligible: true, reason: null, message: null });
+    }
+    // P4 never applies (NIM was recorded, and only RECONCILING is P4-closable).
+    expect(assess("NEEDS_ATTENTION", { facts: { status: "serverwontfund" }, local: funded }).expiredUnfunded.eligible).toBe(false);
+    // Any sign the provider acted on the EVM side still refuses.
+    expect(assess("NEEDS_ATTENTION", { facts: { status: "serverwontfund" }, local: { ...funded, serverSideMovementObservations: 1 } }).nimReturn.reason).toBe("LOCAL_MOVEMENT_RECORDED");
+    expect(assess("NEEDS_ATTENTION", { facts: { status: "serverwontfund", evmFundTxid: "0x" + "11".repeat(32) }, local: funded }).nimReturn.reason).toBe("PROVIDER_REPORTS_EVM_TX");
+    // A refusal status is accepted ONLY from NEEDS_ATTENTION, and other provider states never.
+    expect(assess("RECONCILING", { facts: { status: "serverwontfund" }, local: { nimiqFundingRecorded: true } }).nimReturn.reason).toBe("PROVIDER_NOT_EXPIRED");
+    expect(assess("NEEDS_ATTENTION", { facts: { status: "serverfunded" }, local: funded }).nimReturn.reason).toBe("PROVIDER_NOT_EXPIRED");
+    expect(assess("NEEDS_ATTENTION", { facts: { status: "clientfundedserverrefunded" }, local: funded }).nimReturn.reason).toBe("PROVIDER_NOT_EXPIRED");
+    // No NIM recorded: nothing to prove, so no R2 close either.
+    expect(assess("NEEDS_ATTENTION", { facts: { status: "serverwontfund" } }).nimReturn.reason).toBe("NIM_SOURCE_NOT_VERIFIED");
+    // The owner sees the server-gated NIM-return check, worded for a refusal.
+    const ev = evidence("NEEDS_ATTENTION", { closeEligibility: assess("NEEDS_ATTENTION", { facts: { status: "serverwontfund" }, local: funded }) });
+    expect(closeActionFor("NEEDS_ATTENTION", ev)).toBe("check-nim-return");
+    expect(view({ status: "NEEDS_ATTENTION", evidence: ev })).toMatchObject({ primary: "check-nim-return", body: expect.stringMatching(/didn't fund its side/) });
   });
 
   it("P4 only from RECONCILING; terminal statuses are never eligible for either gate", () => {

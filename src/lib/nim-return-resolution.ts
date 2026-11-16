@@ -79,12 +79,31 @@ type Reader = Pick<Db, "select">;
 
 export { NIM_RETURN_REASON_CODE, recordedReturn };
 
-/** Existing legal edges only; each path ends in EXPIRED_UNFUNDED. */
+/**
+ * Existing legal edges only; each path ends in EXPIRED_UNFUNDED.
+ *
+ * NEEDS_ATTENTION (defect D4): the planner parks a transfer there when the
+ * provider reports it refused or could not fund its side
+ * (`clientinvalidfunded`, `clientfundedtoolate`, `serverwontfund`). That
+ * state had no exit and held the owner's only exposure slot forever. With the
+ * same proof as every R2 close (finalized no-EVM-activity scan, trusted HTLC,
+ * expired invoices, and the full NIM provably returned to the owner on the
+ * Nimiq chain) it may close here too.
+ */
 export const NIM_RETURN_PATHS: Readonly<Partial<Record<TransferStatus, readonly TransferStatus[]>>> = {
   LIGHTNING_HANDOFF: ["OUTCOME_UNKNOWN", "RECONCILING", "EXPIRED_UNFUNDED"],
   OUTCOME_UNKNOWN: ["RECONCILING", "EXPIRED_UNFUNDED"],
   RECONCILING: ["EXPIRED_UNFUNDED"],
+  NEEDS_ATTENTION: ["RECONCILING", "EXPIRED_UNFUNDED"],
 };
+
+/** Provider refusals to fund the EVM side (the planner's NEEDS_ATTENTION statuses). */
+export const PROVIDER_REFUSED_TO_FUND: ReadonlySet<string> = new Set(["clientinvalidfunded", "clientfundedtoolate", "serverwontfund"]);
+
+/** Terminal provider statuses R2 accepts for a transfer in `status`. */
+export function nimReturnProviderStatuses(status: string): ReadonlySet<string> {
+  return status === "NEEDS_ATTENTION" ? new Set(["expired", ...PROVIDER_REFUSED_TO_FUND]) : new Set(["expired"]);
+}
 
 export type NimReturnRefusal =
   | ResolutionRefusal
@@ -180,7 +199,12 @@ export function assessLocalForNimReturn(status: string, local: LocalEvidence): N
   if (!local.nimiqFundingRecorded) return "NIM_SOURCE_NOT_VERIFIED";
   if (local.evmProofRecorded) return "EVM_PROOF_RECORDED";
   if (local.identityMismatchObservations > 0) return "LOCAL_IDENTITY_MISMATCH_RECORDED";
-  if (local.movementObservations > 0) return "LOCAL_MOVEMENT_RECORDED";
+  // NEEDS_ATTENTION exists BECAUSE the provider reported a refusal after the
+  // client's Lightning payment, so client-side movement is expected there.
+  // Any sign that the provider funded, redeemed or refunded an EVM lock still
+  // refuses, exactly as before.
+  const movement = status === "NEEDS_ATTENTION" ? local.serverSideMovementObservations : local.movementObservations;
+  if (movement > 0) return "LOCAL_MOVEMENT_RECORDED";
   if (local.activeReservations > 0) return "ATTEMPT_STILL_RESERVED";
   return null;
 }
@@ -275,7 +299,7 @@ export async function closeExpiredNimReturned(userId: string, transferId: string
   } catch {
     throw nimReturnRefusal("PROVIDER_UNAVAILABLE");
   }
-  const providerRefusal = assessProviderEvidence({ transfer, attachment, facts, routeMatches, now: gatheredAt });
+  const providerRefusal = assessProviderEvidence({ transfer, attachment, facts, routeMatches, now: gatheredAt, acceptedStatuses: nimReturnProviderStatuses(transfer.status) });
   if (providerRefusal) throw nimReturnRefusal(providerRefusal);
   const window = scanWindow(attachment, facts);
   if (!window) throw nimReturnRefusal("INVOICE_NOT_SETTLED");
@@ -364,7 +388,7 @@ export async function closeExpiredNimReturned(userId: string, transferId: string
       const sourceB = await readRecordedSource(tx, transfer.id);
       if (sourceB === "NONE" || sourceB === "AMBIGUOUS" || sourceB.txHash !== source.txHash) throw nimReturnRefusal("NIM_SOURCE_AMBIGUOUS");
       if (await sourceAttributedElsewhere(tx, transfer.id, source.txHash)) throw nimReturnRefusal("NIM_SOURCE_AMBIGUOUS");
-      const againProvider = assessProviderEvidence({ transfer: current, attachment, facts, routeMatches, now });
+      const againProvider = assessProviderEvidence({ transfer: current, attachment, facts, routeMatches, now, acceptedStatuses: nimReturnProviderStatuses(current.status) });
       if (againProvider) throw nimReturnRefusal(againProvider);
 
       await tx.update(transfers).set({ status: "EXPIRED_UNFUNDED", updatedAt: new Date() }).where(eq(transfers.id, transfer.id));

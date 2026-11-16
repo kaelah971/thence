@@ -81,9 +81,12 @@ const PREPARATION: ReadonlySet<TransferStatus> = new Set(["DRAFT", "QUOTED", "SW
  * the funding on-chain first). Copy must not call provider funding verified.
  */
 const FUNDED: ReadonlySet<TransferStatus> = new Set(["CLIENT_FUNDED", "SERVER_FUNDED", "CLAIMING"]);
-/** P4 accepts only RECONCILING; R2 accepts a failed handoff in any of these. */
+/**
+ * P4 accepts only RECONCILING; R2 accepts a failed handoff in any of these,
+ * and NEEDS_ATTENTION after a provider refusal to fund (defect D4).
+ */
 const P4_FROM: ReadonlySet<TransferStatus> = new Set(["RECONCILING"]);
-const R2_FROM: ReadonlySet<TransferStatus> = new Set(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"]);
+const R2_FROM: ReadonlySet<TransferStatus> = new Set(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING", "NEEDS_ATTENTION"]);
 
 /** Same wording as the Activity pill banner, so every screen names this state the same way. */
 export const UNCERTAIN_TITLE = "Checking your payment — do not resend";
@@ -132,7 +135,10 @@ function classify(status: TransferStatus, evidence: ProviderEvidence | null, sou
       primary: "check-nim-return",
       title: "Not delivered — waiting for your NIM to come back",
       body:
-        "The provider reports this payment expired. Thence recorded a NIM payment for it, so it can close this payment only after it " +
+        (status === "NEEDS_ATTENTION"
+          ? "The provider didn't fund its side of this payment, so nothing reached their wallet. "
+          : "The provider reports this payment expired. ") +
+        "Thence recorded a NIM payment for it, so it can close this payment only after it " +
         "verifies on the Nimiq blockchain that the full amount was returned to your Nimiq address. Until then it stays open — don't pay again.",
       tone: "warn",
     };

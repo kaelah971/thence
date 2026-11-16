@@ -140,6 +140,23 @@ export function decideResumeAction(
   return { action: "none", phase: "attention" };
 }
 
+/**
+ * Pure: may the browser call Nimiq Pay for this authorized invoice now?
+ *
+ * The handoff record is written BEFORE the native call. A record that was
+ * never reported means the native response was lost (app killed, backgrounded
+ * or timed out): Nimiq Pay may already have locked NIM for this invoice, and
+ * the server still says AWAITING_NIM_APPROVAL. A second call could lock NIM
+ * again, so the only safe action is to report the outcome as unknown and let
+ * reconciliation decide. Reported outcomes (initiated / unknown move the
+ * server state on; a reported pre-signing refusal stays retryable) are
+ * decided by the server status the caller already checked.
+ */
+export function nativeInvokeDecision(record: HandoffRecord | null, authorizedInvoice: string): "invoke" | "report-unknown" {
+  if (record && !record.outcomeReported && record.invoice === authorizedInvoice) return "report-unknown";
+  return "invoke";
+}
+
 export function useHandoff(): {
   state: HandoffPhase;
   invoke: (input: HandoffInvokeInput) => Promise<void>;
@@ -258,6 +275,23 @@ export function useHandoff(): {
       });
       if (!gate.allowed) {
         setState({ phase: "attention", transferId: input.transferId, message: gate.reasons[0] ?? "Payments are paused in this preview. No native payment call was made." });
+        return;
+      }
+
+      // A lost native response for this invoice is never followed by a second
+      // native call, whatever screen offered the action (double NIM lock risk).
+      const prior = loadHandoffRecord(input.transferId, input.ownerUserId);
+      if (nativeInvokeDecision(prior, input.authorizedInvoice) === "report-unknown") {
+        const reported = await reportHandoffResult(input.transferId, "unknown", {
+          ...(prior?.sourceTxHash ? { sourceTxHash: prior.sourceTxHash } : {}),
+          ...(prior?.sourceTxHash && prior.hostSwapId ? { hostSwapId: prior.hostSwapId } : {}),
+        });
+        if (reported.ok && prior) saveHandoffRecord({ ...prior, outcomeReported: true, reportedOutcome: "unknown" });
+        setState({
+          phase: "checking",
+          transferId: input.transferId,
+          message: "Nimiq Pay may already have this payment. Checking it now — do not resend.",
+        });
         return;
       }
 

@@ -15,7 +15,7 @@
 import type { swapAttachments, transfers } from "@/db/schema";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { assessNonChainEvidence, assessProviderEvidence, readLocalEvidence, refusal, type ResolutionRefusal } from "@/lib/expiry-resolution";
-import { assessLocalForNimReturn, nimReturnRefusal, type NimReturnRefusal } from "@/lib/nim-return-resolution";
+import { assessLocalForNimReturn, nimReturnProviderStatuses, nimReturnRefusal, type NimReturnRefusal } from "@/lib/nim-return-resolution";
 
 type Reader = Parameters<typeof readLocalEvidence>[0];
 
@@ -52,7 +52,7 @@ export function assessCloseEligibility(input: {
   now: number;
 }): CloseEligibility {
   const p4 = assessNonChainEvidence(input);
-  const r2 = assessLocalForNimReturn(input.transfer.status, input.local) ?? assessProviderEvidence(input);
+  const r2 = assessLocalForNimReturn(input.transfer.status, input.local) ?? assessProviderEvidence({ ...input, acceptedStatuses: nimReturnProviderStatuses(input.transfer.status) });
   return {
     expiredUnfunded: p4 === null ? { eligible: true, reason: null, message: null } : { eligible: false, reason: p4, message: refusal(p4).message },
     nimReturn: r2 === null ? { eligible: true, reason: null, message: null } : { eligible: false, reason: r2, message: nimReturnRefusal(r2).message },
