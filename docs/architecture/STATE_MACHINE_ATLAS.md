@@ -522,4 +522,7 @@ before approval; it never creates a new swap.
 | D11 | P3 | M14: pilot header says "usdc-polygon only" though public mode serves Arbitrum | `pilot.ts` header | **deferred** (doc drift) |
 | D12 | P1 | M5: second Nimiq Pay call possible after a lost native response | `invoke()` ignored the unreported record | **fixed** `d70c2ab` |
 | D13 | P1 | M4: authorize did not compare the fresh read with the invoice / HTLC terms bound at attach | `authorizeHandoff` | **fixed** `0002e13` |
-| D14 | P3 | M5: cross-device duplicate invocation | no shared record | **external limitation** (Lightning hold invoice accepts one payment; NIM lock returns at timeout) |
+| D14 | P3 | M5: duplicate invocation from a second device or after local-storage loss | handoff record is device-local | **mitigated, residual external**: `invoke()` refuses without a device-local vault binding matching transfer, owner and bound swap, so a second device cannot pay through Thence; authorize is single-use. Residual: invoice copied into another wallet by hand, or localStorage wiped while IndexedDB survives. Both NIM locks would share one hash lock; whether Fastspot would redeem a lock whose own Lightning payment failed is outside Thence's control and unverified |
+
+**Totals (15 entries).** By severity: P0 2 (D1, D1b); P1 6 (D2, D3, D4, D5, D12, D13); P2 4 (D6, D7, D8, D9); P3 3 (D10, D11, D14).
+By status: fixed 10 (D1, D1b, D2, D4, D5, D6, D7, D8, D12, D13); prevented for new payments 1 (D3, the incident transfer exits after deploy); open external 1 (D9, fails closed); deferred 2 (D10, D11, server already refuses / doc only); mitigated with external residual 1 (D14). No P0 or P1 entry is open.
