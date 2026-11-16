@@ -31,6 +31,9 @@ import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/rou
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as closeExpiredPost } from "../app/api/transfers/[id]/close-expired/route";
 import { POST as closeReturnedPost } from "../app/api/transfers/[id]/close-nim-returned/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const HTLC = TRUSTED_HTLC_CONTRACTS[137]![0]!;
 /** HTLC funding event topic (same constant as tests/p4-expiry-resolution.test.ts). */
@@ -102,6 +105,8 @@ async function incident(tag: string, opts: { reportHash?: boolean } = {}): Promi
   const swapId = `r2-swap-${RUN}-${tag}`;
   const hashLock = `0x${txHash(`lock-${RUN}-${tag}`)}`;
   swaps.set(swapId, {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id: swapId, direction: "lightning_to_evm", bolt11_invoice: "lnbc-test-redacted", hash_lock: hashLock,
     source_amount: transfer.quote.sourceSats, target_amount: "300000", evm_chain_id: 137, evm_htlc_address: HTLC,
     target_evm_address: EVM_A, target_token: { chain: "137", decimals: 6, name: "USD Coin", symbol: "USDC", token_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" },
@@ -247,6 +252,49 @@ describe.skipIf(!LIVE)("R2 close-nim-returned (isolated test database, simulated
     expect(await terminalRows(s.id)).toHaveLength(1);
     await reconcilePost(postJson(`http://localhost/api/transfers/${s.id}/reconcile`, {}, { cookie: s.cookie, ...client("rec") }), params(s.id));
     expect(await statusOf(s.id)).toBe("EXPIRED_UNFUNDED");
+  });
+
+  it("D4: a provider refusal to fund parks NEEDS_ATTENTION; it closes only once the full NIM return is proven", async () => {
+    const s = await incident("refused");
+    // The provider took the Lightning payment too late and refuses to fund its side.
+    swaps.set(s.swapId, { ...swaps.get(s.swapId)!, status: "clientfundedtoolate" });
+    const rec = await reconcilePost(postJson(`http://localhost/api/transfers/${s.id}/reconcile`, {}, { cookie: s.cookie, ...client("refused-rec") }), params(s.id));
+    expect(rec.status).toBe(200);
+    expect(await statusOf(s.id)).toBe("NEEDS_ATTENTION");
+    // Before the Nimiq timeout: stays open and keeps its exposure slot.
+    const early = await closeReturned(s, "refused-early");
+    expect(early.status).toBe(409);
+    expect(early.body["error"]).toBe("NIM_STILL_LOCKED");
+    expect(await statusOf(s.id)).toBe("NEEDS_ATTENTION");
+    await expect(assertFundingExposure(s.userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+
+    const refundHash = refund(s);
+    const res = await closeReturned(s, "refused-close");
+    expect(res.status).toBe(200);
+    expect(res.body["resolution"]).toMatchObject({ status: "EXPIRED_UNFUNDED", nimReturn: { refundTxHash: refundHash } });
+    const hops = (await getDb().select().from(transferTransitions).where(eq(transferTransitions.transferId, s.id)).orderBy(asc(transferTransitions.createdAt)))
+      .filter((t) => t.reasonCode === "NIM_HTLC_RETURNED_VERIFIED");
+    expect(hops.map((h) => [h.fromStatus, h.toStatus, h.terminal])).toEqual([
+      ["NEEDS_ATTENTION", "RECONCILING", false],
+      ["RECONCILING", "EXPIRED_UNFUNDED", true],
+    ]);
+    expect((hops[1]!.evidence as { provider: { status: string } }).provider.status).toBe("clientfundedtoolate");
+    // The exposure slot is released only by the proven terminal close.
+    await expect(assertFundingExposure(s.userId, "300000", unarmed)).resolves.toBeUndefined();
+  });
+
+  it("D4: a NEEDS_ATTENTION transfer whose provider funded an EVM lock never closes through R2", async () => {
+    const s = await incident("refused-funded");
+    swaps.set(s.swapId, { ...swaps.get(s.swapId)!, status: "serverfunded", evm_fund_txid: `0x${"34".repeat(32)}` });
+    await reconcilePost(postJson(`http://localhost/api/transfers/${s.id}/reconcile`, {}, { cookie: s.cookie, ...client("rf-rec1") }), params(s.id));
+    swaps.set(s.swapId, { ...swaps.get(s.swapId)!, status: "serverwontfund", evm_fund_txid: null });
+    await reconcilePost(postJson(`http://localhost/api/transfers/${s.id}/reconcile`, {}, { cookie: s.cookie, ...client("rf-rec2") }), params(s.id));
+    expect(await statusOf(s.id)).toBe("NEEDS_ATTENTION");
+    refund(s);
+    const res = await closeReturned(s, "rf-close");
+    expect(res.status).toBe(409);
+    expect(res.body["error"]).toBe("LOCAL_MOVEMENT_RECORDED");
+    expect(await statusOf(s.id)).toBe("NEEDS_ATTENTION");
   });
 
   it("concurrent closes converge: exactly one path and one terminal audit row", async () => {

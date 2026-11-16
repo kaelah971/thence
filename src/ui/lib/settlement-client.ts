@@ -18,6 +18,7 @@
 import type { TransferStatus } from "@/domain/transfers";
 import type { ClaimWindow } from "@/domain/claim-deadline";
 import { apiRequest, type ApiOptions, type ApiResult } from "./api";
+import { CLAIM_ACTIVITY_STATUSES, PROVIDER_REFUND_STATUSES, REDEEMED_STATUSES } from "@/domain/provider-status";
 
 export type SettlementVerdict =
   | "VERIFIED"
@@ -147,8 +148,8 @@ export interface CloseGate {
 
 export type ProviderEvidenceDisposition = "FUNDING_DETECTED" | "SETTLEMENT_DETECTED" | "REFUNDED" | "EXPIRED_UNFUNDED" | "UNKNOWN";
 
-const FUNDING_STATUSES = new Set(["clientfunded", "serverfunded", "clientredeeming", "clientredeemed", "serverredeemed"]);
-const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
+const FUNDING_STATUSES = new Set(["clientfunded", "serverfunded", ...CLAIM_ACTIVITY_STATUSES]);
+const SETTLEMENT_STATUSES = REDEEMED_STATUSES;
 
 /**
  * Satora's terminal `expired` status means the Lightning swap expired
@@ -158,7 +159,7 @@ const SETTLEMENT_STATUSES = new Set(["clientredeemed", "serverredeemed"]);
  */
 export function providerEvidenceDisposition(evidence: ProviderEvidence | null): ProviderEvidenceDisposition {
   if (!evidence || !evidence.identityMatch) return "UNKNOWN";
-  if (evidence.providerStatus === "clientrefunded" || evidence.providerStatus === "clientfundedserverrefunded" || evidence.providerStatus === "clientrefundedserverfunded" || evidence.providerStatus === "clientrefundedserverrefunded" || evidence.providerStatus === "clientredeemedandclientrefunded") return "REFUNDED";
+  if (PROVIDER_REFUND_STATUSES.has(evidence.providerStatus)) return "REFUNDED";
   if (evidence.hasEvmClaimTx || SETTLEMENT_STATUSES.has(evidence.providerStatus)) return "SETTLEMENT_DETECTED";
   if (evidence.hasEvmFundingTx || FUNDING_STATUSES.has(evidence.providerStatus)) return "FUNDING_DETECTED";
   if (evidence.providerStatus === "expired" && evidence.invoiceExpired) return "EXPIRED_UNFUNDED";
@@ -178,7 +179,7 @@ export function providerStatusLabel(status: string): string {
     clientfundedserverrefunded: "Refunded after funding",
     clientrefundedserverfunded: "Refunded after funding",
     clientrefundedserverrefunded: "Refunded",
-    clientredeemedandclientrefunded: "Refunded after claim attempt",
+    clientredeemedandclientrefunded: "Claimed",
     expired: "Expired",
     unknown: "Unknown",
   };
@@ -293,15 +294,15 @@ export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiRe
  * the owner can check their NIM.
  */
 export const EXPIRED_UNFUNDED_BODY =
-  "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on Polygon for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+  "This payment expired before any money reached the provider. Nothing was delivered and nothing is locked on the settlement network for it. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
 
 /**
- * P5: a verified REFUNDED is the POLYGON side only — the provider's USDC lock
+ * P5: a verified REFUNDED is the EVM side only — the provider's HTLC lock
  * returned to the provider. It is never a NIM refund: Thence cannot observe
  * Nimiq Pay's NIM HTLC, so the two refunds are always described separately.
  */
 export const REFUNDED_BODY =
-  "Nothing reached their wallet. The USDC locked on Polygon for this payment went back to the provider, and Thence verified that on-chain. That is not a refund of your NIM. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
+  "Nothing reached their wallet. The provider's lock for this payment went back to the provider, and Thence verified that on-chain. That is not a refund of your NIM. Thence can't see inside Nimiq Pay: if Nimiq Pay still shows NIM on hold for this payment, Nimiq Pay releases it back to you when its own timeout ends.";
 
 const OWNER_CLAIM_PROVIDER = new Set(["serverfunded", "clientredeeming", "clientredeemed"]);
 
@@ -406,7 +407,7 @@ const PROGRESS_COPY: Record<ProgressPhase, { title: string; body: string }> = {
     body: "This payment was cancelled. The server confirmed no settlement.",
   },
   refunded: {
-    title: "Not delivered — Polygon lock refunded",
+    title: "Not delivered — provider lock refunded",
     body: REFUNDED_BODY,
   },
   expired: {

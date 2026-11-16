@@ -30,6 +30,7 @@ import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
 import { CLAIM_FUNDING_MIN_CONFIRMATIONS, verifyHtlcFunding, verifyHtlcLifecycle, verifyHtlcUnspent, type HtlcFundingResult, type HtlcLifecycleResult, type HtlcSpendVerdict } from "@/lib/settlement";
 import { recordTransition } from "@/lib/transitions";
+import { CLAIM_ACTIVITY_STATUSES } from "@/domain/provider-status";
 
 /**
  * One authorized claim attempt holds the lease this long; a retry needs it
@@ -175,7 +176,7 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
   const ev = await gather(pre, preBound);
   const identity = claimIdentityProblem(pre, preBound, ev.facts, ev.routeMatches);
   if (identity) refuse(409, "SWAP_MISMATCH", `${identity} Do not continue.`);
-  if (ev.facts.status === "clientredeeming" || ev.facts.status === "clientredeemed" || ev.facts.status === "serverredeemed" || ev.facts.evmClaimTxid !== null) {
+  if (CLAIM_ACTIVITY_STATUSES.has(ev.facts.status) || ev.facts.evmClaimTxid !== null) {
     refuse(409, "CLAIM_ALREADY_SUBMITTED", "A delivery attempt is already on record. Wait while Thence confirms it — don't try again.");
   }
   if (ev.facts.status !== "serverfunded") refuse(409, "NOT_CLAIMABLE", "The provider no longer reports this payment as funded and waiting.");

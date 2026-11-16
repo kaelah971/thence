@@ -40,6 +40,9 @@ import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route
 import { POST as verifySettlementPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
 import { GET as reconciliationGet } from "../app/api/transfers/[id]/reconciliation/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const INC = fixture.incident_077770a1;
 const HASH_LOCK = INC.attachment.payment_hash;
@@ -137,6 +140,8 @@ function installNimiqRpc(): void {
 const provider = new Map<string, Record<string, unknown>>();
 function swapShape(id: string, sourceSats: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id, direction: "lightning_to_evm", bolt11_invoice: "lnbc3980n1p4testinvoice", hash_lock: HASH_LOCK,
     source_amount: sourceSats, target_amount: "300000", evm_chain_id: 137, evm_htlc_address: HTLC,
     target_evm_address: EVM_A,
@@ -391,7 +396,10 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
     const lines: string[] = [];
     setStallAlertSinkForTests((line) => lines.push(line));
     try {
-      const FASTSPOT_ID = "fs-swap-0001-abcdef";
+      // Per run: the shared test database may still hold rows from an interrupted
+      // earlier run, and this test asserts no OTHER transfer carries the id.
+      const FASTSPOT_ID = `fs-${RUN}-0001-abcdef`;
+      const CONFLICT_ID = `fs-${RUN}-9999-zzzzzz`;
       const reportWith = (p: Paid, body: Record<string, unknown>) =>
         reportPost(postJson(`http://localhost/api/transfers/${p.id}/handoff-result`, body, { cookie: p.cookie, ...client(p.tag) }), params(p.id));
       const hintRows = async (id: string) =>
@@ -414,9 +422,9 @@ describe.skipIf(!LIVE)("R1 automatic Global Proof Feed publication (isolated tes
       expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: FASTSPOT_ID })).status).toBe(200);
       expect(await hintRows(p.id)).toHaveLength(1);
       // Mismatch: kept as a flagged conflict; the first id is never replaced.
-      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: "fs-swap-9999-zzzzzz" })).status).toBe(200);
+      expect((await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: CONFLICT_ID })).status).toBe(200);
       let hint = await readHostSwapHint(getDb(), p.id);
-      expect(hint).toMatchObject({ hostSwapId: FASTSPOT_ID, conflictingIds: ["fs-swap-9999-zzzzzz"], reportedOnOtherTransfer: false });
+      expect(hint).toMatchObject({ hostSwapId: FASTSPOT_ID, conflictingIds: [CONFLICT_ID], reportedOnOtherTransfer: false });
       // Bounded: at most HOST_SWAP_HINT_MAX_ROWS rows per transfer.
       for (const n of [1, 2, 3]) await reportWith(p, { outcome: "initiated", sourceTxHash: nimHash, hostSwapId: `fs-swap-extra-${n}` });
       expect(await hintRows(p.id)).toHaveLength(HOST_SWAP_HINT_MAX_ROWS);

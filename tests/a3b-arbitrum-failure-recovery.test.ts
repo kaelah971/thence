@@ -35,6 +35,7 @@ import { POST as handoffResultPost } from "../app/api/transfers/[id]/handoff-res
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as closeExpiredPost } from "../app/api/transfers/[id]/close-expired/route";
 import { POST as claimIntentPost } from "../app/api/transfers/[id]/claim-intent/route";
+import { declaredHtlc } from "./htlc-fixture";
 
 const ARBITRUM_CHAIN_ID = 42161;
 const NATIVE_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
@@ -131,6 +132,7 @@ function fundingData(p: Pay, key = expectedKey(p)): string {
 
 function swapShape(p: Pay, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(42161, 7),
     id: p.swapId,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc300u1p4a3atestinvoice",

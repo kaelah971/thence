@@ -7,9 +7,9 @@
  * verification logic without any I/O.
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { handoffAttempts, swapAttachments, transferProofs, transfers, users } from "@/db/schema";
+import { handoffAttempts, swapAttachments, transferProofs, transferTransitions, transfers, users } from "@/db/schema";
 import { AuthError } from "@/lib/auth";
 import { verifySwapMatch } from "@/lib/handoff";
 import { setSatoraFetchersForTests } from "@/lib/satora";
@@ -24,6 +24,7 @@ import { GET as attemptGet } from "../app/api/transfers/[id]/attempt/route";
 import { GET as getTransfer } from "../app/api/transfers/[id]/route";
 import { POST as createRecipient } from "../app/api/recipients/route";
 import { POST as createDest } from "../app/api/recipients/[id]/destinations/route";
+import { declaredHtlc } from "./htlc-fixture";
 
 const createdUserIds: string[] = [];
 afterAll(async () => {
@@ -52,12 +53,17 @@ const restoreRoutes = (previous: string | undefined): void => {
   else process.env["THENCE_ENABLED_ROUTES"] = previous;
 };
 
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3000;
+
 function futureUnix(secondsAhead = 3600): number {
   return Math.floor(Date.now() / 1000) + secondsAhead;
 }
 
 function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id: uniqSwap("swap-11111111-2222-3333-4444-555555555555"),
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc100u1p0fakeinvoicepp5fakepp5fakepp5fakepp5fakepp5fakeqdqqxqyjw5q9qy9qsq",
@@ -469,6 +475,51 @@ describe.skipIf(!LIVE)("single handoff authorization", () => {
       restoreRoutes(previous);
     }
   });
+
+  it("refuses authorization when the fresh provider read drifts from the bound terms (Nimiq Pay is never asked)", async () => {
+    const previous = setRoutes(ROUTES);
+    const cases: Array<{ tag: string; drift: Record<string, unknown>; code: string }> = [
+      { tag: "invoice", drift: { bolt11_invoice: "lnbc100u1p0otherinvoicepp5otherpp5otherpp5otherpp5otherpp5otherqdqqxqyjw5q9qy9qsq" }, code: "SWAP_MISMATCH" },
+      { tag: "refund-party", drift: { server_evm_address: "0x00000000000000000000000000000000000000a9" }, code: "HTLC_TERMS_MISMATCH" },
+      { tag: "lock-amount", drift: { evm_expected_sats: "4001" }, code: "HTLC_TERMS_MISMATCH" },
+      { tag: "lock-token", drift: { wbtc_address: "0x00000000000000000000000000000000000000c7" }, code: "HTLC_TERMS_MISMATCH" },
+      { tag: "deadline", drift: { evm_refund_locktime: FIXTURE_LOCKTIME + 60 }, code: "HTLC_TERMS_MISMATCH" },
+      { tag: "version", drift: { evm_htlc_version: 7 }, code: "HTLC_UNSUPPORTED" },
+      { tag: "missing-version", drift: { evm_htlc_version: undefined }, code: "HTLC_TERMS_INCOMPLETE" },
+    ];
+    try {
+      for (const c of cases) {
+        const { cookie } = await login(`drift-${c.tag}`);
+        const { id } = await createQuotedTransfer(cookie, `drift-${c.tag}`, `dr-${c.tag}`);
+        const prep = await prepare(cookie, `drift-${c.tag}`, id);
+        const token = prep.body.attemptToken as string;
+        const quoted = (await (await getTransfer(new Request(`http://localhost/api/transfers/${id}`, { headers: { cookie } }), { params: Promise.resolve({ id }) })).json()) as { transfer: { quote: { sourceSats: string } } };
+        const base = { source_amount: quoted.transfer.quote.sourceSats };
+        setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ ...base, id: sid }) });
+        try {
+          const attached = await attachPost(
+            postJson(`http://localhost/api/transfers/${id}/attach`, { attemptToken: token, expectedQuoteRevision: 1, satoraSwapId: uniqSwap(`swap-drift-${c.tag}`), recoveryAcknowledged: true }, { cookie, ...withClient(`drift-${c.tag}`) }),
+            { params: Promise.resolve({ id }) },
+          );
+          expect(attached.status, c.tag).toBe(201);
+          setSatoraFetchersForTests({ getSwap: async (sid: string) => fixtureSwap({ ...base, ...c.drift, id: sid }) });
+          const res = await authorizePost(postJson(`http://localhost/api/transfers/${id}/authorize-handoff`, { attemptToken: token }, { cookie, ...withClient(`drift-${c.tag}`) }), { params: Promise.resolve({ id }) });
+          expect(res.status, c.tag).toBe(409);
+          expect(((await res.json()) as { error: string }).error, c.tag).toBe(c.code);
+          // Financial invariant: nothing was authorized, so no invoice reached Nimiq Pay.
+          const row = (await getDb().select({ s: transfers.status }).from(transfers).where(eq(transfers.id, id)))[0];
+          expect(row?.s, c.tag).toBe("SWAP_CREATED");
+          const authorizedRows = await getDb().select({ id: transferTransitions.id }).from(transferTransitions).where(and(eq(transferTransitions.transferId, id), eq(transferTransitions.reasonCode, "HANDOFF_AUTHORIZED")));
+          expect(authorizedRows, c.tag).toHaveLength(0);
+        } finally {
+          setSatoraFetchersForTests(null);
+        }
+      }
+    } finally {
+      restoreRoutes(previous);
+    }
+    // Seven independent live-database payments in sequence.
+  }, 420_000);
 
   it("blocks repriced swaps and unknown outcomes without failing", async () => {
     const previous = setRoutes(ROUTES);

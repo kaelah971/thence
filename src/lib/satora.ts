@@ -453,6 +453,16 @@ export interface VerifiedSwapFacts {
   evmHtlcRefundAddress?: string | null;
   evmHtlcClaimAddress?: string | null;
   /**
+   * Provider-declared HTLC deployment (`evm_htlc_version`, `evm_htlc_kind`,
+   * `evm_coordinator_address`). Present from swap CREATION, so the handoff
+   * preflight can refuse an unpinned deployment before any NIM is committed.
+   * Declarations only: src/lib/htlc-preflight.ts checks them against the
+   * pinned deployment table, never the other way round.
+   */
+  evmHtlcVersion?: number | null;
+  evmHtlcKind?: string | null;
+  evmCoordinatorAddress?: string | null;
+  /**
    * P2: Satora `evm_refund_locktime` (unix seconds) — the Polygon claim
    * deadline, fixed at swap CREATION. Null when the provider omits it or it
    * is not a positive safe integer. Plausibility is checked by callers
@@ -535,6 +545,9 @@ export async function getProviderSwap(swapId: string): Promise<VerifiedSwapFacts
     evmHtlcAmountAtomic: readAtomic(s["evm_expected_sats"]),
     evmHtlcRefundAddress: readAddress(s["server_evm_address"]),
     evmHtlcClaimAddress: readAddress(s["client_evm_address"]),
+    evmHtlcVersion: typeof s["evm_htlc_version"] === "number" && Number.isSafeInteger(s["evm_htlc_version"]) ? (s["evm_htlc_version"] as number) : null,
+    evmHtlcKind: typeof s["evm_htlc_kind"] === "string" && (s["evm_htlc_kind"] as string).length <= 32 ? (s["evm_htlc_kind"] as string) : null,
+    evmCoordinatorAddress: readAddress(s["evm_coordinator_address"]),
     evmRefundLocktime: (() => {
       const raw = s["evm_refund_locktime"];
       return typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 ? raw : null;

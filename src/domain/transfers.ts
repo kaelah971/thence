@@ -195,7 +195,7 @@ export const USER_FACING_LABEL: Record<TransferStatus, string> = {
   SERVER_FUNDED: "Action needed — finish delivery",
   CLAIMING: "Finishing delivery",
   NEEDS_ATTENTION: "Needs attention",
-  REFUNDED: "Not delivered — Polygon lock refunded",
+  REFUNDED: "Not delivered — provider lock refunded",
   DELIVERED: "Delivered",
   DELIVERED_SHORT: "Delivered — less than requested",
   FAILED: "Needs attention",

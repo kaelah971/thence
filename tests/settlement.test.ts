@@ -21,6 +21,9 @@ import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route
 import { POST as verifyPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const createdUserIds: string[] = [];
 afterAll(async () => {
@@ -122,6 +125,8 @@ function goodReceipt(amount = 5000000n, dest = EVM_A): NonNullable<ChainScript["
 
 function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id: `swap-55555555-5555-5555-5555-555555555555-${RUN}`,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc100u1p0fakeinvoicepp5fakelnvp2qpp5fakelnvp2qpp5fakelnvp2qpp5fakelnvp2qpp5fake",

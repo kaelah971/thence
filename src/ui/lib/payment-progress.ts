@@ -19,6 +19,7 @@ import { timelineFor, type TimelineStep } from "./status";
 import { CLAIM_UNSAFE_WINDOW_MS, claimWindowAt } from "@/domain/claim-deadline";
 import { STALLED_HEADLINE, stalledBody } from "./handoff-risk";
 import { verifyEstimate, type SettlementNetwork } from "./network-copy";
+import { REDEEMED_STATUSES } from "@/domain/provider-status";
 
 export type NextAction =
   /** Waiting on something the owner can't speed up; nothing to tap. */
@@ -162,7 +163,7 @@ export interface ProgressView {
 }
 
 /** Provider says the claim already landed: verification, not another tap. */
-const REDEEMED: ReadonlySet<string> = new Set(["clientredeemed", "serverredeemed"]);
+const REDEEMED = REDEEMED_STATUSES;
 const FINALITY_PENDING: ReadonlySet<string> = new Set(["PENDING", "INSUFFICIENT_CONFIRMATIONS"]);
 
 export const VERIFYING_HEADLINE = "Delivery submitted — verifying on Polygon";

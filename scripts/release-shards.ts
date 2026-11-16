@@ -51,6 +51,12 @@ export const SHARDS: Record<string, string[]> = {
     "p7-arbitrum-recovery",
     "r2-nimiq-htlc-return",
     "arbitrum-ux-gates",
+    "arbitrum-htlc-v6-trust",
+    "arbitrum-incident-af9dc922",
+    "request-single-payment",
+    "satora-fixture",
+    // Skipped unless THENCE_TEST_LIVE_SATORA=1 (external-provider canary).
+    "satora-live-canary",
     "payments-mode",
   ],
   S2: ["reconciliation", "settlement", "f42-handoff", "f45-nimiq-pay-failure-reasons", "f812-attach-recovery", "f812-retire-replace"],

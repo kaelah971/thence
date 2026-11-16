@@ -196,11 +196,32 @@ export interface ResolutionInputs {
 
 export interface LocalEvidence {
   movementObservations: number;
+  /**
+   * Movement observations that imply the PROVIDER acted on the EVM side
+   * (funded, redeemed or refunded a lock). Client-side Lightning progress and
+   * the provider's refusals to fund are excluded (CLIENT_SIDE_MOVEMENT).
+   */
+  serverSideMovementObservations: number;
   identityMismatchObservations: number;
   evmProofRecorded: boolean;
   nimiqFundingRecorded: boolean;
   activeReservations: number;
 }
+
+const EXPIRED_ONLY: ReadonlySet<string> = new Set(["expired"]);
+
+/**
+ * Provider statuses that never mean the provider acted on the EVM side:
+ * Lightning-side progress by the client, and the provider's refusals to fund
+ * (Satora `clientinvalidfunded`, `clientfundedtoolate`, `serverwontfund`).
+ */
+export const CLIENT_SIDE_MOVEMENT: ReadonlySet<string> = new Set([
+  "clientfundingseen",
+  "clientfunded",
+  "clientinvalidfunded",
+  "clientfundedtoolate",
+  "serverwontfund",
+]);
 
 /** Chain scan window for a bound swap: [bound − lead, latest invoice expiry + tail]. */
 export function scanWindow(attachment: { createdAt: Date; invoiceExpiresAt: Date | null }, facts: { invoiceExpiresAt: Date | null }): { start: Date; end: Date } | null {
@@ -231,7 +252,12 @@ export function assessNonChainEvidence(input: Omit<ResolutionInputs, "chain" | "
  * identity match, no EVM fund/claim tx, terminal `expired`, every invoice
  * copy expired by at least EXPIRY_SETTLE_MARGIN_MS, and a pinned HTLC.
  */
-export function assessProviderEvidence(input: Pick<ResolutionInputs, "transfer" | "attachment" | "facts" | "routeMatches" | "now">): ResolutionRefusal | null {
+export function assessProviderEvidence(
+  input: Pick<ResolutionInputs, "transfer" | "attachment" | "facts" | "routeMatches" | "now"> & {
+    /** Terminal provider statuses this close accepts (default: only `expired`). */
+    acceptedStatuses?: ReadonlySet<string>;
+  },
+): ResolutionRefusal | null {
   const { transfer, attachment, facts, now } = input;
   if (
     facts.satoraSwapId !== attachment.satoraSwapId ||
@@ -244,7 +270,7 @@ export function assessProviderEvidence(input: Pick<ResolutionInputs, "transfer" 
     return "PROVIDER_IDENTITY_MISMATCH";
   }
   if (facts.evmFundTxid !== null || facts.evmClaimTxid !== null) return "PROVIDER_REPORTS_EVM_TX";
-  if (facts.status !== "expired") return "PROVIDER_NOT_EXPIRED";
+  if (!(input.acceptedStatuses ?? EXPIRED_ONLY).has(facts.status)) return "PROVIDER_NOT_EXPIRED";
   const expiries = [attachment.invoiceExpiresAt, facts.invoiceExpiresAt].filter((d): d is Date => d instanceof Date);
   if (expiries.length === 0 || expiries.some((d) => d.getTime() + EXPIRY_SETTLE_MARGIN_MS > now)) return "INVOICE_NOT_SETTLED";
   const trusted = TRUSTED_HTLC_CONTRACTS[facts.evmChainId] ?? [];
@@ -273,7 +299,9 @@ export async function readLocalEvidence(db: Reader, transferId: string, now: num
     .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind })
     .from(reconciliationObservations)
     .where(eq(reconciliationObservations.transferId, transferId));
-  const movementObservations = observations.filter((o) => (MOVEMENT_STATUSES as readonly string[]).includes(o.providerStatus)).length;
+  const movement = observations.filter((o) => (MOVEMENT_STATUSES as readonly string[]).includes(o.providerStatus));
+  const movementObservations = movement.length;
+  const serverSideMovementObservations = movement.filter((o) => !CLIENT_SIDE_MOVEMENT.has(o.providerStatus)).length;
   const identityMismatchObservations = observations.filter((o) => o.kind === "identity_mismatch").length;
   const proofs = await db
     .select({ nimiqTxHash: transferProofs.nimiqTxHash, evmTxHash: transferProofs.evmTxHash })
@@ -291,6 +319,7 @@ export async function readLocalEvidence(db: Reader, transferId: string, now: num
     );
   return {
     movementObservations,
+    serverSideMovementObservations,
     identityMismatchObservations,
     evmProofRecorded: proofs.some((p) => typeof p.evmTxHash === "string" && p.evmTxHash.length > 0),
     nimiqFundingRecorded: proofs.some((p) => typeof p.nimiqTxHash === "string" && p.nimiqTxHash.length > 0),

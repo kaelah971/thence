@@ -41,6 +41,7 @@ import { isTerminal, TRANSFER_STATUSES, type TransferStatus } from "@/domain/tra
 import type { ApiFailureKind, ApiResult } from "./api";
 import { getReconciliation, postReconcile, postVerifySettlement, type ReconciliationView } from "./settlement-client";
 import { invalidateData } from "./resource";
+import { CLAIM_ACTIVITY_STATUSES } from "@/domain/provider-status";
 
 export const TRACKER_BACKOFF_MS = [3_000, 5_000, 8_000, 13_000, 20_000, 30_000] as const;
 export const TRACKER_PRE_FUNDING_CAP_MS = 15_000;
@@ -52,7 +53,7 @@ export const TRACKER_MIN_RECONCILE_SPACING_MS = 5_000;
 /** P3: minimum spacing between delivery verifications (POST /verify-settlement). */
 export const TRACKER_MIN_VERIFY_SPACING_MS = 15_000;
 /** Provider statuses that mean a claim was submitted or settled. */
-const CLAIM_PROGRESS: ReadonlySet<string> = new Set(["clientredeeming", "clientredeemed", "serverredeemed"]);
+const CLAIM_PROGRESS = CLAIM_ACTIVITY_STATUSES;
 const VERIFIABLE: ReadonlySet<string> = new Set(["SERVER_FUNDED", "CLAIMING"]);
 
 const RECONCILABLE: ReadonlySet<string> = new Set([

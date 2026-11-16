@@ -28,6 +28,8 @@
  * - Only the server-side lifecycle may change transfer status, using the
  *   existing domain transitions (QUOTED→SWAP_CREATED→AWAITING_NIM_APPROVAL).
  */
+import { boundHtlcTermsOf, boundTermsDrift, htlcPreflight, type HtlcPreflightResult } from "@/lib/htlc-preflight";
+import { assertRequestPayable, lockRequestPayment } from "@/lib/request-payment";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db";
@@ -39,6 +41,7 @@ import {
   recipients,
   swapAttachments,
   transferProofs,
+  transferTransitions,
   transfers,
 } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
@@ -124,6 +127,16 @@ export interface BoundSwapView {
   claimDeadline: string | null;
   providerStatus: string | null;
   verifiedAt: string;
+}
+
+/** Refuse a handoff whose provider-selected HTLC failed the preflight. Nothing has been paid. */
+export function assertHtlcPreflight(result: HtlcPreflightResult): void {
+  if (result.ok) return;
+  throw new AuthError(
+    409,
+    result.code,
+    `${result.reason} Nothing was sent to Nimiq Pay and no NIM was spent. Don't retry this payment on this route for now.`,
+  );
 }
 
 /**
@@ -358,6 +371,9 @@ export async function attachSwap(
       targetAmountAtomic: transfer.targetAmountAtomic,
       swap: facts,
     });
+    // Refuse to bind a swap whose settlement contract or terms Thence could
+    // not verify later: binding is the step before the invoice is released.
+    assertHtlcPreflight(htlcPreflight(facts, { nowMs: Date.now() }));
     const attached = await tx
       .insert(swapAttachments)
       .values({
@@ -398,7 +414,14 @@ export async function attachSwap(
       actor: "owner",
       actorUserId: userId,
       reasonCode: "SWAP_ATTACHED",
-      evidence: { attemptId: attempt.id, quoteRevision: transfer.quoteRevision, providerStatus: facts.status || "pending", recoveryAcknowledged: true },
+      evidence: {
+        attemptId: attempt.id,
+        quoteRevision: transfer.quoteRevision,
+        providerStatus: facts.status || "pending",
+        recoveryAcknowledged: true,
+        // The settlement terms bound here; authorize refuses any drift.
+        htlc: boundHtlcTermsOf(facts),
+      },
     });
     return { attachment: toBoundView(attachment), transferStatus: next, deduplicated: false };
   });
@@ -576,6 +599,12 @@ export async function authorizeHandoff(
   return db.transaction(async (tx) => {
     await lockTransfer(tx, transferId);
     const { transfer, attempt, attachment } = await authorizePreconditions(tx, userId, transferId, attemptToken);
+    // One payment per request, decided under a per-request lock so two payers
+    // authorizing the same request at once cannot both reach Nimiq Pay.
+    if (transfer.requestId) {
+      await lockRequestPayment(tx, transfer.requestId);
+      await assertRequestPayable(tx, transfer.requestId, transfer.id);
+    }
     if (attachment.satoraSwapId !== pre.attachment.satoraSwapId || attempt.id !== pre.attempt.id) {
       throw new AuthError(409, "VERSION_CONFLICT", "The payment changed while it was being checked; re-read it before authorizing.");
     }
@@ -587,6 +616,42 @@ export async function authorizeHandoff(
     }
     if (!facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now()) {
       throw new AuthError(409, "INVOICE_EXPIRED", "Provider swap invoice is missing or expired.");
+    }
+    // The last gate before Nimiq Pay commits NIM: the live provider swap must
+    // still name a pinned HTLC deployment with complete terms equal to the
+    // bound hash lock and deadline, with enough time left to claim.
+    assertHtlcPreflight(
+      htlcPreflight(facts, { nowMs: Date.now(), bound: { paymentHash: attachment.paymentHash, evmRefundLocktime: attachment.evmRefundLocktime } }),
+    );
+    // The invoice handed to Nimiq Pay must be the one bound (and recovery-
+    // acknowledged) at attach, for the same swap terms: a fresh read naming
+    // another invoice, amount, destination or direction is never paid.
+    if (
+      facts.satoraSwapId !== attachment.satoraSwapId ||
+      facts.bolt11Invoice !== attachment.invoiceBolt11 ||
+      facts.targetAtomic !== transfer.targetAmountAtomic ||
+      facts.targetAtomic !== attachment.targetAtomic ||
+      facts.targetAddress.trim().toLowerCase() !== transfer.destination.trim().toLowerCase() ||
+      facts.direction !== "lightning_to_evm"
+    ) {
+      throw new AuthError(409, "SWAP_MISMATCH", "The provider's swap no longer matches the bound payment. Nothing was sent to Nimiq Pay.");
+    }
+    // Every settlement term bound at attach (chain, HTLC deployment, lock
+    // token, amount and parties, route token, source sats) must be unchanged.
+    const attachedRow = (
+      await tx
+        .select({ evidence: transferTransitions.evidence })
+        .from(transferTransitions)
+        .where(and(eq(transferTransitions.transferId, transfer.id), eq(transferTransitions.reasonCode, "SWAP_ATTACHED")))
+        .orderBy(desc(transferTransitions.createdAt))
+        .limit(1)
+    )[0];
+    const drift = boundTermsDrift((attachedRow?.evidence as Record<string, unknown> | undefined)?.["htlc"], facts);
+    if (drift === "missing") {
+      throw new AuthError(409, "HTLC_TERMS_INCOMPLETE", "This payment was bound without a verified settlement-contract record, so it can't be authorized. Nothing was sent to Nimiq Pay and no NIM was spent. Start the payment again.");
+    }
+    if (drift !== null) {
+      throw new AuthError(409, "HTLC_TERMS_MISMATCH", `The provider changed this payment's settlement terms (${drift}) after it was set up. Nothing was sent to Nimiq Pay and no NIM was spent. Don't retry this payment.`);
     }
     // Repricing guard: never silently approve a larger obligation. The owner
     // may explicitly accept the live figure (acceptRepricedSourceSats must

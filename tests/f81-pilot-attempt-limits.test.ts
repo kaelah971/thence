@@ -225,7 +225,7 @@ describe.skipIf(!LIVE)("F8.1 pilot attempt limits (isolated TEST database)", () 
       const listedBody = (await listed.json()) as { transfers: Array<{ id: string; status: string; statusLabel: string }> };
       expect(listedBody.transfers.find((row) => row.id === refunded.body.transfer.id)).toMatchObject({
         status: "REFUNDED",
-        statusLabel: "Not delivered — Polygon lock refunded",
+        statusLabel: "Not delivered — provider lock refunded",
       });
 
       const fresh = await createDirect(me.cookie, "refund-release", "fresh", "300000");

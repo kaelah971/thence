@@ -338,6 +338,10 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "QUOTE_STALE":
     case "QUOTE_EXPIRED":
       return { title: "That price has expired", body: "Prices only last a few minutes. Refresh the price, then continue.", retryable: true, action: "requote" };
+    case "REQUEST_ALREADY_PAID":
+      return { title: "This request was already paid", body: "Someone already completed a payment for this request, so this one was stopped before Nimiq Pay asked you to approve anything. Ask for a new link if more is owed.", retryable: false, action: "abort" };
+    case "REQUEST_PAYMENT_IN_PROGRESS":
+      return { title: "This request is already being paid", body: "Another payment for this request is in progress, so this one was stopped before Nimiq Pay asked you to approve anything. Check with the requester before paying again.", retryable: false, action: "abort" };
     case "REQUEST_EXPIRED":
     case "REQUEST_CANCELLED":
     case "REQUEST_NOT_FOUND":
@@ -360,6 +364,19 @@ export function classifyPreparationFailure(failure: { kind: string; code: string
     case "SWAP_STATE_UNEXPECTED":
     case "INVOICE_EXPIRED":
       return { title: "Couldn't verify the swap", body: "The swap doesn't match this payment any more. Do not approve anything.", retryable: false, action: "abort" };
+    case "HTLC_UNSUPPORTED":
+    case "HTLC_TERMS_INCOMPLETE":
+    case "HTLC_TERMS_MISMATCH":
+      // Pre-handoff preflight (attach/authorize): refused before the invoice
+      // is released to Nimiq Pay, so no NIM approval was requested.
+      return {
+        title: "This route can't be used safely right now",
+        body: "The provider set this payment up on a settlement contract or terms Thence can't verify, so it was stopped before Nimiq Pay asked you to approve anything. No NIM was spent. Don't retry it on this route for now.",
+        retryable: false,
+        action: "abort",
+      };
+    case "HTLC_DEADLINE_TOO_CLOSE":
+      return { title: "Not enough time to finish safely", body: "Too little time would remain to finish delivery, so this payment was stopped before Nimiq Pay asked you to approve anything. No NIM was spent.", retryable: false, action: "abort" };
     case "REPRICED_NEEDS_CONFIRMATION": {
       // Owner-explicit acceptance path: the response carries both figures so
       // the UI can show old vs new cost. Without figures there is nothing

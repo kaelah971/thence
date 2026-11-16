@@ -27,6 +27,7 @@ import { evaluatePaymentGate, isPaymentFlagEnabled, type PaymentGateInput } from
 import { mapHostResultToServerOutcome, reportHandoffResult } from "@/ui/lib/handoff-client";
 import {
   decideResumeAction,
+  nativeInvokeDecision,
   loadHandoffRecord,
   saveHandoffRecord,
 } from "@/ui/screens/send/useHandoff";
@@ -346,6 +347,17 @@ describe("interruption and replay safety", () => {
         expect(["report-unknown", "none"]).toContain(decideResumeAction(status, record).action);
       }
     }
+  });
+
+  it("a lost native response is never followed by a second Nimiq Pay call for the same invoice", () => {
+    const base = { transferId: "t-1", ownerUserId: "u-1", invoice: INVOICE, invokedAt: "x" };
+    // Invoked, response lost (app killed / backgrounded): report unknown instead.
+    expect(nativeInvokeDecision({ ...base, outcomeReported: false, reportedOutcome: null }, INVOICE)).toBe("report-unknown");
+    // First invocation, or a reported pre-signing refusal (server keeps it payable): allowed.
+    expect(nativeInvokeDecision(null, INVOICE)).toBe("invoke");
+    expect(nativeInvokeDecision({ ...base, outcomeReported: true, reportedOutcome: "cancelled" }, INVOICE)).toBe("invoke");
+    // A record for a different invoice is not this payment's invocation.
+    expect(nativeInvokeDecision({ ...base, invoice: "lnbc1other", outcomeReported: false, reportedOutcome: null }, INVOICE)).toBe("invoke");
   });
 });
 

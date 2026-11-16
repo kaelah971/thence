@@ -32,6 +32,7 @@ import { POST as preparePost } from "../app/api/transfers/[id]/prepare/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as verifyPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
+import { declaredHtlc } from "./htlc-fixture";
 
 const createdUserIds: string[] = [];
 afterAll(async () => {
@@ -186,6 +187,7 @@ interface Case { id: string; hashLock: string; lock: number; claimTx: string; sw
 
 function swapFixture(c: Pick<Case, "swapId" | "hashLock" | "lock">, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
     id: c.swapId,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc100u1p0fakeinvoicepp5fakelnvp2qpp5fakelnvp2qpp5fakelnvp2qpp5fakelnvp2qpp5fake",

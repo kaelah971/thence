@@ -33,6 +33,7 @@ import { GET as listTransfers } from "../app/api/transfers/route";
 import { GET as getTransfer } from "../app/api/transfers/[id]/route";
 import { POST as logoutPost } from "../app/api/session/logout/route";
 import { handoffAttempts } from "@/db/schema";
+import { declaredHtlc } from "./htlc-fixture";
 
 const INC = fixture.incident_077770a1;
 const LOCK = INC.attachment.payment_hash;
@@ -137,6 +138,7 @@ function installProvider(): void {
 interface Pay { id: string; cookie: string; swapId: string; sourceSats: string; lock: number; fundTx: string; tag: string; userId: string; wallet: ReturnType<typeof fixtureWallet>; attemptToken: string }
 
 const swapShape = (p: Pick<Pay, "swapId" | "sourceSats" | "lock">, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  ...declaredHtlc(137),
   id: p.swapId,
   direction: "lightning_to_evm",
   bolt11_invoice: "lnbc3980n1p4testinvoice",
@@ -398,7 +400,8 @@ describe.skipIf(!LIVE)("P3 claim authorization (isolated test database)", () => 
     await expectRefused(409, "DEADLINE_TOO_CLOSE");
     expect((await reasonsOf(p.id)).filter((r) => r === "CLAIM_AUTHORIZED")).toHaveLength(0);
     expect((await getDb().select().from(jobLeases).where(eq(jobLeases.name, `claim:${p.id}`))).length).toBe(0);
-  });
+    // ~15 sequential live round trips plus a funded setup.
+  }, 180_000);
 
   it("every transfer this suite created is consistent under the strict checker", async () => {
     for (const id of createdTransferIds) await expectConsistent(id);

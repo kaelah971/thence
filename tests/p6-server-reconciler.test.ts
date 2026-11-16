@@ -38,6 +38,9 @@ import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-hando
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { GET as cronGet } from "../app/api/cron/reconcile/route";
+import { declaredHtlc } from "./htlc-fixture";
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
 const INC = fixture.incident_077770a1;
 const REAL_HASH_LOCK = INC.attachment.payment_hash;
@@ -172,6 +175,8 @@ function installProvider(): void {
 /** Satora-shaped swap carrying the REAL 077770a1 hash lock and HTLC. */
 function swapShape(id: string, sourceSats: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id,
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc3980n1p4testinvoice",
@@ -374,6 +379,9 @@ describe.skipIf(!LIVE)("P6 server reconciliation (isolated test database)", () =
 
   it("P2: the cron backfills a missing claim deadline only after identity verification", async () => {
     const p = await authorizedPayment("backfill");
+    // Attach now requires and stores the deadline (HTLC preflight), so recreate
+    // the legacy pre-P2 binding shape (no stored deadline) in the TEST database.
+    await getDb().update(swapAttachments).set({ evmRefundLocktime: null }).where(eq(swapAttachments.transferId, p.id));
     const locktime = nowSec() + 3500;
     provider.set(p.swapId, swapShape(p.swapId, p.sourceSats, { evm_refund_locktime: locktime }));
     await runServerReconciliation({ scope: [p.id], leaseName: lease("backfill") });

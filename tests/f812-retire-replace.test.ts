@@ -30,6 +30,7 @@ import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-hando
 import { GET as getTransfer } from "../app/api/transfers/[id]/route";
 import { GET as providerEvidenceGet } from "../app/api/transfers/[id]/provider-evidence/route";
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
+import { declaredHtlc } from "./htlc-fixture";
 
 const createdUserIds: string[] = [];
 afterAll(async () => {
@@ -57,6 +58,9 @@ const restoreRoutes = (previous: string | undefined): void => {
   else process.env["THENCE_ENABLED_ROUTES"] = previous;
 };
 
+/** Fixed per run: a real provider never moves a swap's deadline between reads. */
+const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3000;
+
 function futureUnix(secondsAhead = 3600): number {
   return Math.floor(Date.now() / 1000) + secondsAhead;
 }
@@ -64,6 +68,8 @@ function futureUnix(secondsAhead = 3600): number {
 /** Schema-true provider swap fragment (token identity via token_id). */
 function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    ...declaredHtlc(137),
+    evm_refund_locktime: FIXTURE_LOCKTIME,
     id: uniqSwap("swap-99999999-9999-9999-9999-999999999999"),
     direction: "lightning_to_evm",
     bolt11_invoice: "lnbc100u1p0fakeinvoicepp5fakepp5fakepp5fakepp5fakepp5fakeqdqqxqyjw5q9qy9qsq",
