@@ -294,6 +294,9 @@ export interface ClaimReport {
   userOpHash: string | null;
   txHash: string | null;
   errorText: string | null;
+  /** Last step attempted and the first failing request (codes only; claim-evidence.ts). */
+  stage?: string | null;
+  failure?: { step: string; kind: "rpc-error" | "http" | "network"; rpcCode: number | null; httpStatus: number | null; message: string | null } | null;
 }
 
 export function postClaimReport(id: string, report: ClaimReport, opts: Opts = {}): Promise<ApiResult<{ recorded: boolean }>> {

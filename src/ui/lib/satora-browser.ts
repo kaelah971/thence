@@ -12,7 +12,7 @@
  */
 import type { ClaimResult, StoredSwap } from "@satora/swap";
 import { ARBITRUM_AA } from "@/ui/lib/arbitrum-aa";
-import { classifyClaim, observeClaimNetwork, sanitizeClaimError, type ClaimClassification } from "@/ui/lib/claim-evidence";
+import { classifyClaim, installClaimFetchObserver, observeClaimNetwork, sanitizeClaimError, type ClaimClassification } from "@/ui/lib/claim-evidence";
 
 export interface ExactSwapTerms {
   targetAddress: string;
@@ -85,6 +85,10 @@ async function loadClient(): Promise<SwapClient> {
   if (!singleton) {
     singleton = (async () => {
       const { Client, IdbSwapStorage, IdbWalletStorage } = await import("@satora/swap");
+      // f1ca0926: the SDK's Satora API client captures fetch when it is BUILT;
+      // the claim observer must wrap fetch first or it misses the swap refresh
+      // and the DEX-calldata request (claim-evidence.ts).
+      installClaimFetchObserver();
       // f1ca0926: the Arbitrum claim path is a sponsored UserOperation; pin
       // its infrastructure explicitly (public values; see arbitrum-aa.ts).
       const client = await Client.builder()

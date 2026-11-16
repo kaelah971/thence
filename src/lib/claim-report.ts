@@ -30,6 +30,7 @@ export const CLAIM_REPORT_MAX_ROWS = 12;
 const REPORTABLE: ReadonlySet<string> = new Set(["SERVER_FUNDED", "CLAIMING", "OUTCOME_UNKNOWN", "NEEDS_ATTENTION"]);
 
 const HASH = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
+const STEP_RE = /^[A-Za-z0-9_:/. -]{1,64}$/;
 export const claimReportSchema = z
   .object({
     submission: z.enum(["submitted", "not-submitted", "unknown"]),
@@ -38,6 +39,19 @@ export const claimReportSchema = z
     userOpHash: HASH.nullable(),
     txHash: HASH.nullable(),
     errorText: z.string().max(400).nullable(),
+    /** Last step attempted, e.g. "eth_estimateUserOperationGas" or "satora:POST /dex-calldata/fund". */
+    stage: z.string().regex(STEP_RE).nullable().optional(),
+    failure: z
+      .object({
+        step: z.string().regex(STEP_RE),
+        kind: z.enum(["rpc-error", "http", "network"]),
+        rpcCode: z.number().int().min(-1_000_000).max(1_000_000).nullable(),
+        httpStatus: z.number().int().min(0).max(999).nullable(),
+        message: z.string().max(400).nullable(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 export type ClaimReportInput = z.infer<typeof claimReportSchema>;
@@ -79,6 +93,8 @@ export async function recordClaimReport(userId: string, transferId: string, inpu
         userOpHash: input.userOpHash,
         txHash: input.txHash,
         errorText: redactClaimText(input.errorText),
+        stage: input.stage ?? null,
+        failure: input.failure ? { ...input.failure, message: redactClaimText(input.failure.message) } : null,
       },
     });
     return "recorded";

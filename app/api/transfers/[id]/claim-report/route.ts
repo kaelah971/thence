@@ -30,7 +30,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const write = await recordClaimReport(session.userId, id, parsed.data);
     // One secret-free journal line per attempt: the exact failing step is now
     // visible to operators (it was browser-only during f1ca0926).
-    console.info(`thence claim-report: ${parsed.data.submission}:${parsed.data.code}${parsed.data.userOpHash ? " userop:1" : ""}${parsed.data.disclosedToInfrastructure ? " disclosed:1" : ""} ${write}`);
+    const f = parsed.data.failure;
+    // Codes and step names only (never provider text) in the journal.
+    console.info(
+      `thence claim-report: ${parsed.data.submission}:${parsed.data.code}${parsed.data.userOpHash ? " userop:1" : ""}${parsed.data.disclosedToInfrastructure ? " disclosed:1" : ""}` +
+        `${parsed.data.stage ? ` stage:${parsed.data.stage.replace(/\s+/g, "_")}` : ""}` +
+        `${f ? ` fail:${f.step.replace(/\s+/g, "_")}/${f.kind}/${f.rpcCode ?? "-"}/${f.httpStatus ?? "-"}` : ""} ${write}`,
+    );
     return NextResponse.json({ recorded: write === "recorded" }, { status: 200 });
   } catch (err) {
     if (err instanceof AuthError) {

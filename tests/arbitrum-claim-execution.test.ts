@@ -216,7 +216,7 @@ describe.each([V6, V7])("Arbitrum v$version claim outcome classification", (v) =
 
   it("valid sponsored claim: submitted and confirmed with UserOperation and transaction hashes", async () => {
     const scope = bundler({ eth_estimateUserOperationGas: ok, pm_getPaymasterData: ok, eth_sendUserOperation: { result: USEROP_HASH }, eth_getUserOperationReceipt: { result: { success: true, receipt: { transactionHash: TX_HASH } } } });
-    expect(await run(scope, () => sdkUserOpClaim(scope, v))).toEqual({ submission: "submitted", code: "CONFIRMED", disclosedToInfrastructure: true, userOpHash: USEROP_HASH, txHash: TX_HASH });
+    expect(await run(scope, () => sdkUserOpClaim(scope, v))).toMatchObject({ submission: "submitted", code: "CONFIRMED", disclosedToInfrastructure: true, userOpHash: USEROP_HASH, txHash: TX_HASH, failure: null });
   });
 
   it("missing AA config: refused before any request — NOT submitted, nothing disclosed", async () => {

@@ -4,32 +4,51 @@
  * The SDK's `claim()` either returns or throws a plain Error. Thence used to
  * treat EVERY throw as "the delivery may have been sent" and showed
  * "Delivery submitted": the f1ca0926 claim threw before anything reached
- * Arbitrum (no UserOperation, no transaction, no provider claim), yet the
- * screen said it was submitted.
+ * Arbitrum (no UserOperation from any sender, no transaction, no provider
+ * claim), yet the screen said it was submitted, and the error itself was
+ * never rendered or persisted, so the failing step is unknown.
  *
  * What was actually sent is recorded by observing the claim's own network
- * requests while it runs (the SDK's bundler/paymaster transport and its
- * gasless-relay POST use the global `fetch`):
+ * requests:
  * - Arbitrum: a sponsored ERC-4337 UserOperation (EntryPoint v0.7, EIP-7702
- *   Kernel account). Submission = `eth_sendUserOperation` answered with a
+ *   Kernel v3.3). Submission = `eth_sendUserOperation` answered with a
  *   UserOperation hash. A JSON-RPC error answer = explicitly NOT accepted.
- * - Polygon: Satora's server-submitted gasless claim. Submission =
- *   `POST /swap/:id/claim-gasless` answered 2xx (non-2xx = not accepted).
- * A send request with no definitive answer is UNKNOWN: it may still land.
+ * - Polygon: Satora's gasless relay. Submission = `POST /swap/:id/claim-gasless`
+ *   answered 2xx (4xx = refused, 5xx/no answer = unknown).
  *
- * Requests that carry the claim calldata (and so the payment preimage) to the
- * delivery infrastructure before submission (gas estimation, sponsorship)
- * are recorded as `disclosedToInfrastructure`: an honest fact for the owner
- * and the audit, not a submission.
+ * Capture (verified against the installed SDK, lendaswap-sdk-pure 2.7.0):
+ * viem's http transport resolves the global `fetch` per request, BUT the
+ * SDK's Satora API client (openapi-fetch) captures `globalThis.fetch` once,
+ * when the client is built, and passes a `Request` object. A wrapper that is
+ * installed only around `claim()` therefore misses the swap refresh and the
+ * DEX-calldata request. `installClaimFetchObserver()` must run BEFORE the SDK
+ * client is built (satora-browser.ts loadClient); it is a pass-through
+ * unless a claim is being observed.
  *
- * Nothing here reads, logs or forwards request bodies beyond the JSON-RPC
- * method names; only public hashes are kept.
+ * Classification uses WHICH REQUEST failed, never the error text alone: the
+ * SDK's errors embed the full JSON-RPC request body (including the claim
+ * calldata, which carries the preimage) and every UserOperation dump mentions
+ * "paymaster", so text matching misclassifies and is unsafe to forward.
+ *
+ * Calldata-bearing requests made before submission (gas estimation,
+ * sponsorship) are recorded as `disclosedToInfrastructure`: an honest fact,
+ * not a submission. Nothing here keeps request bodies; only method names,
+ * HTTP/JSON-RPC status codes and public hashes.
  */
 
 export type ClaimSubmission = "submitted" | "not-submitted" | "unknown";
 
+export interface ClaimRequestFailure {
+  /** Step name, e.g. "eth_estimateUserOperationGas" or "satora:POST /dex-calldata/fund". */
+  step: string;
+  kind: "rpc-error" | "http" | "network";
+  rpcCode: number | null;
+  httpStatus: number | null;
+  /** Provider's own short error text, hex-redacted and bounded. */
+  message: string | null;
+}
+
 export interface ClaimNetworkEvidence {
-  /** Calldata-bearing requests made before/at submission (method names only). */
   disclosedToInfrastructure: boolean;
   sendAttempted: boolean;
   sendAccepted: boolean;
@@ -38,8 +57,10 @@ export interface ClaimNetworkEvidence {
   txHash: string | null;
   /** eth_getUserOperationReceipt `success`, when a receipt was seen. */
   receiptSuccess: boolean | null;
-  /** JSON-RPC methods observed, in order (names only; for diagnostics). */
+  /** Steps observed, in order (names only). */
   methods: string[];
+  /** First request that failed (the SDK stops at its first error). */
+  failure: ClaimRequestFailure | null;
 }
 
 export interface ClaimClassification {
@@ -49,6 +70,9 @@ export interface ClaimClassification {
   disclosedToInfrastructure: boolean;
   userOpHash: string | null;
   txHash: string | null;
+  /** Last step attempted (diagnostics). */
+  stage?: string | null;
+  failure?: ClaimRequestFailure | null;
 }
 
 export type ClaimOutcomeCode =
@@ -62,27 +86,33 @@ export type ClaimOutcomeCode =
   | "AA_SPONSORSHIP_REJECTED"
   | "AA_ESTIMATE_FAILED"
   | "AA_UNREACHABLE"
+  | "RATE_LIMITED"
+  | "PROVIDER_READ_FAILED"
   | "DEX_CALLDATA_FAILED"
   | "RECOVERY_MATERIAL_MISSING"
   | "SDK_ERROR";
 
 /** Methods whose params carry the claim calldata (preimage) to the infrastructure. */
-const CALLDATA_METHODS = new Set([
-  "eth_estimateUserOperationGas",
-  "pm_getPaymasterStubData",
-  "pm_getPaymasterData",
-  "alchemy_requestGasAndPaymasterAndData",
-  "eth_sendUserOperation",
-]);
+const CALLDATA_METHODS = new Set(["eth_estimateUserOperationGas", "pm_getPaymasterStubData", "pm_getPaymasterData", "alchemy_requestGasAndPaymasterAndData", "eth_sendUserOperation"]);
+const SPONSOR_METHODS = new Set(["pm_getPaymasterStubData", "pm_getPaymasterData", "alchemy_requestGasAndPaymasterAndData"]);
 const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const GASLESS_RE = /\/swap\/[^/?#]+\/claim-gasless(?:[?#].*)?$/;
+const SATORA_HOST_RE = /^https:\/\/api\.satora\.io\//;
 
 export function emptyEvidence(): ClaimNetworkEvidence {
-  return { disclosedToInfrastructure: false, sendAttempted: false, sendAccepted: false, sendRejected: false, userOpHash: null, txHash: null, receiptSuccess: null, methods: [] };
+  return { disclosedToInfrastructure: false, sendAttempted: false, sendAccepted: false, sendRejected: false, userOpHash: null, txHash: null, receiptSuccess: null, methods: [], failure: null };
+}
+
+/** Secret-free, bounded text: hex runs (calldata, signatures, preimages) are removed. */
+export function sanitizeClaimError(error: unknown): string {
+  const raw = error instanceof Error ? `${error.name === "Error" ? "" : `${error.name}: `}${error.message}` : typeof error === "string" ? error : "";
+  // Drop the SDK's echoed request bodies entirely, then redact any hex left.
+  const withoutBodies = raw.replace(/Request body:[\s\S]*?(?=\n\n|Details:|Version:|$)/g, "Request body: [omitted] ").replace(/Request Arguments:[\s\S]*?(?=\n\n|Details:|Version:|$)/g, "Request Arguments: [omitted] ");
+  return withoutBodies.replace(/0x[0-9a-fA-F]{16,}/g, "0x…").replace(/[0-9a-fA-F]{40,}/g, "…").replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
 type RpcBody = { method?: unknown; id?: unknown };
-type RpcReply = { id?: unknown; result?: unknown; error?: unknown };
+type RpcReply = { id?: unknown; result?: unknown; error?: { code?: unknown; message?: unknown } | null };
 
 function parseJson(text: string): unknown {
   try {
@@ -97,23 +127,35 @@ function asArray<T>(value: T | T[] | null): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function urlOf(input: unknown): string {
-  if (typeof input === "string") return input;
-  if (input && typeof input === "object" && "url" in input && typeof (input as { url: unknown }).url === "string") return (input as { url: string }).url;
-  if (input instanceof URL) return input.toString();
-  return "";
+interface NotedRequest {
+  rpc: Array<{ method: string; id: unknown }>;
+  gasless: boolean;
+  satoraStep: string | null;
 }
 
-/** Record one request (before it is sent). Returns the JSON-RPC methods it carries. */
-function noteRequest(ev: ClaimNetworkEvidence, url: string, method: string, body: unknown): { rpc: Array<{ method: string; id: unknown }>; gasless: boolean } {
-  const gasless = method.toUpperCase() === "POST" && GASLESS_RE.test(url);
-  if (gasless) {
-    ev.methods.push("claim-gasless");
-    ev.disclosedToInfrastructure = true;
-    ev.sendAttempted = true;
-    return { rpc: [], gasless };
+function fail(ev: ClaimNetworkEvidence, f: ClaimRequestFailure): void {
+  if (!ev.failure) ev.failure = f;
+}
+
+function noteRequest(ev: ClaimNetworkEvidence, url: string, method: string, body: string | null): NotedRequest {
+  if (SATORA_HOST_RE.test(url)) {
+    const path = (() => {
+      try {
+        return new URL(url).pathname;
+      } catch {
+        return "";
+      }
+    })();
+    const gasless = method === "POST" && GASLESS_RE.test(path);
+    const step = gasless ? "satora:POST /swap/:id/claim-gasless" : `satora:${method} ${path.replace(/\/swap\/[^/]+/, "/swap/:id")}`;
+    ev.methods.push(step);
+    if (gasless) {
+      ev.disclosedToInfrastructure = true;
+      ev.sendAttempted = true;
+    }
+    return { rpc: [], gasless, satoraStep: step };
   }
-  const parsed = typeof body === "string" ? (parseJson(body) as RpcBody | RpcBody[] | null) : null;
+  const parsed = body !== null ? (parseJson(body) as RpcBody | RpcBody[] | null) : null;
   const rpc: Array<{ method: string; id: unknown }> = [];
   for (const item of asArray(parsed)) {
     if (item && typeof item.method === "string") {
@@ -123,34 +165,43 @@ function noteRequest(ev: ClaimNetworkEvidence, url: string, method: string, body
       if (item.method === "eth_sendUserOperation") ev.sendAttempted = true;
     }
   }
-  return { rpc, gasless };
+  return { rpc, gasless: false, satoraStep: null };
 }
 
-/** Record the answer to a request already noted. */
-function noteResponse(ev: ClaimNetworkEvidence, req: { rpc: Array<{ method: string; id: unknown }>; gasless: boolean }, status: number, text: string): void {
+function noteResponse(ev: ClaimNetworkEvidence, req: NotedRequest, status: number, text: string): void {
   const parsed = parseJson(text);
-  if (req.gasless) {
-    if (status >= 200 && status < 300) {
-      ev.sendAccepted = true;
-      const tx = (parsed as { tx_hash?: unknown } | null)?.tx_hash;
-      if (typeof tx === "string" && HASH_RE.test(tx)) ev.txHash = tx;
-    } else if (status >= 400 && status < 500) {
+  if (req.satoraStep !== null) {
+    if (req.gasless) {
+      if (status >= 200 && status < 300) {
+        ev.sendAccepted = true;
+        const tx = (parsed as { tx_hash?: unknown } | null)?.tx_hash;
+        if (typeof tx === "string" && HASH_RE.test(tx)) ev.txHash = tx;
+        return;
+      }
       // 4xx is a definitive refusal; 5xx may hide an accepted submission.
-      ev.sendRejected = true;
+      if (status >= 400 && status < 500) ev.sendRejected = true;
     }
+    if (status < 200 || status >= 300) fail(ev, { step: req.satoraStep, kind: "http", rpcCode: null, httpStatus: status, message: null });
+    return;
+  }
+  if (status < 200 || status >= 300) {
+    for (const r of req.rpc) fail(ev, { step: r.method, kind: "http", rpcCode: null, httpStatus: status, message: null });
     return;
   }
   const replies = asArray(parsed as RpcReply | RpcReply[] | null);
   for (const r of req.rpc) {
     const reply = replies.find((x) => x && x.id === r.id) ?? (replies.length === 1 ? replies[0] : undefined);
     if (!reply) continue;
-    if (r.method === "eth_sendUserOperation") {
-      if (typeof reply.result === "string" && HASH_RE.test(reply.result)) {
-        ev.sendAccepted = true;
-        ev.userOpHash = reply.result;
-      } else if (reply.error !== undefined && reply.error !== null) {
-        ev.sendRejected = true;
-      }
+    if (reply.error !== undefined && reply.error !== null) {
+      const code = typeof reply.error.code === "number" ? reply.error.code : null;
+      const message = typeof reply.error.message === "string" ? sanitizeClaimError(reply.error.message) : null;
+      fail(ev, { step: r.method, kind: "rpc-error", rpcCode: code, httpStatus: null, message });
+      if (r.method === "eth_sendUserOperation") ev.sendRejected = true;
+      continue;
+    }
+    if (r.method === "eth_sendUserOperation" && typeof reply.result === "string" && HASH_RE.test(reply.result)) {
+      ev.sendAccepted = true;
+      ev.userOpHash = reply.result;
     }
     if (r.method === "eth_getUserOperationReceipt" && reply.result && typeof reply.result === "object") {
       const res = reply.result as { success?: unknown; receipt?: { transactionHash?: unknown } };
@@ -162,65 +213,120 @@ function noteResponse(ev: ClaimNetworkEvidence, req: { rpc: Array<{ method: stri
 }
 
 type FetchLike = (input: unknown, init?: { method?: string; body?: unknown }) => Promise<Response>;
+type Scope = { fetch: FetchLike };
 
-/**
- * Run `fn` while observing every global `fetch` it makes. The original fetch
- * is always restored. One claim runs at a time per page (claimsInFlight), so
- * the observer never sees an unrelated claim; unrelated requests are recorded
- * only by method name and never change the classification unless they are
- * claim submissions.
- */
-export async function observeClaimNetwork<T>(
-  fn: () => Promise<T>,
-  scope: { fetch: FetchLike } = globalThis as unknown as { fetch: FetchLike },
-): Promise<{ ok: true; value: T; evidence: ClaimNetworkEvidence } | { ok: false; error: unknown; evidence: ClaimNetworkEvidence }> {
-  const ev = emptyEvidence();
-  const original = scope.fetch;
-  const pending: Promise<void>[] = [];
+function describe(input: unknown, init?: { method?: string; body?: unknown }): { url: string; method: string; body: () => Promise<string | null> } {
+  const isRequest = typeof Request !== "undefined" && input instanceof Request;
+  const url = isRequest ? (input as Request).url : input instanceof URL ? input.toString() : typeof input === "string" ? input : String((input as { url?: unknown })?.url ?? "");
+  const method = String(init?.method ?? (isRequest ? (input as Request).method : "GET")).toUpperCase();
+  return {
+    url,
+    method,
+    body: async () => {
+      if (typeof init?.body === "string") return init.body;
+      if (isRequest) {
+        try {
+          return await (input as Request).clone().text();
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    },
+  };
+}
+
+/** The evidence of the claim currently being observed (null = pass-through). */
+let active: { ev: ClaimNetworkEvidence; pending: Promise<void>[] } | null = null;
+const INSTALLED = Symbol.for("thence.claimFetchObserver");
+
+function wrap(original: FetchLike, scope: Scope): FetchLike {
   const observed: FetchLike = async (input, init) => {
-    const req = noteRequest(ev, urlOf(input), String(init?.method ?? "GET"), init?.body);
-    const response = await original.call(scope, input, init);
-    if (req.gasless || req.rpc.length > 0) {
-      pending.push(
+    const rec = active;
+    if (!rec) return original.call(scope, input, init);
+    const d = describe(input, init);
+    const req = noteRequest(rec.ev, d.url, d.method, await d.body());
+    const relevant = req.gasless || req.satoraStep !== null || req.rpc.length > 0;
+    let response: Response;
+    try {
+      response = await original.call(scope, input, init);
+    } catch (error) {
+      if (relevant) {
+        const step = req.satoraStep ?? req.rpc[0]?.method ?? "fetch";
+        fail(rec.ev, { step, kind: "network", rpcCode: null, httpStatus: null, message: null });
+      }
+      throw error;
+    }
+    if (relevant) {
+      rec.pending.push(
         response
           .clone()
           .text()
-          .then((text) => noteResponse(ev, req, response.status, text))
+          .then((text) => noteResponse(rec.ev, req, response.status, text))
           .catch(() => undefined),
       );
     }
     return response;
   };
-  scope.fetch = observed;
+  (observed as unknown as Record<symbol, boolean>)[INSTALLED] = true;
+  return observed;
+}
+
+/**
+ * Install the persistent, pass-through observer on `scope.fetch`. Call it
+ * BEFORE the SDK client is built (its API client captures fetch at build
+ * time). Idempotent.
+ */
+export function installClaimFetchObserver(scope: Scope = globalThis as unknown as Scope): void {
+  const current = scope.fetch as unknown as Record<symbol, boolean>;
+  if (current && current[INSTALLED]) return;
+  scope.fetch = wrap(scope.fetch, scope);
+}
+
+/**
+ * Run `fn` while recording every request it makes through the observer.
+ * If the persistent observer is not installed on `scope`, a temporary one is
+ * installed for the call and removed afterwards (tests, legacy callers).
+ */
+export async function observeClaimNetwork<T>(
+  fn: () => Promise<T>,
+  scope: Scope = globalThis as unknown as Scope,
+): Promise<{ ok: true; value: T; evidence: ClaimNetworkEvidence } | { ok: false; error: unknown; evidence: ClaimNetworkEvidence }> {
+  const rec = { ev: emptyEvidence(), pending: [] as Promise<void>[] };
+  const temporary = !(scope.fetch as unknown as Record<symbol, boolean>)[INSTALLED];
+  const original = scope.fetch;
+  if (temporary) scope.fetch = wrap(original, scope);
+  const previous = active;
+  active = rec;
   try {
     const value = await fn();
-    await Promise.all(pending);
-    return { ok: true, value, evidence: ev };
+    await Promise.all(rec.pending);
+    return { ok: true, value, evidence: rec.ev };
   } catch (error) {
-    await Promise.all(pending);
-    return { ok: false, error, evidence: ev };
+    await Promise.all(rec.pending);
+    return { ok: false, error, evidence: rec.ev };
   } finally {
-    scope.fetch = original;
+    active = previous;
+    if (temporary) scope.fetch = original;
   }
 }
 
-/** Secret-free, bounded error text: hex runs (calldata, signatures, preimages) are removed. */
-export function sanitizeClaimError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return raw.replace(/0x[0-9a-fA-F]{16,}/g, "0x…").replace(/[0-9a-fA-F]{40,}/g, "…").replace(/\s+/g, " ").trim().slice(0, 160);
-}
-
-function codeFromError(error: unknown, ev: ClaimNetworkEvidence): ClaimOutcomeCode {
+/** Local exceptions (no failing request observed): what the SDK refused to do. */
+function codeFromLocalError(error: unknown): ClaimOutcomeCode {
   const msg = error instanceof Error ? error.message : String(error ?? "");
   if (/requires AA config|aa\.bundlerUrl is required/i.test(msg)) return "AA_CONFIG_MISSING";
-  if (/not found in local storage|storage is not configured|no target address/i.test(msg)) return "RECOVERY_MATERIAL_MISSING";
-  if (/dex-calldata|redeem calldata/i.test(msg)) return "DEX_CALLDATA_FAILED";
-  if (/reverted on-chain/i.test(msg)) return "USEROP_REVERTED";
-  if (/WaitForUserOperationReceiptTimeout|Timed out while waiting for User Operation/i.test(msg)) return "RECEIPT_TIMEOUT";
-  if (/paymaster|sponsor|policy|gas manager/i.test(msg)) return "AA_SPONSORSHIP_REJECTED";
-  if (/estimate|simulat|AA[1-5]\d|execution reverted|revert/i.test(msg)) return "AA_ESTIMATE_FAILED";
-  if (/fetch|network|timed? ?out|ECONN|HTTP request failed|status 5\d\d/i.test(msg)) return ev.sendAttempted ? "SEND_NO_ANSWER" : "AA_UNREACHABLE";
+  if (/not found in local storage|storage is not configured|no target address|Cannot retrieve preimage/i.test(msg)) return "RECOVERY_MATERIAL_MISSING";
   return "SDK_ERROR";
+}
+
+/** Pre-submission failure code from WHICH request failed. */
+function codeFromFailure(f: ClaimRequestFailure): ClaimOutcomeCode {
+  if (f.httpStatus === 429 || f.rpcCode === 429 || f.rpcCode === -32005) return "RATE_LIMITED";
+  if (f.step.startsWith("satora:")) return f.step.includes("/dex-calldata/") ? "DEX_CALLDATA_FAILED" : "PROVIDER_READ_FAILED";
+  if (f.kind === "network" || f.kind === "http") return "AA_UNREACHABLE";
+  if (SPONSOR_METHODS.has(f.step)) return "AA_SPONSORSHIP_REJECTED";
+  if (f.step === "eth_estimateUserOperationGas") return "AA_ESTIMATE_FAILED";
+  return "AA_UNREACHABLE";
 }
 
 /**
@@ -233,19 +339,22 @@ function codeFromError(error: unknown, ev: ClaimNetworkEvidence): ClaimOutcomeCo
 export function classifyClaim(input: { evidence: ClaimNetworkEvidence; error?: unknown; sdkSuccess?: boolean; sdkTxHash?: string | null }): ClaimClassification {
   const ev = input.evidence;
   const txHash = ev.txHash ?? (input.sdkTxHash && HASH_RE.test(input.sdkTxHash) ? input.sdkTxHash : null);
-  const base = { disclosedToInfrastructure: ev.disclosedToInfrastructure, userOpHash: ev.userOpHash, txHash };
+  const stage = ev.methods.length ? ev.methods[ev.methods.length - 1] ?? null : null;
+  const base = { disclosedToInfrastructure: ev.disclosedToInfrastructure, userOpHash: ev.userOpHash, txHash, stage, failure: ev.failure };
   if (input.error === undefined && input.sdkSuccess === true) {
     return { ...base, submission: "submitted", code: ev.receiptSuccess === true ? "CONFIRMED" : "SUBMITTED" };
   }
   if (ev.sendAccepted) {
-    // Accepted, then something failed (receipt wait, reverted op): the
-    // operation exists; the chain decides.
-    const code = input.error === undefined ? "SUBMITTED" : codeFromError(input.error, ev);
-    return { ...base, submission: "submitted", code: code === "AA_UNREACHABLE" || code === "SDK_ERROR" ? "RECEIPT_TIMEOUT" : code };
+    // Accepted, then something failed: the operation exists; the chain decides.
+    if (ev.receiptSuccess === false) return { ...base, submission: "submitted", code: "USEROP_REVERTED" };
+    if (input.error === undefined) return { ...base, submission: "submitted", code: "SUBMITTED" };
+    const msg = input.error instanceof Error ? input.error.message : String(input.error);
+    return { ...base, submission: "submitted", code: /reverted on-chain/i.test(msg) ? "USEROP_REVERTED" : "RECEIPT_TIMEOUT" };
   }
-  if (ev.sendAttempted && !ev.sendRejected) return { ...base, submission: "unknown", code: "SEND_NO_ANSWER" };
   if (ev.sendRejected) return { ...base, submission: "not-submitted", code: "SEND_REJECTED" };
-  return { ...base, submission: "not-submitted", code: input.error === undefined ? "SDK_ERROR" : codeFromError(input.error, ev) };
+  if (ev.sendAttempted) return { ...base, submission: "unknown", code: "SEND_NO_ANSWER" };
+  if (ev.failure) return { ...base, submission: "not-submitted", code: codeFromFailure(ev.failure) };
+  return { ...base, submission: "not-submitted", code: input.error === undefined ? "SDK_ERROR" : codeFromLocalError(input.error) };
 }
 
 /** Owner-facing sentence for a claim that was NOT sent. */
@@ -255,11 +364,13 @@ export function notSubmittedMessage(code: ClaimOutcomeCode, network: string, dis
     AA_SPONSORSHIP_REJECTED: `the ${network} delivery sponsor declined it`,
     AA_ESTIMATE_FAILED: `the ${network} delivery check failed`,
     AA_UNREACHABLE: `the ${network} delivery service couldn't be reached`,
+    RATE_LIMITED: `the ${network} delivery service is busy`,
+    PROVIDER_READ_FAILED: "the provider couldn't be read",
     DEX_CALLDATA_FAILED: "the provider couldn't prepare the delivery",
     RECOVERY_MATERIAL_MISSING: "this device doesn't hold the payment's recovery data",
     SEND_REJECTED: `the ${network} delivery service refused it`,
   };
   const reason = why[code] ?? "the delivery software stopped before sending";
   const disclosure = disclosed ? ` The payment secret was shared with the ${network} delivery service for that check, but nothing was submitted.` : "";
-  return `Delivery wasn't sent: ${reason}. Nothing reached ${network}.${disclosure} Don't pay again — if it can't be finished before the deadline, the provider refunds and your NIM can be reclaimed.`;
+  return `Delivery wasn't sent: ${reason} (${code}). Nothing reached ${network}.${disclosure} Don't pay again — if it can't be finished before the deadline, the provider refunds and your NIM can be reclaimed.`;
 }

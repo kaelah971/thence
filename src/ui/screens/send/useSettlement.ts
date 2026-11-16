@@ -630,6 +630,8 @@ export function useSettlement(): {
         userOpHash: c.userOpHash,
         txHash: c.txHash ?? outcome.txHash,
         errorText: outcome.errorText ?? null,
+        stage: c.stage ?? null,
+        failure: c.failure ?? null,
       });
       const base = { transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, verifyCompletedSinceClaim: false, outcomeCode: c.code, userOpHash: c.userOpHash };
       if (c.submission === "not-submitted") {

@@ -325,7 +325,9 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
       const out = await claimStoredSwap("swap-1");
       expect(out.success).toBe(false);
       // No submission request was observed, so nothing can have been sent.
-      expect(out.classification).toMatchObject({ submission: "not-submitted", code: "AA_UNREACHABLE", disclosedToInfrastructure: false });
+      // A local exception with no observed request: provably nothing sent; the
+      // code comes from the evidence, never from guessing at the message text.
+      expect(out.classification).toMatchObject({ submission: "not-submitted", code: "SDK_ERROR", disclosedToInfrastructure: false, failure: null });
       expect(out.errorText).toMatch(/broadcast timeout/);
     } finally {
       setBrowserSwapClientForTests(null);
