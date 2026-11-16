@@ -58,9 +58,7 @@ export type ClaimReportInput = z.infer<typeof claimReportSchema>;
 
 /** Server-side repeat of the client's redaction: no hex runs, bounded length. */
 export function redactClaimText(text: string | null): string | null {
-  if (text === null) return null;
-  const out = text.replace(/0x[0-9a-fA-F]{16,}/g, "0x…").replace(/[0-9a-fA-F]{40,}/g, "…").replace(/\s+/g, " ").trim().slice(0, 160);
-  return out.length > 0 ? out : null;
+  return text === null || text.length === 0 ? null : "Provider text omitted; use stage and error code.";
 }
 
 export type ClaimReportWrite = "recorded" | "skipped";

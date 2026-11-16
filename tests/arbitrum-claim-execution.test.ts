@@ -28,7 +28,7 @@ import { CLAIM_PATHS, canaryClaimPaths, isChainClaimExecutable, isClaimPathExecu
 import { htlcPreflight } from "@/lib/htlc-preflight";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { ARBITRUM_AA, ENTRY_POINT_V07, arbitrumAaPreflight } from "@/ui/lib/arbitrum-aa";
-import { classifyClaim, notSubmittedMessage, observeClaimNetwork, sanitizeClaimError } from "@/ui/lib/claim-evidence";
+import { classifyClaim, emptyEvidence, notSubmittedMessage, observeClaimNetwork, sanitizeClaimError } from "@/ui/lib/claim-evidence";
 import { paymentProgress, verifyingHeadline } from "@/ui/lib/payment-progress";
 import { timelineFor } from "@/ui/lib/status";
 import { nextFundingRetry, claimSubmissionOf, type ClaimRecord } from "@/ui/screens/send/useSettlement";
@@ -285,7 +285,65 @@ describe("Polygon gasless relay classification", () => {
   });
 });
 
+describe("adversarial acceptance evidence", () => {
+  it("does not treat an SDK success boolean as acceptance evidence", () => {
+    expect(classifyClaim({ evidence: emptyEvidence(), sdkSuccess: true })).toMatchObject({ submission: "unknown" });
+  });
+
+  it("keeps an unanswered send unknown after a retry is rejected", async () => {
+    let attempts = 0;
+    const scope: Scope = { fetch: async (_input, init) => {
+      attempts += 1;
+      if (attempts === 1) throw new TypeError("response lost");
+      const body = JSON.parse(String(init?.body));
+      return rpcResponse(body.id, { error: { code: -32602, message: "invalid nonce" } });
+    } };
+    const observed = await observeClaimNetwork(async () => {
+      const request = { method: "POST", body: JSON.stringify({ id: 1, method: "eth_sendUserOperation", params: [] }) };
+      await scope.fetch(ARBITRUM_AA.bundlerUrl, request).catch(() => undefined);
+      await scope.fetch(ARBITRUM_AA.bundlerUrl, request);
+      throw new Error("retry refused");
+    }, scope as never);
+    expect(classifyClaim({ evidence: observed.evidence, error: new Error("retry refused") })).toMatchObject({ submission: "unknown", code: "SEND_NO_ANSWER" });
+  });
+
+  it("does not accept a JSON-RPC response with the wrong id", async () => {
+    const scope: Scope = { fetch: async () => rpcResponse(999, { result: USEROP_HASH }) };
+    const observed = await observeClaimNetwork(async () => {
+      await scope.fetch(ARBITRUM_AA.bundlerUrl, { method: "POST", body: JSON.stringify({ id: 1, method: "eth_sendUserOperation", params: [] }) });
+    }, scope as never);
+    expect(classifyClaim({ evidence: observed.evidence })).toMatchObject({ submission: "unknown", userOpHash: null });
+  });
+
+  it("does not promote Polygon already-in-progress SDK success to acceptance", () => {
+    expect(classifyClaim({ evidence: { ...emptyEvidence(), sendAttempted: true, sendRejected: true }, sdkSuccess: true, sdkTxHash: "" })).toMatchObject({ submission: "unknown" });
+  });
+
+  it("retains a reverted receipt even if the SDK returns success", () => {
+    expect(classifyClaim({ evidence: { ...emptyEvidence(), sendAccepted: true, receiptSuccess: false }, sdkSuccess: true })).toMatchObject({ submission: "submitted", code: "USEROP_REVERTED" });
+  });
+
+  it("refuses overlapping observation before executing a second claim", async () => {
+    const scope = bundler({ eth_sendUserOperation: { result: USEROP_HASH } });
+    const second = vi.fn(async () => undefined);
+    const first = await observeClaimNetwork(async () => {
+      const overlapping = await observeClaimNetwork(second, scope as never);
+      expect(overlapping.ok).toBe(false);
+      await scope.fetch(ARBITRUM_AA.bundlerUrl, { method: "POST", body: JSON.stringify({ id: 1, method: "eth_sendUserOperation", params: [] }) });
+    }, scope as never);
+    expect(second).not.toHaveBeenCalled();
+    expect(first.evidence.sendAccepted).toBe(true);
+  });
+});
+
 describe("secret-free reporting", () => {
+  it("never retains provider text encoded as base64 or byte arrays", () => {
+    const synthetic = "synthetic-sensitive-material";
+    for (const value of [btoa(synthetic), JSON.stringify([...new TextEncoder().encode(synthetic)])]) {
+      expect(sanitizeClaimError(value)).not.toContain(value);
+      expect(redactClaimText(value)).not.toContain(value);
+    }
+  });
   it("redacts calldata, signatures and preimages from error text, client and server side", () => {
     const msg = `UserOperation reverted: callData ${PREIMAGE}${"00".repeat(40)} sig 0x${"1b".repeat(65)}`;
     for (const out of [sanitizeClaimError(new Error(msg)), redactClaimText(msg) ?? ""]) {

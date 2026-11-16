@@ -53,6 +53,7 @@ export interface ClaimNetworkEvidence {
   sendAttempted: boolean;
   sendAccepted: boolean;
   sendRejected: boolean;
+  unansweredSends: number;
   userOpHash: string | null;
   txHash: string | null;
   /** eth_getUserOperationReceipt `success`, when a receipt was seen. */
@@ -100,15 +101,12 @@ const GASLESS_RE = /\/swap\/[^/?#]+\/claim-gasless(?:[?#].*)?$/;
 const SATORA_HOST_RE = /^https:\/\/api\.satora\.io\//;
 
 export function emptyEvidence(): ClaimNetworkEvidence {
-  return { disclosedToInfrastructure: false, sendAttempted: false, sendAccepted: false, sendRejected: false, userOpHash: null, txHash: null, receiptSuccess: null, methods: [], failure: null };
+  return { disclosedToInfrastructure: false, sendAttempted: false, sendAccepted: false, sendRejected: false, unansweredSends: 0, userOpHash: null, txHash: null, receiptSuccess: null, methods: [], failure: null };
 }
 
 /** Secret-free, bounded text: hex runs (calldata, signatures, preimages) are removed. */
 export function sanitizeClaimError(error: unknown): string {
-  const raw = error instanceof Error ? `${error.name === "Error" ? "" : `${error.name}: `}${error.message}` : typeof error === "string" ? error : "";
-  // Drop the SDK's echoed request bodies entirely, then redact any hex left.
-  const withoutBodies = raw.replace(/Request body:[\s\S]*?(?=\n\n|Details:|Version:|$)/g, "Request body: [omitted] ").replace(/Request Arguments:[\s\S]*?(?=\n\n|Details:|Version:|$)/g, "Request Arguments: [omitted] ");
-  return withoutBodies.replace(/0x[0-9a-fA-F]{16,}/g, "0x…").replace(/[0-9a-fA-F]{40,}/g, "…").replace(/\s+/g, " ").trim().slice(0, 160);
+  return error == null || error === "" ? "" : "Delivery service error. See the recorded stage and error code.";
 }
 
 type RpcBody = { method?: unknown; id?: unknown };
@@ -152,6 +150,7 @@ function noteRequest(ev: ClaimNetworkEvidence, url: string, method: string, body
     if (gasless) {
       ev.disclosedToInfrastructure = true;
       ev.sendAttempted = true;
+      ev.unansweredSends += 1;
     }
     return { rpc: [], gasless, satoraStep: step };
   }
@@ -162,7 +161,10 @@ function noteRequest(ev: ClaimNetworkEvidence, url: string, method: string, body
       rpc.push({ method: item.method, id: item.id });
       ev.methods.push(item.method);
       if (CALLDATA_METHODS.has(item.method)) ev.disclosedToInfrastructure = true;
-      if (item.method === "eth_sendUserOperation") ev.sendAttempted = true;
+      if (item.method === "eth_sendUserOperation") {
+        ev.sendAttempted = true;
+        ev.unansweredSends += 1;
+      }
     }
   }
   return { rpc, gasless: false, satoraStep: null };
@@ -174,12 +176,16 @@ function noteResponse(ev: ClaimNetworkEvidence, req: NotedRequest, status: numbe
     if (req.gasless) {
       if (status >= 200 && status < 300) {
         ev.sendAccepted = true;
+        ev.unansweredSends -= 1;
         const tx = (parsed as { tx_hash?: unknown } | null)?.tx_hash;
         if (typeof tx === "string" && HASH_RE.test(tx)) ev.txHash = tx;
         return;
       }
       // 4xx is a definitive refusal; 5xx may hide an accepted submission.
-      if (status >= 400 && status < 500) ev.sendRejected = true;
+      if (status >= 400 && status < 500) {
+        ev.sendRejected = true;
+        ev.unansweredSends -= 1;
+      }
     }
     if (status < 200 || status >= 300) fail(ev, { step: req.satoraStep, kind: "http", rpcCode: null, httpStatus: status, message: null });
     return;
@@ -190,17 +196,20 @@ function noteResponse(ev: ClaimNetworkEvidence, req: NotedRequest, status: numbe
   }
   const replies = asArray(parsed as RpcReply | RpcReply[] | null);
   for (const r of req.rpc) {
-    const reply = replies.find((x) => x && x.id === r.id) ?? (replies.length === 1 ? replies[0] : undefined);
+    const reply = replies.find((x) => x && x.id === r.id);
     if (!reply) continue;
     if (reply.error !== undefined && reply.error !== null) {
       const code = typeof reply.error.code === "number" ? reply.error.code : null;
-      const message = typeof reply.error.message === "string" ? sanitizeClaimError(reply.error.message) : null;
-      fail(ev, { step: r.method, kind: "rpc-error", rpcCode: code, httpStatus: null, message });
-      if (r.method === "eth_sendUserOperation") ev.sendRejected = true;
+      fail(ev, { step: r.method, kind: "rpc-error", rpcCode: code, httpStatus: null, message: null });
+      if (r.method === "eth_sendUserOperation") {
+        ev.sendRejected = true;
+        ev.unansweredSends -= 1;
+      }
       continue;
     }
     if (r.method === "eth_sendUserOperation" && typeof reply.result === "string" && HASH_RE.test(reply.result)) {
       ev.sendAccepted = true;
+      ev.unansweredSends -= 1;
       ev.userOpHash = reply.result;
     }
     if (r.method === "eth_getUserOperationReceipt" && reply.result && typeof reply.result === "object") {
@@ -292,6 +301,7 @@ export async function observeClaimNetwork<T>(
   fn: () => Promise<T>,
   scope: Scope = globalThis as unknown as Scope,
 ): Promise<{ ok: true; value: T; evidence: ClaimNetworkEvidence } | { ok: false; error: unknown; evidence: ClaimNetworkEvidence }> {
+  if (active !== null) return { ok: false, error: new Error("Another claim is being observed. No second claim was started."), evidence: emptyEvidence() };
   const rec = { ev: emptyEvidence(), pending: [] as Promise<void>[] };
   const temporary = !(scope.fetch as unknown as Record<symbol, boolean>)[INSTALLED];
   const original = scope.fetch;
@@ -341,16 +351,15 @@ export function classifyClaim(input: { evidence: ClaimNetworkEvidence; error?: u
   const txHash = ev.txHash ?? (input.sdkTxHash && HASH_RE.test(input.sdkTxHash) ? input.sdkTxHash : null);
   const stage = ev.methods.length ? ev.methods[ev.methods.length - 1] ?? null : null;
   const base = { disclosedToInfrastructure: ev.disclosedToInfrastructure, userOpHash: ev.userOpHash, txHash, stage, failure: ev.failure };
-  if (input.error === undefined && input.sdkSuccess === true) {
-    return { ...base, submission: "submitted", code: ev.receiptSuccess === true ? "CONFIRMED" : "SUBMITTED" };
-  }
-  if (ev.sendAccepted) {
+  if (ev.sendAccepted || (input.sdkSuccess === true && txHash !== null)) {
     // Accepted, then something failed: the operation exists; the chain decides.
     if (ev.receiptSuccess === false) return { ...base, submission: "submitted", code: "USEROP_REVERTED" };
+    if (ev.receiptSuccess === true) return { ...base, submission: "submitted", code: "CONFIRMED" };
     if (input.error === undefined) return { ...base, submission: "submitted", code: "SUBMITTED" };
     const msg = input.error instanceof Error ? input.error.message : String(input.error);
     return { ...base, submission: "submitted", code: /reverted on-chain/i.test(msg) ? "USEROP_REVERTED" : "RECEIPT_TIMEOUT" };
   }
+  if (ev.unansweredSends > 0 || input.sdkSuccess === true) return { ...base, submission: "unknown", code: "SEND_NO_ANSWER" };
   if (ev.sendRejected) return { ...base, submission: "not-submitted", code: "SEND_REJECTED" };
   if (ev.sendAttempted) return { ...base, submission: "unknown", code: "SEND_NO_ANSWER" };
   if (ev.failure) return { ...base, submission: "not-submitted", code: codeFromFailure(ev.failure) };

@@ -307,8 +307,7 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
       const out = await claimStoredSwap("swap-1");
       expect(captured).toEqual(["swap-1"]);
       expect(out).toMatchObject({ success: true, txHash: "0xtxhash", message: "claimed", errorText: null });
-      // SDK success is submission evidence on its own.
-      expect(out.classification).toMatchObject({ submission: "submitted", code: "SUBMITTED" });
+      expect(out.classification).toMatchObject({ submission: "unknown", code: "SEND_NO_ANSWER" });
       expect(JSON.stringify(out)).not.toMatch(/preimage|secret|mnemonic/i);
     } finally {
       setBrowserSwapClientForTests(null);
@@ -328,7 +327,8 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
       // A local exception with no observed request: provably nothing sent; the
       // code comes from the evidence, never from guessing at the message text.
       expect(out.classification).toMatchObject({ submission: "not-submitted", code: "SDK_ERROR", disclosedToInfrastructure: false, failure: null });
-      expect(out.errorText).toMatch(/broadcast timeout/);
+      expect(out.errorText).toBe("Delivery service error. See the recorded stage and error code.");
+      expect(out.errorText).not.toMatch(/broadcast timeout/);
     } finally {
       setBrowserSwapClientForTests(null);
     }

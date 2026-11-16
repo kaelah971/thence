@@ -18,7 +18,7 @@ import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRet
 import { claimActionAllowed, claimWindowAt } from "@/domain/claim-deadline";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap, type ClaimOutcome } from "@/ui/lib/satora-browser";
-import { notSubmittedMessage, sanitizeClaimError, type ClaimClassification, type ClaimSubmission } from "@/ui/lib/claim-evidence";
+import { classifyClaim, emptyEvidence, notSubmittedMessage, sanitizeClaimError, type ClaimClassification, type ClaimSubmission } from "@/ui/lib/claim-evidence";
 import { aaPreflightMessage, arbitrumAaPreflight } from "@/ui/lib/arbitrum-aa";
 import { settlementNetworkFor } from "@/ui/lib/network-copy";
 import { canHaveReceipt, getReceipt, type ApiReceipt } from "@/ui/lib/transfers-api";
@@ -566,7 +566,6 @@ export function useSettlement(): {
       if (network === "Arbitrum") {
         const aa = await arbitrumAaPreflight();
         if (!aa.ok) {
-          void postClaimReport(input.transferId, { submission: "not-submitted", code: aa.code, disclosedToInfrastructure: false, userOpHash: null, txHash: null, errorText: null });
           return { ok: false, reason: aaPreflightMessage(aa.code), code: aa.code };
         }
       }
@@ -620,8 +619,8 @@ export function useSettlement(): {
       // Defensive: an outcome without evidence (older client shape) is
       // submitted only when the SDK itself reported success.
       const c: ClaimClassification = outcome.classification ?? (outcome.success
-        ? { submission: "submitted", code: "SUBMITTED", disclosedToInfrastructure: true, userOpHash: null, txHash: outcome.txHash }
-        : { submission: "not-submitted", code: "SDK_ERROR", disclosedToInfrastructure: false, userOpHash: null, txHash: null });
+        ? classifyClaim({ evidence: emptyEvidence(), sdkSuccess: true, sdkTxHash: outcome.txHash })
+        : { submission: "unknown", code: "SDK_ERROR", disclosedToInfrastructure: false, userOpHash: null, txHash: null });
       // f1ca0926: report what was ACTUALLY sent (codes and public hashes only).
       void postClaimReport(input.transferId, {
         submission: c.submission,
