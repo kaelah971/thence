@@ -16,15 +16,18 @@
  * - locked token, amount, refund and claim addresses are present (the SwapKey
  *   that binds them is re-derived and checked on-chain at funding);
  * - the hash lock and claim deadline equal what was bound at attach;
+ * - the claim mechanism for this chain and HTLC version has been proven to
+ *   deliver (src/lib/claim-execution.ts; incident f1ca0926);
  * - enough time remains before the deadline to fund, reach finality and claim.
  *
  * Pure: no I/O. Missing evidence is a refusal, never a pass.
  */
 import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
 import { trustedHtlcDeployment, type HtlcDeployment } from "@/lib/settlement";
+import { canaryClaimPaths, isClaimPathExecutable } from "@/lib/claim-execution";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 
-export type HtlcPreflightCode = "HTLC_UNSUPPORTED" | "HTLC_TERMS_INCOMPLETE" | "HTLC_TERMS_MISMATCH" | "HTLC_DEADLINE_TOO_CLOSE";
+export type HtlcPreflightCode = "HTLC_UNSUPPORTED" | "HTLC_TERMS_INCOMPLETE" | "HTLC_TERMS_MISMATCH" | "HTLC_DEADLINE_TOO_CLOSE" | "CLAIM_PATH_UNPROVEN";
 
 export type HtlcPreflightResult =
   | { ok: true; deployment: HtlcDeployment }
@@ -102,7 +105,7 @@ const HASH_LOCK_RE = /^0x[0-9a-fA-F]{64}$/;
 
 export function htlcPreflight(
   facts: VerifiedSwapFacts,
-  opts: { nowMs: number; bound?: { paymentHash: string; evmRefundLocktime: Date | null } },
+  opts: { nowMs: number; bound?: { paymentHash: string; evmRefundLocktime: Date | null }; claimCanary?: ReadonlySet<string> },
 ): HtlcPreflightResult {
   const no = (code: HtlcPreflightCode, reason: string): HtlcPreflightResult => ({ ok: false, code, reason });
   if (!facts.evmHtlcAddress) return no("HTLC_TERMS_INCOMPLETE", "The provider did not name its settlement contract.");
@@ -114,6 +117,11 @@ export function htlcPreflight(
   if (facts.evmHtlcKind !== deployment.kind) return no("HTLC_UNSUPPORTED", "The provider's settlement contract kind is not supported.");
   if (!facts.evmCoordinatorAddress) return no("HTLC_TERMS_INCOMPLETE", "The provider did not name its settlement coordinator.");
   if (facts.evmCoordinatorAddress.toLowerCase() !== deployment.coordinator) return no("HTLC_UNSUPPORTED", "The provider's settlement coordinator is not the one paired with its contract.");
+  // f1ca0926: a trusted, verifiable lock is not enough. The CLAIM mechanism
+  // for this chain and version must have delivered before NIM is committed.
+  if (!isClaimPathExecutable(facts.evmChainId, facts.evmHtlcVersion, opts.claimCanary ?? canaryClaimPaths())) {
+    return no("CLAIM_PATH_UNPROVEN", "Delivery on this network is paused while its claim path is verified.");
+  }
   if (!facts.evmHtlcTokenAddress || !ADDRESS_RE.test(facts.evmHtlcTokenAddress)) return no("HTLC_TERMS_INCOMPLETE", "The provider did not name the token it will lock.");
   if (!facts.evmHtlcAmountAtomic || !/^[0-9]+$/.test(facts.evmHtlcAmountAtomic) || BigInt(facts.evmHtlcAmountAtomic) <= 0n) {
     return no("HTLC_TERMS_INCOMPLETE", "The provider did not state a valid locked amount.");

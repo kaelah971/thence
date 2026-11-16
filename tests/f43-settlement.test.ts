@@ -306,21 +306,27 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
     try {
       const out = await claimStoredSwap("swap-1");
       expect(captured).toEqual(["swap-1"]);
-      expect(out).toEqual({ success: true, txHash: "0xtxhash", message: "claimed" });
+      expect(out).toMatchObject({ success: true, txHash: "0xtxhash", message: "claimed", errorText: null });
+      // SDK success is submission evidence on its own.
+      expect(out.classification).toMatchObject({ submission: "submitted", code: "SUBMITTED" });
       expect(JSON.stringify(out)).not.toMatch(/preimage|secret|mnemonic/i);
     } finally {
       setBrowserSwapClientForTests(null);
     }
   });
 
-  it("claim failures throw so callers record unknown instead of retrying", async () => {
+  it("f1ca0926: a claim that throws before sending anything is classified NOT submitted (never 'Delivery submitted')", async () => {
     setBrowserSwapClientForTests({
       createLightningToEvmSwap: (async () => ({ response: {} })) as never,
       getStoredSwap: (async () => null) as never,
       claim: (async () => { throw new Error("broadcast timeout"); }) as never,
     });
     try {
-      await expect(claimStoredSwap("swap-1")).rejects.toThrow(/broadcast timeout/);
+      const out = await claimStoredSwap("swap-1");
+      expect(out.success).toBe(false);
+      // No submission request was observed, so nothing can have been sent.
+      expect(out.classification).toMatchObject({ submission: "not-submitted", code: "AA_UNREACHABLE", disclosedToInfrastructure: false });
+      expect(out.errorText).toMatch(/broadcast timeout/);
     } finally {
       setBrowserSwapClientForTests(null);
     }

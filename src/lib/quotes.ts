@@ -21,6 +21,7 @@ import { paymentRequests, routeObservations } from "@/db/schema";
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
 import { atomicToDecimal, isAtomicAmount, parseAtomicAmount } from "@/domain/money";
 import { ROUTE_IDS, isSupportedPair, kindForRouteId, pairForRouteId } from "@/domain/routes";
+import { isNetworkClaimExecutable } from "@/lib/claim-execution";
 import {
   SatoraError,
   getExactQuote,
@@ -320,6 +321,12 @@ export async function listPublicRoutes(): Promise<{ routes: PublicRouteInfo[]; p
           quoteable = true;
           status = "live";
           reason = "Available for quoting; settlement not proven.";
+          if (!isNetworkClaimExecutable(pair.network)) {
+            // f1ca0926: shown as paused, never offered for a new payment.
+            quoteable = false;
+            status = "disabled";
+            reason = "Delivery on this network is paused while its claim path is verified.";
+          }
           tokenSymbol = pair.asset;
           tokenDecimals = resolved.tokenDecimals;
           tokenAddress = resolved.tokenAddress;

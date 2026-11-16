@@ -43,6 +43,12 @@ export interface ProgressInput {
   providerStatus: string | null;
   claimReady: boolean;
   claimPending?: boolean;
+  /**
+   * f1ca0926: what this device's latest claim attempt PROVABLY did. Only
+   * "submitted" (or the provider reporting the claim) may say "Delivery
+   * submitted"; CLAIMING alone means a claim was authorized, not sent.
+   */
+  claimSubmission?: "submitted" | "not-submitted" | "unknown" | null;
   identityMismatch?: boolean;
   verifyVerdict?: SettlementVerdict | null;
   receiptReady: boolean;
@@ -166,8 +172,8 @@ export interface ProgressView {
 const REDEEMED = REDEEMED_STATUSES;
 const FINALITY_PENDING: ReadonlySet<string> = new Set(["PENDING", "INSUFFICIENT_CONFIRMATIONS"]);
 
-export const VERIFYING_HEADLINE = "Delivery submitted — verifying on Polygon";
-export function verifyingHeadline(network: SettlementNetwork = "Polygon"): string {
+/** Network-specific: never default to Polygon (f1ca0926 showed "Polygon" for an Arbitrum payment). */
+export function verifyingHeadline(network: SettlementNetwork): string {
   return `Delivery submitted — verifying on ${network}`;
 }
 export const FINISH_HEADLINE = "Action required — Finish delivery";
@@ -184,11 +190,27 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   // another (claimReady false: lease / pending horizon) it is verification.
   // If the server re-allows ONE retry after an unknown outcome (claimReady
   // true, nothing pending here), the owner's tap is the next step again.
-  const submitted = s.claimPending === true || claimLanded || (status === "CLAIMING" && !s.claimReady);
+  const notSent = s.claimSubmission === "not-submitted" && !claimLanded;
+  const submitted = !notSent && (s.claimPending === true || claimLanded || (status === "CLAIMING" && !s.claimReady));
+  // Evidence of an actual submission (never inferred from CLAIMING alone).
+  const evidenceSubmitted = claimLanded || s.claimSubmission === "submitted";
   // Handed to Nimiq Pay but the server hasn't recorded it yet: same step, "confirming" wording.
   const stepStatus = status === "AWAITING_NIM_APPROVAL" && s.handedOff === true ? "LIGHTNING_HANDOFF" : status;
   const network = s.network ?? "Polygon";
-  const steps = isStatus(stepStatus) ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, awaitingFinality, sourceVerified: Boolean(s.sourceVerifiedAtMs), network }) : null;
+  const steps = isStatus(stepStatus)
+    ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, claimNotSent: notSent, claimEvidence: evidenceSubmitted, awaitingFinality, sourceVerified: Boolean(s.sourceVerifiedAtMs), network })
+    : null;
+
+  // f1ca0926: the attempt provably sent nothing. Say exactly that.
+  if (notSent && (status === "CLAIMING" || status === "SERVER_FUNDED") && s.verifyVerdict !== "INVALID" && !s.claimReady) {
+    return {
+      headline: "Delivery wasn't sent",
+      body: s.message || `Nothing reached ${network}. Thence keeps checking — don't pay again. If delivery can't finish before the deadline, the provider refunds and your NIM can be reclaimed.`,
+      tone: "warn",
+      action: "check",
+      steps,
+    };
+  }
 
   // R7: verified on-chain but below the request. Say so; never "Delivered" alone.
   if (status === "DELIVERED_SHORT") {
@@ -253,6 +275,18 @@ export function paymentProgress(s: ProgressInput): ProgressView {
         : awaitingFinality
           ? `Seen on ${network}. Waiting for ${network === "Arbitrum" ? "finality" : "confirmations"} — usually ${verifyEstimate(network)}. You can leave this screen.`
           : `Usually ${verifyEstimate(network)}. You can leave this screen; the receipt appears once it's confirmed.`;
+    if (!evidenceSubmitted) {
+      // Authorized (CLAIMING) or outcome unknown: never claim it was submitted.
+      return {
+        headline: `Checking whether delivery reached ${network}`,
+        body: s.claimSubmission === "unknown"
+          ? `The delivery was sent but no answer came back. Thence is checking ${network} — don't pay again.`
+          : `A delivery attempt was authorized. Thence is checking ${network} for it — don't pay again.`,
+        tone: "neutral",
+        action: "verifying",
+        steps,
+      };
+    }
     return { headline: verifyingHeadline(network), body, tone: "neutral", action: "verifying", steps };
   }
   if (status === "CLIENT_FUNDED") {

@@ -16,7 +16,8 @@ import {
   fundingWaitMessage,
   nextFundingRetry,
 } from "@/ui/screens/send/useSettlement";
-import { paymentProgress, VERIFYING_HEADLINE } from "@/ui/lib/payment-progress";
+import { paymentProgress, verifyingHeadline } from "@/ui/lib/payment-progress";
+const VERIFYING_HEADLINE = verifyingHeadline("Polygon");
 import { timelineFor } from "@/ui/lib/status";
 import { settlementNetworkFor } from "@/ui/lib/network-copy";
 

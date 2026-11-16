@@ -354,8 +354,22 @@ claim. Unknown claim outcome stays CLAIMING; reconciliation and
 verify-settlement decide. The HTLC redeems once, so a duplicate claim can only
 revert, never deliver twice.
 
+Execution differs per chain (f1ca0926, D15/D16). Polygon: Satora's gasless
+relay (`POST /swap/:id/claim-gasless`). Arbitrum hub swaps with a DEX leg: the
+SDK fetches `/dex-calldata/fund` (approve + Uniswap v3), signs the HTLC Redeem
+digest (domain `HTLCErc20`, version 6 or 7), and sends a sponsored ERC-4337
+UserOperation (EIP-7702 Kernel v3.3, EntryPoint v0.7, Satora's Alchemy
+bundler + Gas Manager policy, pinned in `src/ui/lib/arbitrum-aa.ts`) calling
+`coordinator.redeemAndExecute`. The browser classifies each attempt from the
+requests it actually made (`src/ui/lib/claim-evidence.ts`):
+submitted (UserOperation hash / relay 2xx), not-submitted (no send, or an
+explicit refusal), unknown (send without an answer), and reports it
+(`claim-report`, annotation row `CLAIM_ATTEMPT_REPORTED`, journal line
+`thence claim-report:`). New payments are allowed only on claim paths proven
+to deliver (`src/lib/claim-execution.ts`); Arbitrum v6/v7 are unproven.
+
 Tests: `p3-claim-intent`, `p3-claim-verification`, `p7-arbitrum-recovery`,
-`ui-p3-claim-completion`, `a3a`, `a3b`.
+`ui-p3-claim-completion`, `a3a`, `a3b`, `arbitrum-claim-execution`.
 
 ## 10. M10 Settlement verification
 
@@ -524,5 +538,8 @@ before approval; it never creates a new swap.
 | D13 | P1 | M4: authorize did not compare the fresh read with the invoice / HTLC terms bound at attach | `authorizeHandoff` | **fixed** `0002e13` |
 | D14 | P3 | M5: duplicate invocation from a second device or after local-storage loss | handoff record is device-local | **mitigated, residual external**: `invoke()` refuses without a device-local vault binding matching transfer, owner and bound swap, so a second device cannot pay through Thence; authorize is single-use. Residual: invoice copied into another wallet by hand, or localStorage wiped while IndexedDB survives. Both NIM locks would share one hash lock; whether Fastspot would redeem a lock whose own Lightning payment failed is outside Thence's control and unverified |
 
-**Totals (15 entries).** By severity: P0 2 (D1, D1b); P1 6 (D2, D3, D4, D5, D12, D13); P2 4 (D6, D7, D8, D9); P3 3 (D10, D11, D14).
-By status: fixed 10 (D1, D1b, D2, D4, D5, D6, D7, D8, D12, D13); prevented for new payments 1 (D3, the incident transfer exits after deploy); open external 1 (D9, fails closed); deferred 2 (D10, D11, server already refuses / doc only); mitigated with external residual 1 (D14). No P0 or P1 entry is open.
+| D15 | P0 | M9: Arbitrum claim EXECUTION was never proven; only funding was. f1ca0926: claim authorized, browser claim failed with no UserOperation, transaction or provider claim; provider refunded | incident f1ca0926 (2026-11-16) | **open, fails closed**: `CLAIM_PATH_UNPROVEN` refuses new Arbitrum payments (create, bind, authorize); existing transfers unaffected. Exact failing SDK step still unknown (browser-only error; now reported). Promote a path only after a verified live delivery |
+| D16 | P1 | M15/M9: any SDK throw shown as "Delivery submitted"; Activity timeline said Polygon for Arbitrum; one transient read ended the finality wait | f1ca0926 screens + journal 17:56/17:57Z | **fixed** this branch: evidence-based submission classification, network-specific copy, transient refusals keep the wait |
+
+**Totals (17 entries).** By severity: P0 3 (D1, D1b, D15); P1 7 (D2, D3, D4, D5, D12, D13, D16); P2 4 (D6, D7, D8, D9); P3 3 (D10, D11, D14).
+By status: fixed 11 (D1, D1b, D2, D4, D5, D6, D7, D8, D12, D13, D16); prevented for new payments 1 (D3, the incident transfer exits after deploy); open external 1 (D9, fails closed); open, fails closed 1 (D15); deferred 2 (D10, D11, server already refuses / doc only); mitigated with external residual 1 (D14). One P0 is open (D15) and fails closed for new payments.
