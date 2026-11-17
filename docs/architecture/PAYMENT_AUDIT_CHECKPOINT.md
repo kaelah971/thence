@@ -118,6 +118,34 @@ Diagnosis and resolution (none weakens a safety invariant):
 Correction to earlier reports: "no on-chain operation" does NOT rule out a bundler
 accepting the operation and never including it.
 
+## Session 2026-11-17 (continued) — state at c7e01b0
+
+PR #84 head 7a26fe9: build, lint, integration, e2e all SUCCESS.
+PR #85 (draft, base fix/arbitrum-claim-execution) heads:
+- 646ea18: CI integration failed only on r2-nim-return-resolution (:310, :383).
+- f1fef58: fixed R2 (Codex's B15 edit had dropped the client-side movement
+  invariant; clientrefunded was counted as server-side). CI build/lint/
+  integration SUCCESS on f1fef58 (all shards, incl. the settlement loop test
+  that times out from the operator PC); e2e superseded by the next push.
+- c7e01b0: output floor replaced by a quote-bound policy (see below). CI pending.
+
+Output floor (supersedes the fixed 97% of 646ea18): auto >= 99%; 97-99% only
+after explicit payer acceptance of the exact minimum (claim bound to it,
+0.25% re-quote tolerance, never < 97%); < 97% refused before disclosure.
+Preview runs BEFORE claim-intent (no lease) via the same public endpoints the
+SDK uses (Arbitrum /dex-calldata/fund estimated_amount_out; Polygon
+redeem-and-swap-calldata min_amount_out). Preview unavailable => strict 99%.
+E2E simulator now uses a realistic 99% min_amount_out.
+
+Owner decision conflict (unresolved, owner must choose before deploy): #84
+gates new Arbitrum payments in code; #85 also gates Polygon (137:6 unproven).
+Keeping both routes open after deploy needs
+THENCE_CLAIM_EXECUTION_CANARY=137:6,42161:6,42161:7 (or changed defaults).
+
+Next: CI on c7e01b0; production build; readiness report, Hermes deployment
+plan and per-chain controlled-test procedures (docs/PAYMENT_READINESS_2026-11-17.md);
+independent challenge review; remaining atlas/matrix deliverables.
+
 ## Resume
 
 Read this checkpoint, git status and final audit report when present. Preserve
