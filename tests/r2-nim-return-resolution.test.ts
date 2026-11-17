@@ -297,6 +297,22 @@ describe.skipIf(!LIVE)("R2 close-nim-returned (isolated test database, simulated
     expect(await statusOf(s.id)).toBe("NEEDS_ATTENTION");
   });
 
+  it("closes a source-side refund with no EVM lock only after the full NIM return", async () => {
+    const stuck = await incident("source-refund");
+    swaps.set(stuck.swapId, { ...swaps.get(stuck.swapId)!, status: "clientfunded" });
+    await reconcilePost(postJson(`http://localhost/api/transfers/${stuck.id}/reconcile`, {}, { cookie: stuck.cookie, ...client("source-funded") }), params(stuck.id));
+    expect(await statusOf(stuck.id)).toBe("CLIENT_FUNDED");
+    swaps.set(stuck.swapId, { ...swaps.get(stuck.swapId)!, status: "clientrefunded" });
+    await reconcilePost(postJson(`http://localhost/api/transfers/${stuck.id}/reconcile`, {}, { cookie: stuck.cookie, ...client("source-refund") }), params(stuck.id));
+    expect((await closeReturned(stuck)).status).toBe(409);
+    expect(await terminalRows(stuck.id)).toHaveLength(0);
+    refund(stuck);
+    const closed = await closeReturned(stuck);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(await statusOf(stuck.id)).toBe("EXPIRED_UNFUNDED");
+    expect(await terminalRows(stuck.id)).toHaveLength(1);
+  });
+
   it("concurrent closes converge: exactly one path and one terminal audit row", async () => {
     const s = await incident("race");
     refund(s);

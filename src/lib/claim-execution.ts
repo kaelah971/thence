@@ -34,9 +34,9 @@ export interface ClaimPathEvidence {
 /** Keyed `${chainId}:${htlcVersion}`. Missing = unproven. */
 export const CLAIM_PATHS: Readonly<Record<string, ClaimPathEvidence>> = {
   "137:6": {
-    proven: true,
+    proven: false,
     mechanism: "satora-gasless-relay",
-    evidence: "Delivered in production since 2026-11-06 (NOV6/NOV7 public proofs; DELIVERED_SHORT 2b24ca8f).",
+    evidence: "Historical v6 deliveries exist, but the adversarial audit found unbound SDK terms and provider-chosen output floors. Corrected execution is not yet proven; new payments remain paused.",
   },
   "42161:6": {
     proven: false,

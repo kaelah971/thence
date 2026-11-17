@@ -52,6 +52,12 @@ export interface FakeApi {
   closeOutcome: { kind: "verified" } | { kind: "refused"; status: number; error: string; message: string };
   /** P1: simulated network latency per request (fake timers advance it). */
   latencyMs: number;
+  /**
+   * Output-floor preview: when set, the provider (api.satora.io) answers the
+   * swap read and the Polygon redeem calldata with this min_amount_out; when
+   * null, provider URLs answer 404 (preview unavailable, strict floor applies).
+   */
+  providerMinimumOut: string | null;
   /** P1: answer POST /reconcile with 429 (shared write budget exhausted). */
   rateLimitReconcile: boolean;
   /** P1: highest number of concurrent in-flight requests observed. */
@@ -229,6 +235,14 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
     }
   };
   const route = (url: URL, method: string, path: string): Response => {
+    if (url.hostname === "api.satora.io") {
+      if (api.providerMinimumOut === null) return json(404, { error: "NOT_ROUTED" });
+      if (/^\/swap\/[^/]+$/.test(path)) {
+        return json(200, { id: path.split("/").pop(), evm_chain_id: 137, wbtc_address: "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6", evm_expected_sats: "382", evm_coordinator_address: "0xdb76f29f1d04d1202f56a34549869b070dfcbff0", target_token: { token_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" } });
+      }
+      if (/^\/swap\/[^/]+\/redeem-and-swap-calldata$/.test(path)) return json(200, { min_amount_out: api.providerMinimumOut });
+      return json(404, { error: "NOT_ROUTED" });
+    }
     void url;
     const now = Date.now();
     if (path === "/api/me") {
@@ -355,6 +369,7 @@ export function installFakeApi(initial: Record<string, ServerTransferState>): Fa
     calls,
     closeOutcome: { kind: "verified" },
     latencyMs: 0,
+    providerMinimumOut: null,
     rateLimitReconcile: false,
     claimIntentOutcome: { kind: "server" },
     settlementVerdict: "PENDING",

@@ -61,7 +61,7 @@ export async function runHarness(opts: {
   /** Runs after the harness fetch is installed and BEFORE the SDK client is built (production observer order). */
   beforeBuild?: () => void;
   /** Wraps the claim call (e.g. Thence's observeClaimNetwork). */
-  runClaim?: (fn: () => Promise<unknown>) => Promise<unknown>;
+  runClaim?: (fn: () => Promise<unknown>, swap: Record<string, unknown>) => Promise<unknown>;
 }): Promise<HarnessReport> {
   const scenario = opts.scenario ?? "accept";
   const steps: HarnessStep[] = [];
@@ -100,6 +100,21 @@ export async function runHarness(opts: {
         }
         steps.push({ kind: "satora", name: "POST /dex-calldata/fund" });
         return new Response(JSON.stringify(opts.fixture.dexCalldataFund), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (method === "GET" && path === `/swap/${swapId}/redeem-and-swap-calldata`) {
+        steps.push({ kind: "satora", name: "GET /swap/:id/redeem-and-swap-calldata" });
+        if (scenario === "dex-fail") return new Response(JSON.stringify({ error: "no route" }), { status: 500 });
+        return Response.json({ min_amount_out: opts.fixture.dexCalldataFund["estimated_amount_out"], calls_hash: `0x${"ef".repeat(32)}`, dex_calldata: { to: "0x0000000000000000000000000000000000000009", data: "0x12345678", value: "0" } });
+      }
+      if (method === "POST" && path === `/swap/${swapId}/claim-gasless`) {
+        steps.push({ kind: "satora", name: "POST /swap/:id/claim-gasless" });
+        const body = JSON.parse(req ? await req.clone().text() : String(init?.body)) as Record<string, unknown>;
+        checks["relay destination = recipient"] = body["destination"] === swap["target_evm_address"];
+        checks["relay preimage matches"] = typeof body["secret"] === "string" && createHash("sha256").update(Buffer.from(body["secret"].replace(/^0x/, ""), "hex")).digest("hex") === preimageHash;
+        checks["relay signature fields present"] = ["r", "s", "v"].every((field) => body[field] !== undefined);
+        if (scenario === "send-no-answer") throw new TypeError("Synthetic relay response lost");
+        if (scenario === "send-rejected") return new Response(JSON.stringify({ error: "bad signature" }), { status: 400 });
+        return Response.json({ id: swapId, status: "clientredeeming", tx_hash: `0x${"cd".repeat(32)}`, message: "Synthetic relay acceptance" });
       }
       steps.push({ kind: "refused", name: `${method} ${path}` });
       return new Response(JSON.stringify({ error: "harness: not routed" }), { status: 404 });
@@ -201,7 +216,7 @@ export async function runHarness(opts: {
     opts.beforeBuild?.();
     const client = await sdk.Client.builder().withSignerStorage(walletStorage).withSwapStorage(swapStorage).build();
     const doClaim = () => (client as unknown as { claim: (id: string) => Promise<unknown> }).claim(swapId);
-    const value = await (opts.runClaim ? opts.runClaim(doClaim) : doClaim());
+    const value = await (opts.runClaim ? opts.runClaim(doClaim, swap) : doClaim());
     outcome = { ok: true, value };
   } catch (error) {
     outcome = { ok: false, error: error instanceof Error ? `${error.name}: ${error.message}`.replace(/0x[0-9a-fA-F]{40,}/g, "0x…").slice(0, 600) : String(error) };

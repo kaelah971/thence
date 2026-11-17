@@ -11,6 +11,7 @@ import { humanAmount, shortReceiptAmounts } from "@/ui/lib/transfers-api";
 import { paymentProgress, type ProgressView } from "@/ui/lib/payment-progress";
 import { settlementNetworkFor } from "@/ui/lib/network-copy";
 import { claimActionAllowed } from "@/domain/claim-deadline";
+import { usdcDisplay } from "@/ui/lib/claim-output-preview";
 import type { RouteId } from "@/domain/routes";
 import { useSettlement } from "./useSettlement";
 import { ClaimDeadlineLine, useClaimWindow } from "@/ui/components/ClaimDeadline";
@@ -111,13 +112,16 @@ export function usePaymentProgress({
   // Both clocks must agree: the server's claimReady AND the local deadline window.
   const finishAvailable = finishNeeded && state.claimReady && claimActionAllowed(window);
 
-  const startClaim = () => {
+  const startClaim = (acceptedMinimumAtomic?: string) => {
     if (!transferId || !ownerUserId || claiming) return;
     setClaiming(true);
     void settlement
-      .attemptClaim({ transferId, ownerUserId, sessionValid, previewMode, explicitClaimAuthorization: true })
+      .attemptClaim({ transferId, ownerUserId, sessionValid, previewMode, explicitClaimAuthorization: true, ...(acceptedMinimumAtomic ? { acceptedMinimumAtomic } : {}) })
       .finally(() => setClaiming(false));
   };
+  // Provider minimum between 97% and 99% of the request: never claimed without
+  // the payer accepting the exact amount (src/domain/claim-deadline.ts).
+  const consent = state.outputConsent ?? null;
 
   const content = !tracking ? null : (
     <div className={styles.progress} data-progress-action={view?.action} data-tone={view?.tone}>
@@ -236,9 +240,21 @@ export function usePaymentProgress({
   );
 
   let action: React.ReactNode = null;
-  if (finishAvailable) {
+  if (finishAvailable && consent) {
     action = (
-      <Button variant="ink" block icon="arrow-right" disabled={claiming} aria-busy={claiming} onClick={startClaim}>
+      <div data-output-consent>
+        <p className={styles.ctaNote} role="alert">
+          The provider can now deliver at least {usdcDisplay(consent.minimumOutAtomic)} USDC instead of the {usdcDisplay(consent.requestedAtomic)} USDC
+          you asked to send (prices moved after the quote). The receipt will show the exact amount they receive.
+        </p>
+        <Button variant="ink" block icon="arrow-right" disabled={claiming} aria-busy={claiming} onClick={() => startClaim(consent.minimumOutAtomic)}>
+          {claiming ? "Checking delivery…" : `Deliver at least ${usdcDisplay(consent.minimumOutAtomic)} USDC`}
+        </Button>
+      </div>
+    );
+  } else if (finishAvailable) {
+    action = (
+      <Button variant="ink" block icon="arrow-right" disabled={claiming} aria-busy={claiming} onClick={() => startClaim()}>
         {claiming ? "Checking delivery…" : "Finish delivery"}
       </Button>
     );

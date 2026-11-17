@@ -92,6 +92,7 @@ const MOVEMENT_STATUSES = [
   "clientinvalidfunded",
   "clientfundedtoolate",
   "serverwontfund",
+  "clientrefunded",
   "clientfundedserverrefunded",
   "clientrefundedserverfunded",
   "clientrefundedserverrefunded",
@@ -213,7 +214,10 @@ const EXPIRED_ONLY: ReadonlySet<string> = new Set(["expired"]);
 /**
  * Provider statuses that never mean the provider acted on the EVM side:
  * Lightning-side progress by the client, and the provider's refusals to fund
- * (Satora `clientinvalidfunded`, `clientfundedtoolate`, `serverwontfund`).
+ * (Satora `clientinvalidfunded`, `clientfundedtoolate`, `serverwontfund`),
+ * and the provider returning the client's own funding (`clientrefunded`; no
+ * EVM lock was ever created; audit B15). An observed EVM fund/claim tx is
+ * always server-side, whatever the status (readLocalEvidence).
  */
 export const CLIENT_SIDE_MOVEMENT: ReadonlySet<string> = new Set([
   "clientfundingseen",
@@ -221,6 +225,7 @@ export const CLIENT_SIDE_MOVEMENT: ReadonlySet<string> = new Set([
   "clientinvalidfunded",
   "clientfundedtoolate",
   "serverwontfund",
+  "clientrefunded",
 ]);
 
 /** Chain scan window for a bound swap: [bound − lead, latest invoice expiry + tail]. */
@@ -296,12 +301,12 @@ export function chainRefusal(chain: HtlcActivityResult): ResolutionRefusal | nul
 /** Read every local fact the gates depend on (used in BOTH phases). */
 export async function readLocalEvidence(db: Reader, transferId: string, now: number): Promise<LocalEvidence> {
   const observations = await db
-    .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind })
+    .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind, evmFundTxid: reconciliationObservations.evmFundTxid, evmClaimTxid: reconciliationObservations.evmClaimTxid })
     .from(reconciliationObservations)
     .where(eq(reconciliationObservations.transferId, transferId));
-  const movement = observations.filter((o) => (MOVEMENT_STATUSES as readonly string[]).includes(o.providerStatus));
+  const movement = observations.filter((o) => (MOVEMENT_STATUSES as readonly string[]).includes(o.providerStatus) || o.evmFundTxid || o.evmClaimTxid);
   const movementObservations = movement.length;
-  const serverSideMovementObservations = movement.filter((o) => !CLIENT_SIDE_MOVEMENT.has(o.providerStatus)).length;
+  const serverSideMovementObservations = movement.filter((o) => !CLIENT_SIDE_MOVEMENT.has(o.providerStatus) || o.evmFundTxid || o.evmClaimTxid).length;
   const identityMismatchObservations = observations.filter((o) => o.kind === "identity_mismatch").length;
   const proofs = await db
     .select({ nimiqTxHash: transferProofs.nimiqTxHash, evmTxHash: transferProofs.evmTxHash })

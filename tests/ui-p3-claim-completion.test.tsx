@@ -178,7 +178,7 @@ describe("P3: the Nov 2 failure path now completes — explicit Finish delivery,
     await advance(0);
     await advance(0);
     expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
-    expect(claimSpy.claimStoredSwap).toHaveBeenCalledWith(SWAP);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledWith(SWAP, expect.objectContaining({ satoraSwapId: SWAP, transferId: ID }), null); // null: no accepted minimum, strict 99% floor
     // The server authorized THIS attempt immediately before the SDK claim.
     expect(posts()).toContain("claim-intent");
     expect(api.state[ID]!.status).toBe("CLAIMING");
@@ -566,5 +566,58 @@ describe("P3: terminal outcomes never offer a claim", () => {
     expect(finishButtons()).toHaveLength(0);
     expect(text()).toContain("The delivery deadline has passed");
     expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+  });
+});
+
+describe("Output floor: a provider minimum below 99% is never claimed without the payer's explicit acceptance", () => {
+  const consentButtons = () => screen.queryAllByRole("button", { name: /^Deliver at least/ });
+  const fundedAndReady = async () => {
+    vi.setSystemTime(new Date(FUNDED_SEEN));
+    api = installFakeApi({ [ID]: { status: "SERVER_FUNDED", providerStatus: "serverfunded", observedAt: FUNDED_SEEN } });
+    renderSend();
+    await advance(3_000);
+    expect(finishButtons()).toHaveLength(1);
+    claimSpy.claimStoredSwap.mockResolvedValue({ success: true, txHash: `0x${"5c".repeat(32)}`, message: "ok" });
+  };
+
+  it("99% (Satora's normal slippage): Finish delivery claims directly, strict floor", async () => {
+    await fundedAndReady();
+    api.providerMinimumOut = "297000"; // 99% of 0.30 USDC (every Thence Polygon delivery)
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    expect(consentButtons()).toHaveLength(0);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledWith(SWAP, expect.objectContaining({ transferId: ID }), null);
+  });
+
+  it("98.5% (f1ca0926-like drift): no claim lease, no SDK call; the exact amounts are shown; claiming needs an explicit tap and binds that amount", async () => {
+    await fundedAndReady();
+    api.providerMinimumOut = "295446"; // 98.48% of 0.30 USDC (f1ca0926 DEX estimate)
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(api.count("POST", "/claim-intent")).toBe(0); // no lease consumed by the preview
+    expect(text()).toMatch(/at least 0\.295446 USDC instead of the 0\.30 USDC/);
+    expect(consentButtons()).toHaveLength(1);
+    fireEvent.click(consentButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    expect(api.count("POST", "/claim-intent")).toBe(1);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledWith(SWAP, expect.objectContaining({ transferId: ID }), 295446n);
+  });
+
+  it("below 97%: refused before any lease or SDK call, with the amounts and the refund path explained", async () => {
+    await fundedAndReady();
+    api.providerMinimumOut = "288000"; // 96% of 0.30 USDC
+    fireEvent.click(finishButtons()[0]!);
+    await advance(0);
+    await advance(0);
+    expect(claimSpy.claimStoredSwap).not.toHaveBeenCalled();
+    expect(api.count("POST", "/claim-intent")).toBe(0);
+    expect(consentButtons()).toHaveLength(0);
+    expect(text()).toMatch(/at most 0\.288 USDC of the 0\.30 requested.*Nothing was sent/);
   });
 });

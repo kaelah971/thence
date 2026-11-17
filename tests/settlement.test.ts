@@ -21,7 +21,7 @@ import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route
 import { POST as verifyPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
-import { declaredHtlc } from "./htlc-fixture";
+import { boundRedeemLog, declaredHtlc } from "./htlc-fixture";
 /** Fixed per run: a real provider never moves a swap's deadline between reads. */
 const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
@@ -119,8 +119,15 @@ function mockChain(script: ChainScript): ChainReads {
   };
 }
 
-function goodReceipt(amount = 5000000n, dest = EVM_A): NonNullable<ChainScript["receipt"]> {
-  return { status: "success", blockNumber: BLOCK_NUM, blockHash: BLOCK_HASH, logs: [transferLog(USDC_POLYGON, dest, amount, 3)] };
+/**
+ * A legitimate claim receipt: the destination Transfer AND the pinned HTLC's
+ * SwapRedeemed for this fixture swap's hash lock and complete SwapKey. Exact
+ * or short, delivery requires both; `withRedeem: false` is the forged shape.
+ */
+function goodReceipt(amount = 5000000n, dest = EVM_A, withRedeem = true): NonNullable<ChainScript["receipt"]> {
+  const logs = [transferLog(USDC_POLYGON, dest, amount, 3)];
+  if (withRedeem) logs.unshift(boundRedeemLog(fixtureSwap()));
+  return { status: "success", blockNumber: BLOCK_NUM, blockHash: BLOCK_HASH, logs };
 }
 
 function fixtureSwap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -340,8 +347,24 @@ describe.skipIf(!LIVE)(
       const cases: { name: string; receipt: NonNullable<ChainScript["receipt"]> | null; swap: Record<string, unknown>; reason: RegExp }[] = [
         { name: "wrong-recipient", receipt: goodReceipt(5000000n, "0x0000000000000000000000000000000000000002"), swap: {}, reason: /no Transfer event/i },
         { name: "wrong-token", receipt: { ...goodReceipt(), logs: [transferLog("0x0000000000000000000000000000000000000009", EVM_A, 5000000n, 0)] }, swap: {}, reason: /no Transfer event/i },
-        { name: "wrong-chain", receipt: goodReceipt(), swap: { evm_chain_id: 1 }, reason: /different chain/i },
-        { name: "shortfall", receipt: goodReceipt(4999999n), swap: {}, reason: /below the requested/i },
+        { name: "wrong-chain", receipt: goodReceipt(), swap: { evm_chain_id: 1 }, reason: /settlement terms differ from the bound payment/i } /* the chain is a bound term: a provider answer on another chain is refused before the route check */,
+        { name: "shortfall", receipt: goodReceipt(4999999n, EVM_A, false), swap: {}, reason: /below the requested/i },
+        // Delivery needs the bound swap's SwapRedeemed whether exact or short:
+        // a bare ERC-20 Transfer of the exact amount to the destination is not proof.
+        { name: "exact-no-redeem", receipt: goodReceipt(5000000n, EVM_A, false), swap: {}, reason: /does not redeem the bound swap/i },
+        {
+          name: "exact-foreign-redeem",
+          receipt: { ...goodReceipt(5000000n, EVM_A, false), logs: [boundRedeemLog(fixtureSwap(), { keyLocktimeSec: FIXTURE_LOCKTIME + 60 }), transferLog(USDC_POLYGON, EVM_A, 5000000n, 3)] },
+          swap: {},
+          reason: /does not redeem the bound swap/i,
+        },
+        {
+          name: "exact-redeem-wrong-htlc",
+          receipt: { ...goodReceipt(5000000n, EVM_A, false), logs: [boundRedeemLog(fixtureSwap(), { address: "0x0000000000000000000000000000000000000bad" }), transferLog(USDC_POLYGON, EVM_A, 5000000n, 3)] },
+          swap: {},
+          reason: /does not redeem the bound swap/i,
+        },
+        { name: "exact-identity-unavailable", receipt: goodReceipt(), swap: { evm_expected_sats: null }, reason: /bound swap identity is unavailable/i },
         { name: "reverted", receipt: { ...goodReceipt(), status: "reverted" }, swap: {}, reason: /reverted/i },
         { name: "empty", receipt: { ...goodReceipt(), logs: [] }, swap: {}, reason: /no Transfer event/i },
       ];
@@ -420,7 +443,8 @@ describe.skipIf(!LIVE)(
       setSettlementChainForTests(mockChain({ receipt: goodReceipt() }));
       try {
         const res = await verify(cookie, "settle-pending", id);
-        expect(((await res.json()) as { settlement: { verdict: string } }).settlement.verdict).toBe("INCONCLUSIVE");
+        const inconclusive = (await res.json()) as { settlement: { verdict: string; reason?: string } };
+        expect(inconclusive.settlement.verdict, JSON.stringify(inconclusive.settlement)).toBe("INCONCLUSIVE");
       } finally {
         setSatoraFetchersForTests(null);
         setSettlementChainForTests(null);
@@ -495,7 +519,8 @@ describe.skipIf(!LIVE)(
       // RPC can't provide finality evidence: undecided, never delivered.
       expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: null })).body.settlement?.verdict).toBe("INCONCLUSIVE");
       // Stale/lagging finality (claim block not yet finalized): not yet.
-      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM - 1n })).body.settlement?.verdict).toBe("INSUFFICIENT_CONFIRMATIONS");
+      const stale = await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM - 1n });
+      expect(stale.body.settlement?.verdict, JSON.stringify(stale.body.settlement)).toBe("INSUFFICIENT_CONFIRMATIONS");
       // Inconsistent RPC: finalized above its own head → refused as evidence.
       expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM + 50n })).body.settlement?.verdict).toBe("INCONCLUSIVE");
       // Reorg: the block at the claim height changed, even though "finalized" covers it.

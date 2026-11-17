@@ -159,7 +159,8 @@ describe("iOS login-cookie loss → page recreated → sign in again", () => {
     await clickFinish();
     expect(api.count("POST", "/claim-intent")).toBe(1);
     expect(sdk.claimStoredSwap).toHaveBeenCalledTimes(1);
-    expect(sdk.claimStoredSwap).toHaveBeenCalledWith(SWAP);
+    // The claim runs with the server-authorized terms for THIS transfer and swap (the claim-safety guard's input).
+    expect(sdk.claimStoredSwap).toHaveBeenCalledWith(SWAP, expect.objectContaining({ transferId: ID, satoraSwapId: SWAP, paymentHash: LOCK }), null);
     expect(creates()).toEqual([]);
     expect(api.state[ID]!.status).toBe("CLAIMING");
 

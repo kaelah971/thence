@@ -265,6 +265,7 @@ export function expiredNimReturnedBody(nimReturn: { refundTxHash: string; return
 
 /** P3: server authorization of ONE explicit Finish-delivery attempt (see src/lib/claim-intent.ts). */
 export interface ClaimIntentView {
+  htlc: import("@/lib/htlc-preflight").BoundHtlcTerms;
   transferId: string;
   status: TransferStatus;
   satoraSwapId: string;

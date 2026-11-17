@@ -81,12 +81,42 @@ export function loadHandoffRecord(transferId: string, ownerUserId: string): Hand
   }
 }
 
-export function saveHandoffRecord(record: HandoffRecord): void {
+/**
+ * Persist the handoff record and PROVE it is durable by reading it back.
+ *
+ * Returns true only when the exact serialized record is readable from the
+ * same store afterwards. Unavailable storage, a throwing/over-quota write or
+ * a write that was silently dropped all return false. This record is the only
+ * replay guard between a lost native response and a second native payment, so
+ * the caller must treat false as "do not call Nimiq Pay". On a failed write
+ * the previous value is restored so a stale partial write can never claim an
+ * invocation that did not happen (and a prior reported record keeps its
+ * retryable semantics).
+ */
+export function saveHandoffRecord(record: HandoffRecord): boolean {
+  const store = handoffStore();
+  if (!store) return false;
+  const key = `${HANDOFF_KEY}:${record.transferId}`;
+  let previous: string | null = null;
   try {
-    handoffStore()?.setItem(`${HANDOFF_KEY}:${record.transferId}`, JSON.stringify(record));
+    previous = store.getItem(key);
   } catch {
-    /* best-effort; authoritative state lives server-side */
+    return false;
   }
+  const serialized = JSON.stringify(record);
+  try {
+    store.setItem(key, serialized);
+    if (store.getItem(key) === serialized) return true;
+  } catch {
+    /* fall through to restore */
+  }
+  try {
+    if (previous === null) store.removeItem(key);
+    else store.setItem(key, previous);
+  } catch {
+    /* best effort: the caller still refuses the native call */
+  }
+  return false;
 }
 
 function vaultForTests(): VaultLike | null {
@@ -296,7 +326,10 @@ export function useHandoff(): {
       }
 
       // Persist handoff intent BEFORE the native call (replay safety).
-      saveHandoffRecord({
+      // The write must be proven durable (read back) first: if it cannot be,
+      // a lost native response would leave no replay guard and a reload would
+      // allow a second native payment for the same invoice. Refuse instead.
+      const persisted = saveHandoffRecord({
         transferId: input.transferId,
         ownerUserId: input.ownerUserId,
         invoice: input.authorizedInvoice,
@@ -305,6 +338,14 @@ export function useHandoff(): {
         reportedOutcome: null,
         sourceTxHash: null,
       });
+      if (!persisted) {
+        setState({
+          phase: "attention",
+          transferId: input.transferId,
+          message: "This device can't save a payment safety record. Nothing was paid. Free up browser storage or leave private browsing, then try again.",
+        });
+        return;
+      }
 
       let paymentDiagnostics: PaymentDiagnostics | null = null;
       const result = await payAuthorizedInvoice(provider as LightningCapableProvider, input.authorizedInvoice, {

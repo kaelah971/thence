@@ -68,3 +68,57 @@ export function validateLocktime(
   if (invoiceExpiresAt && ms >= invoiceExpiresAt.getTime()) return "implausible";
   return new Date(ms);
 }
+
+/*
+ * Output floor: the lowest `minAmountOut` the browser accepts before it
+ * reveals the preimage (the provider's redeem calldata / DEX estimate decides
+ * what the recipient can receive; delivery itself is measured on-chain).
+ *
+ * Evidence (public chain data decoded 2026-11-17):
+ * - Polygon: in all seven Thence deliveries Satora's `minAmountOut` was
+ *   exactly 99% of the requested amount (its 100 bps slippage) and delivery
+ *   was 99.96%-100.07%.
+ * - Arbitrum: the claim floor is Satora's DEX estimate for the locked BTC
+ *   (`/dex-calldata/fund estimated_amount_out`); for f1ca0926 it was 98.48%
+ *   and 98.72% of the request, i.e. price drift after the quote.
+ *
+ * Policy (quote-bound, never silent):
+ * - >= 99% of the request: within the provider's own slippage; automatic.
+ * - 97% to 99%: only after the payer explicitly accepts the exact minimum the
+ *   recipient may receive (shown in the app); the claim is then bound to that
+ *   accepted amount (minus a 0.25% re-quote tolerance, never below 97%).
+ * - < 97%: refused before any secret is disclosed; the payment refunds.
+ * Anything delivered below the request is still recorded as DELIVERED_SHORT
+ * with exact amounts.
+ */
+export const AUTO_OUTPUT_FLOOR_BPS = 9_900n;
+export const CONSENT_OUTPUT_FLOOR_BPS = 9_700n;
+/** Re-quote tolerance between the payer's acceptance and the SDK's own read. */
+export const ACCEPTED_OUTPUT_TOLERANCE_BPS = 25n;
+
+const ceilBps = (amount: bigint, bps: bigint): bigint => (amount * bps + 9_999n) / 10_000n;
+
+export type OutputFloorDecision = "auto" | "consent" | "refuse";
+
+/** Pure: how a provider minimum compares with the requested amount. */
+export function outputFloorDecision(requestedAtomic: bigint, minimumOutAtomic: bigint): OutputFloorDecision {
+  if (requestedAtomic <= 0n || minimumOutAtomic <= 0n) return "refuse";
+  if (minimumOutAtomic >= ceilBps(requestedAtomic, AUTO_OUTPUT_FLOOR_BPS)) return "auto";
+  if (minimumOutAtomic >= ceilBps(requestedAtomic, CONSENT_OUTPUT_FLOOR_BPS)) return "consent";
+  return "refuse";
+}
+
+/**
+ * Smallest `minAmountOut` the disclosure guard accepts. Without an accepted
+ * minimum: the automatic floor (99%). With one (only valid inside the consent
+ * band): the accepted amount minus the re-quote tolerance, never below 97%.
+ */
+export function requiredClaimMinimum(requestedAtomic: bigint, acceptedMinimumAtomic?: bigint | null): bigint {
+  const autoFloor = ceilBps(requestedAtomic, AUTO_OUTPUT_FLOOR_BPS);
+  const hardFloor = ceilBps(requestedAtomic, CONSENT_OUTPUT_FLOOR_BPS);
+  if (acceptedMinimumAtomic === undefined || acceptedMinimumAtomic === null) return autoFloor;
+  if (acceptedMinimumAtomic < hardFloor) return autoFloor; // invalid acceptance: ignore it, fail to the strict floor
+  const tolerant = acceptedMinimumAtomic - (requestedAtomic * ACCEPTED_OUTPUT_TOLERANCE_BPS) / 10_000n;
+  const bound = tolerant > hardFloor ? tolerant : hardFloor;
+  return bound < autoFloor ? bound : autoFloor;
+}

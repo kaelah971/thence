@@ -31,7 +31,7 @@ import { POST as handoffResultPost } from "../app/api/transfers/[id]/handoff-res
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as claimIntentPost } from "../app/api/transfers/[id]/claim-intent/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
-import { declaredHtlc } from "./htlc-fixture";
+import { boundRedeemLog, declaredHtlc } from "./htlc-fixture";
 
 const ARBITRUM_CHAIN_ID = 42161;
 const NATIVE_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
@@ -75,12 +75,18 @@ interface ClaimReceipt {
   to: string;
   amount: bigint;
   token: string;
+  /**
+   * SwapRedeemed beside the Transfer. Default "bound" = the pinned HTLC, bound
+   * hash lock and complete SwapKey (a legitimate claim). "none" and "foreign"
+   * (a different key) are forged shapes that must never deliver, exact or short.
+   */
+  redeem?: "bound" | "none" | "foreign";
 }
 
 const provider = new Map<string, Record<string, unknown>>();
 const funded = new Map<string, Pay>();
 const claimTransactions = new Set<string>();
-const claimReceipts = new Map<string, ClaimReceipt>();
+const claimReceipts = new Map<string, ClaimReceipt & { pay: Pay }>();
 const lifecycleStates = new Map<string, number>();
 const lifecycleReads: Array<{ key: string; block: bigint }> = [];
 const createdUserIds: string[] = [];
@@ -185,12 +191,15 @@ function syntheticChain(): ChainReads {
         status: claim.status,
         blockNumber: CLAIM_BLOCK,
         blockHash: CLAIM_BLOCK_HASH,
-        logs: [{
-          address: claim.token,
-          topics: [TRANSFER_EVENT_TOPIC, addressTopic(HTLC_CLAIM_ADDRESS), addressTopic(claim.to)],
-          data: `0x${word(claim.amount)}`,
-          logIndex: 7,
-        }],
+        logs: [
+          ...(claim.redeem === "none" ? [] : [boundRedeemLog(swapShape(claim.pay), { logIndex: 6, ...(claim.redeem === "foreign" ? { keyLocktimeSec: claim.pay.lock + 60 } : {}) })]),
+          {
+            address: claim.token,
+            topics: [TRANSFER_EVENT_TOPIC, addressTopic(HTLC_CLAIM_ADDRESS), addressTopic(claim.to)],
+            data: `0x${word(claim.amount)}`,
+            logIndex: 7,
+          },
+        ],
       };
     },
     async getLatestBlockNumber() {
@@ -325,7 +334,7 @@ async function authorizeClaim(p: Pay): Promise<Response> {
 
 function simulateProviderClaim(p: Pay, claimTx: string, receipt: ClaimReceipt | null): void {
   claimTransactions.add(claimTx.toLowerCase());
-  if (receipt) claimReceipts.set(claimTx.toLowerCase(), receipt);
+  if (receipt) claimReceipts.set(claimTx.toLowerCase(), { ...receipt, pay: p });
   latestBlock = CLAIM_BLOCK + 300n;
   finalizedBlock = CLAIM_BLOCK;
   putSwap(p, { status: "clientredeemed", evm_fund_txid: p.fundTx, evm_claim_txid: claimTx });
@@ -504,14 +513,16 @@ describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated dat
 
     provider.set(p.swapId, { ...good, evm_htlc_address: "0x0000000000000000000000000000000000000009" });
     response = await authorizeClaim(p);
+    // Audit B9: a contract or amount changed after binding is refused against the
+    // terms recorded before any NIM moved, before the funding verifier runs.
     expect(response.status).toBe(409);
-    expect(await errorCode(response)).toBe("FUNDING_INVALID");
+    expect(await errorCode(response)).toBe("HTLC_TERMS_MISMATCH");
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
 
     provider.set(p.swapId, { ...good, evm_expected_sats: (HTLC_AMOUNT + 1n).toString() });
     response = await authorizeClaim(p);
     expect(response.status).toBe(409);
-    expect(await errorCode(response)).toBe("FUNDING_INVALID");
+    expect(await errorCode(response)).toBe("HTLC_TERMS_MISMATCH");
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
 
     provider.set(p.swapId, good);
@@ -538,23 +549,52 @@ describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated dat
   }, 180_000);
 
   it.each([
-    ["wrong recipient", WRONG_RECIPIENT, BigInt(TARGET_AMOUNT)],
-    ["short amount", RECIPIENT, BigInt(TARGET_AMOUNT) - 1n],
-  ])("does not deliver when the Arbitrum receipt has a %s", async (_label, recipient, amount) => {
+    ["wrong recipient", WRONG_RECIPIENT, BigInt(TARGET_AMOUNT), "none"],
+    ["short amount without a bound redeem", RECIPIENT, BigInt(TARGET_AMOUNT) - 1n, "none"],
+    // An exact-amount Transfer to the recipient is not proof without the bound swap's SwapRedeemed.
+    ["exact amount without a bound redeem", RECIPIENT, BigInt(TARGET_AMOUNT), "none"],
+    ["exact amount with a foreign redeem", RECIPIENT, BigInt(TARGET_AMOUNT), "foreign"],
+    ["short amount with a foreign redeem", RECIPIENT, BigInt(TARGET_AMOUNT) - 1n, "foreign"],
+  ] as const)("does not deliver when the Arbitrum receipt has a %s", async (_label, recipient, amount, redeem) => {
     const p = await createAuthorizedPayment(`settlement-${String(_label).replace(/ /g, "-")}`);
     await fundPayment(p);
     expect((await authorizeClaim(p)).status).toBe(200);
     const claimTx = hex32(`claim-${String(_label)}`);
-    simulateProviderClaim(p, claimTx, { status: "success", to: recipient, amount, token: NATIVE_USDC });
+    simulateProviderClaim(p, claimTx, { status: "success", to: recipient, amount, token: NATIVE_USDC, redeem });
     await reconcileClaim(p, `bad-${String(_label)}`);
     expect(await statusOf(p.id)).toBe("CLAIMING");
     expect((await getDb().select().from(transferProofs).where(eq(transferProofs.transferId, p.id))).every((row) => row.verifiedAt === null)).toBe(true);
     expect((await getDb().select().from(transferTransitions).where(and(eq(transferTransitions.transferId, p.id), eq(transferTransitions.toStatus, "DELIVERED")))).length).toBe(0);
   }, 180_000);
 
-  it("f1ca0926: without an owner canary, a new Arbitrum payment is refused before any quote, swap or NIM (fail closed)", async () => {
+  it("an Arbitrum finality override to confirmations never weakens delivery: an unfinalized claim stays CLAIMING", async () => {
+    const savedFinality = process.env.THENCE_SETTLEMENT_FINALITY_JSON;
+    process.env.THENCE_SETTLEMENT_FINALITY_JSON = JSON.stringify({ "42161": { mode: "confirmations", confirmations: 1 } });
+    try {
+      const p = await createAuthorizedPayment("settlement-finality-override");
+      await fundPayment(p);
+      expect((await authorizeClaim(p)).status).toBe(200);
+      const claimTx = hex32("claim-finality-override");
+      // A fully legitimate bound claim, deep in the head but NOT covered by the L1-finalized tag.
+      simulateProviderClaim(p, claimTx, { status: "success", to: RECIPIENT, amount: BigInt(TARGET_AMOUNT), token: NATIVE_USDC });
+      finalizedBlock = CLAIM_BLOCK - 1n;
+      await reconcileClaim(p, "finality-override-unfinalized");
+      expect(await statusOf(p.id)).toBe("CLAIMING");
+      expect((await getDb().select().from(transferProofs).where(eq(transferProofs.transferId, p.id))).every((row) => row.verifiedAt === null)).toBe(true);
+      // Once Arbitrum finalizes the claim block the same evidence delivers, with finalized proof.
+      finalizedBlock = CLAIM_BLOCK;
+      await reconcileClaim(p, "finality-override-finalized");
+      expect(await statusOf(p.id)).toBe("DELIVERED");
+      expect((await getDb().select().from(transferProofs).where(eq(transferProofs.transferId, p.id)))[0]?.finalityLevel).toBe("finalized");
+    } finally {
+      if (savedFinality === undefined) delete process.env.THENCE_SETTLEMENT_FINALITY_JSON;
+      else process.env.THENCE_SETTLEMENT_FINALITY_JSON = savedFinality;
+    }
+  }, 180_000);
+
+  it("f1ca0926: with the claim paths explicitly closed, a new Arbitrum payment is refused before any quote, swap or NIM (fail closed)", async () => {
     const saved = process.env.THENCE_CLAIM_EXECUTION_CANARY;
-    delete process.env.THENCE_CLAIM_EXECUTION_CANARY;
+    process.env.THENCE_CLAIM_EXECUTION_CANARY = "";
     try {
       const wallet = fixtureWallet();
       const { cookie } = await loginAs(client("login-gate"), (id) => createdUserIds.push(id), wallet);

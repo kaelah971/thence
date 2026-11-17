@@ -115,6 +115,21 @@ describe("R7 pure rules", () => {
     expect(matchBoundSwapRedeem([redeemLog(hashLock, key)], { ...terms, amountAtomic: null })).toBe("IDENTITY_UNAVAILABLE");
   });
 
+  it("Arbitrum: the bound redeem is required from the pinned v7 and v6 HTLCs, never absent or foreign", () => {
+    const V7 = "0x6c38bf44a327bf36bfbefcedc514c0fb3fec6748";
+    for (const htlc of [V7, HTLC]) {
+      const arb = { ...terms, chainId: 42161, htlcAddress: htlc };
+      const key = keyFor(hashLock, lock);
+      expect(matchBoundSwapRedeem([redeemLog(hashLock, key, htlc)], arb)).toBe("MATCH");
+      expect(matchBoundSwapRedeem([], arb)).toBe("NO_REDEEM");
+      expect(matchBoundSwapRedeem([redeemLog(hashLock, key, "0x0000000000000000000000000000000000000bad")], arb)).toBe("NO_REDEEM");
+      expect(matchBoundSwapRedeem([redeemLog(hashLock, keyFor(hashLock, lock + 1), htlc)], arb)).toBe("NO_REDEEM");
+      expect(matchBoundSwapRedeem([redeemLog(`0x${"11".repeat(32)}`, key, htlc)], arb)).toBe("NO_REDEEM");
+    }
+    // Pinned per chain: a v7 redeem is not evidence on Polygon, which trusts only v6.
+    expect(matchBoundSwapRedeem([redeemLog(hashLock, keyFor(hashLock, lock), V7)], { ...terms, htlcAddress: V7 })).toBe("IDENTITY_UNAVAILABLE");
+  });
+
   it("the incident's real SwapRedeemed key equals the real SwapCreated key", () => {
     // From Polygon tx 0x684d2a…060a (SwapCreated) and 0x45ba18…9006 (SwapRedeemed).
     const realKey = "0x2743f04eec1548c9961dd30e94e50fbab63f8659c2571a916108a211d7ce71b3";
@@ -377,7 +392,8 @@ describe.skipIf(!LIVE)("R7 live: short deliveries through the real verifier", ()
       const { cookie } = await login("full");
       for (const [tag, amount] of [["exact", REQUESTED], ["over", REQUESTED + 542n]] as const) {
         const c = await claimingCase(cookie, tag);
-        const res = await verifyWith(cookie, tag, c, receiptWith([transferLog(USDC, DEST, amount, 279)]));
+        // A legitimate claim carries the bound SwapRedeemed beside the Transfer.
+        const res = await verifyWith(cookie, tag, c, receiptWith([redeemLog(c.hashLock, keyFor(c.hashLock, c.lock)), transferLog(USDC, DEST, amount, 279)]));
         expect(res.body.settlement?.verdict).toBe("VERIFIED");
         expect(await statusOf(c.id)).toBe("DELIVERED");
         expect((await proofOf(c.id))?.verifiedAmountAtomic).toBe(amount.toString());
@@ -386,7 +402,7 @@ describe.skipIf(!LIVE)("R7 live: short deliveries through the real verifier", ()
     });
   }, 180_000);
 
-  it("never classifies other failures as short: zero, wrong recipient, wrong token, no bound redeem", async () => {
+  it("never classifies other failures as delivered or short: zero, wrong recipient, wrong token, absent or foreign bound redeem (short, exact, over)", async () => {
     await withEnv(async () => {
       // One user per case: open CLAIMING transfers count toward the pilot exposure cap.
       const cases: Array<[string, (c: Case) => Log[]]> = [
@@ -395,6 +411,11 @@ describe.skipIf(!LIVE)("R7 live: short deliveries through the real verifier", ()
         ["wrong-token", (c) => [redeemLog(c.hashLock, keyFor(c.hashLock, c.lock)), transferLog(USDC_E, DEST, RECEIVED, 279)]],
         ["no-redeem", () => [transferLog(USDC, DEST, RECEIVED, 279)]],
         ["foreign-redeem", (c) => [redeemLog(c.hashLock, keyFor(c.hashLock, c.lock + 60)), transferLog(USDC, DEST, RECEIVED, 279)]],
+        // Exact and over-delivery need the bound redeem too: a bare Transfer to the destination is not proof.
+        ["exact-no-redeem", () => [transferLog(USDC, DEST, REQUESTED, 279)]],
+        ["over-no-redeem", () => [transferLog(USDC, DEST, REQUESTED + 542n, 279)]],
+        ["exact-foreign-redeem", (c) => [redeemLog(c.hashLock, keyFor(c.hashLock, c.lock + 60)), transferLog(USDC, DEST, REQUESTED, 279)]],
+        ["exact-foreign-htlc", (c) => [redeemLog(c.hashLock, keyFor(c.hashLock, c.lock), "0x0000000000000000000000000000000000000bad"), transferLog(USDC, DEST, REQUESTED, 279)]],
       ];
       for (const [tag, logsFor] of cases) {
         const { cookie } = await login(`neg-${tag}`);
@@ -406,7 +427,7 @@ describe.skipIf(!LIVE)("R7 live: short deliveries through the real verifier", ()
         expect(await proofOf(c.id).then((p) => p?.verifiedAt ?? null), tag).toBeNull();
       }
     });
-  }, 300_000);
+  }, 600_000);
 
   it("a short delivery waits for finality and reorg consistency before it is decided", async () => {
     await withEnv(async () => {

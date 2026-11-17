@@ -174,8 +174,14 @@ export function verifySwapMatch(args: {
   if (swap.targetAtomic !== targetAmountAtomic) {
     throw new AuthError(409, "SWAP_MISMATCH", "Provider swap output differs from the requested exact amount.");
   }
-  if (swap.status !== "" && swap.status !== "pending") {
-    throw new AuthError(409, "SWAP_STATE_UNEXPECTED", `Provider swap is not awaiting funding (status: ${swap.status}).`);
+  // Fail closed: a missing/empty status is NOT "pending". Only an explicit
+  // provider `pending` proves the swap is still awaiting funding.
+  if (swap.status !== "pending") {
+    throw new AuthError(
+      409,
+      "SWAP_STATE_UNEXPECTED",
+      swap.status === "" ? "Provider did not report the swap status, so it can't be bound." : `Provider swap is not awaiting funding (status: ${swap.status}).`,
+    );
   }
   if (!INVOICE_RE.test(swap.bolt11Invoice)) {
     throw new AuthError(409, "SWAP_MISMATCH", "Provider swap invoice is not a valid BOLT11 invoice.");
@@ -417,7 +423,7 @@ export async function attachSwap(
       evidence: {
         attemptId: attempt.id,
         quoteRevision: transfer.quoteRevision,
-        providerStatus: facts.status || "pending",
+        providerStatus: facts.status,
         recoveryAcknowledged: true,
         // The settlement terms bound here; authorize refuses any drift.
         htlc: boundHtlcTermsOf(facts),
@@ -611,8 +617,15 @@ export async function authorizeHandoff(
     if (Date.now() - gatheredAt > PROVIDER_EVIDENCE_MAX_AGE_MS) {
       throw new AuthError(409, "VERSION_CONFLICT", "Provider check took too long; retry the authorization.");
     }
-    if (facts.status !== "" && facts.status !== "pending") {
-      throw new AuthError(409, "SWAP_STATE_UNEXPECTED", `Provider swap is no longer awaiting funding (status: ${facts.status}). Reconcile before retrying.`);
+    // Fail closed: an empty/missing status is not proof the swap still awaits funding.
+    if (facts.status !== "pending") {
+      throw new AuthError(
+        409,
+        "SWAP_STATE_UNEXPECTED",
+        facts.status === ""
+          ? "Provider did not report the swap status, so it can't be authorized. Nothing was sent to Nimiq Pay and no NIM was spent."
+          : `Provider swap is no longer awaiting funding (status: ${facts.status}). Reconcile before retrying.`,
+      );
     }
     if (!facts.invoiceExpiresAt || facts.invoiceExpiresAt.getTime() <= Date.now()) {
       throw new AuthError(409, "INVOICE_EXPIRED", "Provider swap invoice is missing or expired.");
@@ -692,7 +705,7 @@ export async function authorizeHandoff(
       reasonCode: "HANDOFF_AUTHORIZED",
       evidence: {
         attemptId: attempt.id,
-        providerStatus: facts.status || "pending",
+        providerStatus: facts.status,
         ...figures,
         repricedAccepted: repriced,
       },

@@ -28,7 +28,7 @@ import { POST as authorizePost } from "../app/api/transfers/[id]/authorize-hando
 import { POST as reportPost } from "../app/api/transfers/[id]/handoff-result/route";
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as verifySettlementPost } from "../app/api/transfers/[id]/verify-settlement/route";
-import { declaredHtlc } from "./htlc-fixture";
+import { boundRedeemLog, declaredHtlc } from "./htlc-fixture";
 
 const INC = fixture.incident_077770a1;
 const REAL_HASH_LOCK = INC.attachment.payment_hash;
@@ -70,7 +70,11 @@ function realChain(): ChainReads {
           status: "success" as const,
           blockNumber: CLAIM_BLOCK,
           blockHash: CLAIM_BLOCK_HASH,
-          logs: [{ address: USDC_POLYGON, topics: [TRANSFER_EVENT_TOPIC, pad(REAL_HTLC), pad(EVM_A)], data: "0x" + (300000).toString(16).padStart(64, "0"), logIndex: 7 }],
+          // Delivery needs the bound SwapRedeemed (pinned HTLC, bound lock, full SwapKey) beside the Transfer.
+          logs: [
+            boundRedeemLog(swapShape("claim-fixture", "0"), { logIndex: 6 }),
+            { address: USDC_POLYGON, topics: [TRANSFER_EVENT_TOPIC, pad(REAL_HTLC), pad(EVM_A)], data: "0x" + (300000).toString(16).padStart(64, "0"), logIndex: 7 },
+          ],
         };
       }
       const r = receipts[hash.toLowerCase()];

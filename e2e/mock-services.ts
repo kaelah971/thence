@@ -19,6 +19,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { keccak256 } from "viem";
+import { syntheticInvoice } from "../tests/payment-crypto-fixture";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:https";
 import { readFileSync } from "node:fs";
@@ -41,8 +42,24 @@ export const USDC_POLYGON = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
 const FUND_TOPIC = "0x127ba86dffa89675eb78a2ca7203c29f865789ebec607b9424ed9f8d3d533e9f";
 const REFUND_TOPIC = "0xdb5ade4effa253aae9bef95994b76da3fe75eb0d634e715ec4261c6fd55c06f1";
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-/** SIMULATED redeem event topic (any non-fund HTLC event means "spent" to Thence). */
-const SIM_REDEEM_TOPIC = "0x" + createHash("sha256").update("thence-e2e-simulated-redeem").digest("hex");
+/**
+ * The pinned HTLCErc20 `SwapRedeemed(hashLock, swapKey, …)` topic. Delivery
+ * requires this event for the bound swap's complete SwapKey (audit B7), so the
+ * simulator emits the real shape rather than a placeholder.
+ */
+const SWAP_REDEEMED_TOPIC = "0x935f11873f0f4154186d30d8d4181c7694ac59f800873f9c44b0a5122043660a";
+const word32 = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+/** Same encoding as src/lib/settlement.ts computeHtlcSwapKey (abi-encoded, keccak256). */
+function swapKeyOf(record: Record<string, unknown>, hashLock: string): string {
+  return keccak256(`0x${[
+    word32(hashLock),
+    BigInt(String(record["evm_expected_sats"])).toString(16).padStart(64, "0"),
+    word32(String(record["wbtc_address"])),
+    word32(String(record["server_evm_address"])),
+    word32(String(record["client_evm_address"])),
+    BigInt(Number(record["evm_refund_locktime"])).toString(16).padStart(64, "0"),
+  ].join("")}` as `0x${string}`);
+}
 
 /**
  * Source cost the simulated provider charges for 0.30 USDC: the same
@@ -126,7 +143,7 @@ function createSwap(body: Record<string, unknown>): Record<string, unknown> {
     fee_sats: 6,
     hash_lock: hashLock,
     // SIMULATED hold invoice: well-formed prefix, not payable anywhere.
-    bolt11_invoice: `lnbc3880n1pe2esimulated${randomBytes(20).toString("hex")}`,
+    bolt11_invoice: syntheticInvoice(hashLock as `0x${string}`, String(QUOTED_SOURCE_SATS + state.repriceSats)),
     invoice_expires_at: now + 5_400,
     evm_fund_txid: null,
     evm_claim_txid: null,
@@ -215,7 +232,9 @@ function satora(method: string, path: string, query: URLSearchParams, body: Reco
       body: {
         dex_calldata: { to: "0x" + "e2e5".repeat(10), data: "0x" + "00".repeat(4), value: "0" },
         calls_hash: "0x" + createHash("sha256").update(`calls-${String(swap.record["id"])}`).digest("hex"),
-        min_amount_out: String(swap.record["target_amount"]),
+        // Realistic: Satora's min_amount_out was exactly 99% of the target in every
+        // Thence Polygon delivery (decoded on-chain, 2026-11-17).
+        min_amount_out: String((BigInt(String(swap.record["target_amount"])) * 99n) / 100n),
       },
     };
   }
@@ -400,7 +419,7 @@ function control(action: string, body: Record<string, unknown>): unknown {
         hash: claimTx,
         blockNumber: n,
         logs: [
-          { address: HTLC, topics: [SIM_REDEEM_TOPIC, swap.hashLock, pad(COORDINATOR)], data: "0x", blockNumber: n, transactionHash: claimTx, logIndex: 0 },
+          { address: HTLC, topics: [SWAP_REDEEMED_TOPIC, swap.hashLock, swapKeyOf(swap.record, swap.hashLock)], data: "0x", blockNumber: n, transactionHash: claimTx, logIndex: 0 },
           { address: token, topics: [TRANSFER_TOPIC, pad(COORDINATOR), pad(to)], data: "0x" + word(amount), blockNumber: n, transactionHash: claimTx, logIndex: 1 },
         ],
       });

@@ -94,6 +94,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     THENCE_NEXT_DIST_DIR: ".next-e2e",
     NEXT_PUBLIC_THENCE_ENABLE_PAYMENT: "1",
     NEXT_PUBLIC_THENCE_ENABLE_CLAIM: "1",
+    THENCE_CLAIM_EXECUTION_CANARY: "137:6",
     NEXT_PUBLIC_THENCE_BUILD_REF: "e2e-sim",
     DATABASE_URL: "postgresql://build:build@build.invalid:5432/none",
     NODE_ENV: "production",
@@ -125,6 +126,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     THENCE_NIMIQ_RPC_URL: `${mock}/nimiq`,
     THENCE_ENABLED_ROUTES: "usdc-polygon",
     THENCE_ROUTE_TOKENS_JSON: JSON.stringify({ "usdc-polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" }),
+    // The audit branch marks Polygon 137:6 unproven (src/lib/claim-execution.ts);
+    // the simulated lifecycle runs it as an explicit canary. This is a RUNTIME
+    // server setting (the claim-path gate is evaluated per request).
+    THENCE_CLAIM_EXECUTION_CANARY: "137:6",
     // Public launch: the simulated wallet is on NO allowlist and no Thence
     // cap applies — the whole lifecycle runs in public mode, gated only by
     // the database kill switch (enabled above, test database only).

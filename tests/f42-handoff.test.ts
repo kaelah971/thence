@@ -13,6 +13,7 @@
  * reload round-trips. Real-device persistence remains F4.1 QA-pending.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { syntheticStoredSwap } from "./payment-crypto-fixture";
 import { NimiqProviderError } from "@nimiq/mini-app-sdk";
 import {
   assertAuthorizedInvoice,
@@ -41,6 +42,9 @@ import {
 
 const INVOICE = "lnbc100u1p0fakeinvoicepp5fakepp5fakepp5fakepp5fakepp5fakeqdqqxqyjw5q9qy9qsq";
 const ADDR = "0x0000000000000000000000000000000000000001";
+
+/** Real-crypto stored-swap fixture (sha256, secp256k1, bech32 invoice). */
+const realStoredSwap = (): ReturnType<typeof syntheticStoredSwap> => syntheticStoredSwap();
 
 function fakeLocalStorage(): void {
   const store = new Map<string, string>();
@@ -430,18 +434,7 @@ describe("F4.1 browser QA with safe mocks (no host, no funds)", () => {
   });
 
   it("SDK stored-swap readback proves recovery material exists", async () => {
-    const stored = {
-      version: 2,
-      swapId: "swap-1",
-      keyIndex: 0,
-      response: { id: "swap-1", hash_lock: `0x${"ab".repeat(32)}`, bolt11_invoice: INVOICE, evm_refund_locktime: Math.floor(Date.now() / 1000) + 3600 },
-      publicKey: "02" + "ab".repeat(32),
-      preimage: "ab".repeat(32),
-      preimageHash: "cd".repeat(32),
-      secretKey: "ef".repeat(32),
-      storedAt: Date.now(),
-      updatedAt: Date.now(),
-    };
+    const stored = realStoredSwap();
     setBrowserSwapClientForTests({
       createLightningToEvmSwap: (async () => ({ response: {} })) as never,
       getStoredSwap: (async (id: string) => (id === "swap-1" ? stored : null)) as never,
@@ -473,21 +466,15 @@ describe("F4.1 browser QA with safe mocks (no host, no funds)", () => {
 
   it("swap creation pins exact server-approved terms and rejects drift", async () => {
     const captured: Array<Record<string, unknown>> = [];
+    const stored = realStoredSwap();
     setBrowserSwapClientForTests({
       createLightningToEvmSwap: (async (opts: Record<string, unknown>) => {
         captured.push(opts);
         return {
-          response: {
-            id: "swap-1",
-            bolt11_invoice: INVOICE,
-            hash_lock: `0x${"ab".repeat(32)}`,
-            source_amount: "6327",
-            target_amount: "5000000",
-            target_evm_address: ADDR,
-          },
+          response: { ...stored.response, target_evm_address: ADDR },
         };
       }) as never,
-      getStoredSwap: (async () => null) as never,
+      getStoredSwap: (async () => stored) as never,
       claim: (async () => ({ success: false, message: "disabled" })) as never,
     });
     try {

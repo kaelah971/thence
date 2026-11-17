@@ -143,3 +143,15 @@ export function htlcPreflight(
   if (locktime * 1000 - opts.nowMs < runway) return no("HTLC_DEADLINE_TOO_CLOSE", "Too little time would remain to finish delivery after paying.");
   return { ok: true, deployment };
 }
+
+/**
+ * True when the fresh provider read OMITS a settlement term (address, version,
+ * kind, amount). An omission is an incomplete answer, not evidence that the
+ * provider changed the terms: callers treat it as a transient provider
+ * problem (retry) and must not record a durable identity mismatch, which
+ * would permanently block the evidence-gated closes of a payment.
+ */
+export function providerTermsIncomplete(facts: VerifiedSwapFacts): boolean {
+  const live = boundHtlcTermsOf(facts);
+  return Object.values(live).some((value) => value === "" || value === -1);
+}

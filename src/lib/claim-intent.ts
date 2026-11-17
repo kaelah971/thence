@@ -23,12 +23,13 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
-import { reconciliationObservations, swapAttachments, transfers } from "@/db/schema";
+import { reconciliationObservations, swapAttachments, transfers, transferTransitions } from "@/db/schema";
+import { boundHtlcTermsOf, boundTermsDrift, type BoundHtlcTerms } from "@/lib/htlc-preflight";
 import { transition, type TransferStatus } from "@/domain/transfers";
 import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
 import { lockTransfer } from "@/lib/handoff";
 import { getProviderSwap, resolveRoute, SatoraError, type VerifiedSwapFacts } from "@/lib/satora";
-import { CLAIM_FUNDING_MIN_CONFIRMATIONS, verifyHtlcFunding, verifyHtlcLifecycle, verifyHtlcUnspent, type HtlcFundingResult, type HtlcLifecycleResult, type HtlcSpendVerdict } from "@/lib/settlement";
+import { CLAIM_FUNDING_MIN_CONFIRMATIONS, trustedHtlcDeployment, verifyHtlcFunding, verifyHtlcLifecycle, verifyHtlcUnspent, type HtlcFundingResult, type HtlcLifecycleResult, type HtlcSpendVerdict } from "@/lib/settlement";
 import { recordTransition } from "@/lib/transitions";
 import { CLAIM_ACTIVITY_STATUSES } from "@/domain/provider-status";
 
@@ -61,6 +62,30 @@ export interface ClaimIntent {
   fundingConfirmations: number | null;
   /** True when this re-authorizes a CLAIMING transfer whose earlier attempt left no claim on record. */
   retry: boolean;
+  /**
+   * Public HTLC facts the server authorized this claim against (no secrets: no
+   * preimage, key or signature). The browser SDK must compare its own FRESH
+   * provider read with these before revealing the preimage and refuse on any
+   * difference. Addresses and token ids are lowercase.
+   */
+  htlc: AuthorizedHtlcFacts;
+}
+
+export interface AuthorizedHtlcFacts extends BoundHtlcTerms {
+  /** Hash lock (same value as `ClaimIntent.paymentHash`), lowercase 0x-hex. */
+  hashLock: string;
+  /** Claim deadline, unix seconds (same instant as `ClaimIntent.claimDeadline`). */
+  refundLocktimeSec: number;
+  /** Provider-declared funding tx the server verified on-chain; null when the provider named none. */
+  fundTxHash: string | null;
+  /**
+   * "bound": every term equals the record written when the swap was bound
+   * (before any NIM moved). "legacy-pinned": the swap predates term binding;
+   * only the pinned HTLC deployment (address, and declared version / kind /
+   * coordinator) could be re-checked, so the browser must treat the terms as
+   * provider-asserted and verify the chain itself.
+   */
+  termsBinding: "bound" | "legacy-pinned";
 }
 
 function refuse(status: number, code: string, message: string): never {
@@ -73,7 +98,76 @@ export function claimLifecycleProblem(chainId: number, lifecycle: HtlcLifecycleR
   return lifecycle?.reason ?? "The Arbitrum HTLC lifecycle could not be verified.";
 }
 
-type Evidence = { facts: VerifiedSwapFacts; routeMatches: boolean; funding: HtlcFundingResult; lifecycle: HtlcLifecycleResult | null; spend: HtlcSpendVerdict | null; gatheredAt: number };
+/**
+ * The settlement terms bound at attach (SWAP_ATTACHED audit evidence).
+ * - "legacy": no SWAP_ATTACHED row or no `htlc` record at all - the swap was
+ *   bound before terms were recorded; a historical payment must stay
+ *   recoverable, so it is checked against the pinned deployments only.
+ * - "bound": a record exists; it must be complete AND equal the fresh read.
+ *   A partial/malformed record is NEVER treated as legacy (fail closed).
+ */
+export type StoredBoundHtlc = { kind: "legacy" } | { kind: "bound"; htlc: unknown };
+
+type ReadDb = Pick<ReturnType<typeof getDb>, "select">;
+
+export async function readStoredBoundHtlc(db: ReadDb, transferId: string): Promise<StoredBoundHtlc> {
+  const row = (
+    await db
+      .select({ evidence: transferTransitions.evidence })
+      .from(transferTransitions)
+      .where(and(eq(transferTransitions.transferId, transferId), eq(transferTransitions.reasonCode, "SWAP_ATTACHED")))
+      .orderBy(desc(transferTransitions.createdAt))
+      .limit(1)
+  )[0];
+  const evidence = row?.evidence;
+  if (typeof evidence !== "object" || evidence === null || Array.isArray(evidence)) return { kind: "legacy" };
+  const htlc = (evidence as Record<string, unknown>)["htlc"];
+  return htlc === undefined ? { kind: "legacy" } : { kind: "bound", htlc };
+}
+
+export interface BoundTermsProblem {
+  code: "HTLC_TERMS_INCOMPLETE" | "HTLC_TERMS_MISMATCH";
+  field: string;
+  message: string;
+}
+
+/**
+ * Pure: does the fresh provider read still equal what was bound (chain,
+ * contract address/version/kind/coordinator, lock token, amount, parties, route
+ * token)? Legacy rows (no record) are held to the pinned deployment table.
+ */
+export function claimBoundTermsProblem(stored: StoredBoundHtlc, facts: VerifiedSwapFacts): BoundTermsProblem | null {
+  if (stored.kind === "legacy") {
+    const deployment = trustedHtlcDeployment(facts.evmChainId, facts.evmHtlcAddress);
+    if (!deployment) return { code: "HTLC_TERMS_MISMATCH", field: "htlcAddress", message: "The provider names a settlement contract Thence does not trust." };
+    if (facts.evmHtlcVersion != null && facts.evmHtlcVersion !== deployment.version) return { code: "HTLC_TERMS_MISMATCH", field: "version", message: "The provider's declared contract version differs from the pinned deployment." };
+    if (facts.evmHtlcKind != null && facts.evmHtlcKind !== deployment.kind) return { code: "HTLC_TERMS_MISMATCH", field: "kind", message: "The provider's declared contract kind differs from the pinned deployment." };
+    if (facts.evmCoordinatorAddress != null && facts.evmCoordinatorAddress.toLowerCase() !== deployment.coordinator) return { code: "HTLC_TERMS_MISMATCH", field: "coordinator", message: "The provider's declared coordinator differs from the pinned deployment." };
+    return null;
+  }
+  const drift = boundTermsDrift(stored.htlc, facts);
+  if (drift === null) return null;
+  if (drift === "missing") return { code: "HTLC_TERMS_INCOMPLETE", field: "missing", message: "This payment's recorded settlement terms are incomplete, so delivery can't be authorized." };
+  return { code: "HTLC_TERMS_MISMATCH", field: drift, message: `The provider changed this payment's settlement terms (${drift}) after it was set up.` };
+}
+
+/** Public, secret-free HTLC facts for the browser's fresh-read comparison. Call only after the gates passed. */
+export function authorizedHtlcFacts(
+  facts: VerifiedSwapFacts,
+  paymentHash: string,
+  locktimeSec: number,
+  termsBinding: AuthorizedHtlcFacts["termsBinding"],
+): AuthorizedHtlcFacts {
+  return {
+    ...boundHtlcTermsOf(facts),
+    hashLock: paymentHash.toLowerCase(),
+    refundLocktimeSec: locktimeSec,
+    fundTxHash: facts.evmFundTxid,
+    termsBinding,
+  };
+}
+
+type Evidence = { facts: VerifiedSwapFacts; routeMatches: boolean; funding: HtlcFundingResult; lifecycle: HtlcLifecycleResult | null; spend: HtlcSpendVerdict | null; stored: StoredBoundHtlc; gatheredAt: number };
 
 async function gather(transfer: typeof transfers.$inferSelect, attachment: typeof swapAttachments.$inferSelect): Promise<Evidence> {
   let facts: VerifiedSwapFacts;
@@ -83,6 +177,7 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
     const code = err instanceof SatoraError ? err.code : "PROVIDER_UNAVAILABLE";
     refuse(503, code, "The provider can't be checked right now, so delivery can't be confirmed safe yet. Try again shortly.");
   }
+  const stored = await readStoredBoundHtlc(getDb(), transfer.id);
   let routeMatches = false;
   try {
     const resolved = await resolveRoute(transfer.targetAsset, transfer.targetNetwork);
@@ -120,7 +215,7 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
     : null;
   // P7: a re-authorization (earlier attempt's outcome unknown) needs the
   // chain's own word that nothing redeemed or refunded this lock.
-  const spend = transfer.status === "CLAIMING"
+  const spend = transfer.status === "CLAIMING" || facts.evmChainId === 137
     ? (await verifyHtlcUnspent({
         chainId: facts.evmChainId,
         htlcAddress: facts.evmHtlcAddress,
@@ -134,7 +229,7 @@ async function gather(transfer: typeof transfers.$inferSelect, attachment: typeo
         fundingVerdict: funding.verdict,
       })).verdict
     : null;
-  return { facts, routeMatches, funding, lifecycle, spend, gatheredAt: Date.now() };
+  return { facts, routeMatches, funding, lifecycle, spend, stored, gatheredAt: Date.now() };
 }
 
 /** Pure: every identity fact the claim depends on, against the bound swap and transfer terms. */
@@ -176,6 +271,12 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
   const ev = await gather(pre, preBound);
   const identity = claimIdentityProblem(pre, preBound, ev.facts, ev.routeMatches);
   if (identity) refuse(409, "SWAP_MISMATCH", `${identity} Do not continue.`);
+  // Every settlement term the claim will trust (contract, version, coordinator,
+  // lock token, amount, parties, route token) must still equal what was bound
+  // BEFORE any NIM moved; the funding/lifecycle checks below take their
+  // expectations from this same fresh read, so they cannot catch a swap.
+  const termsProblem = claimBoundTermsProblem(ev.stored, ev.facts);
+  if (termsProblem) refuse(409, termsProblem.code, `${termsProblem.message} Do not continue.`);
   if (CLAIM_ACTIVITY_STATUSES.has(ev.facts.status) || ev.facts.evmClaimTxid !== null) {
     refuse(409, "CLAIM_ALREADY_SUBMITTED", "A delivery attempt is already on record. Wait while Thence confirms it — don't try again.");
   }
@@ -205,9 +306,9 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
     if (ev.lifecycle?.verdict === "REJECTED") refuse(409, "HTLC_NOT_ACTIVE", `${lifecycleProblem} Do not continue.`);
     refuse(503, "CHAIN_UNAVAILABLE", "The Arbitrum HTLC lifecycle can't be checked right now. Try again shortly.");
   }
-  if (pre.status === "CLAIMING") {
-    if (ev.spend === "SPENT") refuse(409, "CLAIM_ALREADY_SUBMITTED", "The earlier delivery attempt reached Polygon. Wait while Thence confirms it — don't try again.");
-    if (ev.spend !== "UNSPENT") refuse(503, "CLAIM_OUTCOME_UNRESOLVED", "Thence can't yet prove the earlier delivery attempt didn't go through, so it won't try again. Check again shortly.");
+  if (pre.status === "CLAIMING" || ev.facts.evmChainId === 137) {
+    if (ev.spend === "SPENT") refuse(409, "CLAIM_ALREADY_SUBMITTED", "The payment's settlement lock has already been spent. Wait while Thence confirms its outcome — don't try again.");
+    if (ev.spend !== "UNSPENT") refuse(503, "CLAIM_OUTCOME_UNRESOLVED", "Thence cannot verify that the settlement lock is still unspent, so no claim can start. Check again shortly.");
   }
 
   // ---- phase B: short commit under the lock ----
@@ -272,6 +373,7 @@ export async function authorizeClaim(userId: string, transferId: string): Promis
       leaseExpiresAt: expires.toISOString(),
       fundingConfirmations: ev.funding.confirmations,
       retry: current === "CLAIMING",
+      htlc: authorizedHtlcFacts(ev.facts, attachment.paymentHash, Math.floor(deadlineMs / 1000), ev.stored.kind === "bound" ? "bound" : "legacy-pinned"),
     };
   });
 }

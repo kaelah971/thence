@@ -82,7 +82,7 @@ function incidentFacts(over: Partial<VerifiedSwapFacts> = {}): VerifiedSwapFacts
 }
 // f1ca0926: Arbitrum claim paths are unproven and refused by default; these
 // cases test the other preflight rules with an explicit owner canary opt-in.
-const ARB_CANARY: ReadonlySet<string> = new Set(["42161:6", "42161:7"]);
+const ARB_CANARY: ReadonlySet<string> = new Set(["137:6", "42161:6", "42161:7"]);
 const AT_CREATION = { nowMs: CREATED_MS + 15_000, claimCanary: ARB_CANARY };
 const bound = { paymentHash: HASH_LOCK, evmRefundLocktime: new Date(DEADLINE * 1000) };
 
