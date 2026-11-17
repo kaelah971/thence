@@ -55,6 +55,7 @@ export const SHARDS: Record<string, string[]> = {
     "arbitrum-incident-af9dc922",
     "arbitrum-claim-execution",
     "arbitrum-claim-sdk-harness",
+    "claim-output-floor",
     "payment-browser-integrity",
     "payment-handoff-integrity",
     "payment-server-integrity",

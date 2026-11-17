@@ -69,26 +69,56 @@ export function validateLocktime(
   return new Date(ms);
 }
 
-/**
- * Lowest provider output floor (in basis points of the requested amount) the
- * browser accepts before it reveals the preimage.
+/*
+ * Output floor: the lowest `minAmountOut` the browser accepts before it
+ * reveals the preimage (the provider's redeem calldata / DEX estimate decides
+ * what the recipient can receive; delivery itself is measured on-chain).
  *
- * Evidence (public chain data, decoded 2026-11-17): all seven Thence Polygon
- * deliveries were claimed with `redeemAndExecute.minAmountOut` = exactly 99%
- * of the requested amount (Satora's 100 bps slippage), and delivered between
- * 99.96% and 100.07%. The Arbitrum quote for incident f1ca0926 was 98.48% to
- * 98.72% of the request (295,446 and 296,150 for 300,000).
+ * Evidence (public chain data decoded 2026-11-17):
+ * - Polygon: in all seven Thence deliveries Satora's `minAmountOut` was
+ *   exactly 99% of the requested amount (its 100 bps slippage) and delivery
+ *   was 99.96%-100.07%.
+ * - Arbitrum: the claim floor is Satora's DEX estimate for the locked BTC
+ *   (`/dex-calldata/fund estimated_amount_out`); for f1ca0926 it was 98.48%
+ *   and 98.72% of the request, i.e. price drift after the quote.
  *
- * A floor of 100% therefore refuses every real claim: the payment is never
- * delivered and the NIM stays locked until its HTLC timeout. A floor far
- * below the provider's own lets a wrong quote shortchange the recipient.
- * 97% covers the provider's slippage plus the drift observed; anything lower
- * is refused before disclosure. Delivery below the request is still reported
- * as DELIVERED_SHORT with exact amounts, never as a full delivery.
+ * Policy (quote-bound, never silent):
+ * - >= 99% of the request: within the provider's own slippage; automatic.
+ * - 97% to 99%: only after the payer explicitly accepts the exact minimum the
+ *   recipient may receive (shown in the app); the claim is then bound to that
+ *   accepted amount (minus a 0.25% re-quote tolerance, never below 97%).
+ * - < 97%: refused before any secret is disclosed; the payment refunds.
+ * Anything delivered below the request is still recorded as DELIVERED_SHORT
+ * with exact amounts.
  */
-export const CLAIM_OUTPUT_FLOOR_BPS = 9_700n;
+export const AUTO_OUTPUT_FLOOR_BPS = 9_900n;
+export const CONSENT_OUTPUT_FLOOR_BPS = 9_700n;
+/** Re-quote tolerance between the payer's acceptance and the SDK's own read. */
+export const ACCEPTED_OUTPUT_TOLERANCE_BPS = 25n;
 
-/** Smallest acceptable `minAmountOut` (atomic, rounded up) for a requested amount. */
-export function minimumClaimOutput(requestedAtomic: bigint): bigint {
-  return (requestedAtomic * CLAIM_OUTPUT_FLOOR_BPS + 9_999n) / 10_000n;
+const ceilBps = (amount: bigint, bps: bigint): bigint => (amount * bps + 9_999n) / 10_000n;
+
+export type OutputFloorDecision = "auto" | "consent" | "refuse";
+
+/** Pure: how a provider minimum compares with the requested amount. */
+export function outputFloorDecision(requestedAtomic: bigint, minimumOutAtomic: bigint): OutputFloorDecision {
+  if (requestedAtomic <= 0n || minimumOutAtomic <= 0n) return "refuse";
+  if (minimumOutAtomic >= ceilBps(requestedAtomic, AUTO_OUTPUT_FLOOR_BPS)) return "auto";
+  if (minimumOutAtomic >= ceilBps(requestedAtomic, CONSENT_OUTPUT_FLOOR_BPS)) return "consent";
+  return "refuse";
+}
+
+/**
+ * Smallest `minAmountOut` the disclosure guard accepts. Without an accepted
+ * minimum: the automatic floor (99%). With one (only valid inside the consent
+ * band): the accepted amount minus the re-quote tolerance, never below 97%.
+ */
+export function requiredClaimMinimum(requestedAtomic: bigint, acceptedMinimumAtomic?: bigint | null): bigint {
+  const autoFloor = ceilBps(requestedAtomic, AUTO_OUTPUT_FLOOR_BPS);
+  const hardFloor = ceilBps(requestedAtomic, CONSENT_OUTPUT_FLOOR_BPS);
+  if (acceptedMinimumAtomic === undefined || acceptedMinimumAtomic === null) return autoFloor;
+  if (acceptedMinimumAtomic < hardFloor) return autoFloor; // invalid acceptance: ignore it, fail to the strict floor
+  const tolerant = acceptedMinimumAtomic - (requestedAtomic * ACCEPTED_OUTPUT_TOLERANCE_BPS) / 10_000n;
+  const bound = tolerant > hardFloor ? tolerant : hardFloor;
+  return bound < autoFloor ? bound : autoFloor;
 }

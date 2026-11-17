@@ -244,12 +244,12 @@ export async function readBackSwap(swapId: string, options: { allowLegacyWalletI
  * callers report unknown and reconcile instead of retrying blindly.
  * Funded execution stays behind the explicit owner/recovery claim gate.
  */
-export async function claimStoredSwap(swapId: string, authorized?: ClaimIntentView): Promise<ClaimOutcome> {
+export async function claimStoredSwap(swapId: string, authorized?: ClaimIntentView, acceptedMinimumAtomic?: bigint | null): Promise<ClaimOutcome> {
   if (!swapId) throw new Error("Missing swap id.");
   if (!authorized || authorized.satoraSwapId !== swapId || !authorized.htlc) throw new Error("Missing verified claim authorization.");
   const client = await loadClient();
   // Never throws: every outcome is classified from what was actually sent.
-  const run = await observeClaimNetwork(() => client.claim(swapId), undefined, claimSafetyGuard(authorized));
+  const run = await observeClaimNetwork(() => client.claim(swapId), undefined, claimSafetyGuard(authorized, acceptedMinimumAtomic));
   if (!run.ok) {
     return {
       success: false,

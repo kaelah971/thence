@@ -1,12 +1,17 @@
 import type { ClaimIntentView } from "@/ui/lib/settlement-client";
 import type { ClaimNetworkGuard } from "@/ui/lib/claim-evidence";
-import { CLAIM_UNSAFE_WINDOW_MS, minimumClaimOutput } from "@/domain/claim-deadline";
+import { CLAIM_UNSAFE_WINDOW_MS, requiredClaimMinimum } from "@/domain/claim-deadline";
 import { decodeFunctionData, parseAbi, sha256, sliceHex, type Hex } from "viem";
 
 const KERNEL_EXECUTE = parseAbi(["function execute(bytes32 mode, bytes executionCalldata)"]);
 const REDEEM = parseAbi(["function redeemAndExecute(bytes32 preimage,uint256 amount,address token,address sender,uint256 timelock,(address target,uint256 value,bytes data)[] calls,address sweepToken,uint256 minAmountOut,address destination,uint8 v,bytes32 r,bytes32 s)"]);
 
-export function claimSafetyGuard(authorized: ClaimIntentView): ClaimNetworkGuard {
+/**
+ * acceptedMinimumAtomic: the minimum the payer explicitly accepted in the app
+ * (consent band, see claim-deadline.ts). Absent = the automatic 99% floor.
+ */
+export function claimSafetyGuard(authorized: ClaimIntentView, acceptedMinimumAtomic?: bigint | null): ClaimNetworkGuard {
+  const floor = requiredClaimMinimum(BigInt(authorized.targetAmountAtomic), acceptedMinimumAtomic);
   let swapChecked = false;
   let calldataChecked = false;
   const refuse = (): never => { throw new Error("Claim safety validation failed. No claim secret was sent."); };
@@ -29,7 +34,7 @@ export function claimSafetyGuard(authorized: ClaimIntentView): ClaimNetworkGuard
       const { args } = decodeFunctionData({ abi: REDEEM, data: sliceHex(execution, 52) });
       const [preimage, amount, token, sender, timelock, , sweepToken, minimum, destination] = args;
       checkPreimage(preimage);
-      if (amount !== BigInt(authorized.htlc.lockAmount) || !equal(token, authorized.htlc.lockToken) || !equal(sender, authorized.htlc.refundAddress) || timelock !== BigInt(Date.parse(authorized.claimDeadline) / 1000) || !equal(sweepToken, authorized.htlc.targetToken) || minimum < minimumClaimOutput(BigInt(authorized.targetAmountAtomic)) || !equal(destination, authorized.destination)) refuse();
+      if (amount !== BigInt(authorized.htlc.lockAmount) || !equal(token, authorized.htlc.lockToken) || !equal(sender, authorized.htlc.refundAddress) || timelock !== BigInt(Date.parse(authorized.claimDeadline) / 1000) || !equal(sweepToken, authorized.htlc.targetToken) || minimum < floor || !equal(destination, authorized.destination)) refuse();
     } catch { refuse(); }
   };
   return {
@@ -80,7 +85,7 @@ export function claimSafetyGuard(authorized: ClaimIntentView): ClaimNetworkGuard
         if (!swapChecked) refuse();
         const data = await response.clone().json() as Record<string, unknown>;
         const amount = path === "/dex-calldata/fund" ? data["estimated_amount_out"] : data["min_amount_out"];
-        if (typeof amount !== "string" || !/^[1-9][0-9]*$/.test(amount) || BigInt(amount) < minimumClaimOutput(BigInt(authorized.targetAmountAtomic))) refuse();
+        if (typeof amount !== "string" || !/^[1-9][0-9]*$/.test(amount) || BigInt(amount) < floor) refuse();
         safeWindow();
         calldataChecked = true;
       }

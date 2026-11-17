@@ -15,12 +15,13 @@ import {
   type SettlementVerdict,
 } from "@/ui/lib/settlement-client";
 import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRetryClaim } from "@/ui/lib/claim-gate";
-import { claimActionAllowed, claimWindowAt } from "@/domain/claim-deadline";
+import { ACCEPTED_OUTPUT_TOLERANCE_BPS, claimActionAllowed, claimWindowAt } from "@/domain/claim-deadline";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap, type ClaimOutcome } from "@/ui/lib/satora-browser";
 import { classifyClaim, emptyEvidence, notSubmittedMessage, sanitizeClaimError, type ClaimClassification, type ClaimSubmission } from "@/ui/lib/claim-evidence";
 import { aaPreflightMessage, arbitrumAaPreflight } from "@/ui/lib/arbitrum-aa";
 import { settlementNetworkFor } from "@/ui/lib/network-copy";
+import { previewClaimOutput, usdcDisplay } from "@/ui/lib/claim-output-preview";
 import { canHaveReceipt, getReceipt, type ApiReceipt } from "@/ui/lib/transfers-api";
 import { kickPaymentTracker, subscribePaymentTracker, type TrackerError, type TrackerSnapshot } from "@/ui/lib/payment-tracker";
 
@@ -31,6 +32,12 @@ export interface SettlementInput {
   previewMode: boolean;
   /** Set only by an explicit owner click; tracking never authorizes a claim. */
   explicitClaimAuthorization?: boolean;
+  /**
+   * Output floor the payer explicitly accepted in the app (atomic USDC) for a
+   * provider minimum inside the consent band (claim-deadline.ts). Absent =
+   * only the automatic 99% floor is acceptable.
+   */
+  acceptedMinimumAtomic?: string;
 }
 
 export interface SettlementState {
@@ -57,6 +64,8 @@ export interface SettlementState {
   claimPending?: boolean;
   /** f1ca0926: what the latest local claim attempt provably did (null = no local attempt). */
   claimSubmission?: ClaimSubmission | null;
+  /** Provider minimum inside the consent band, awaiting the payer's explicit acceptance (null = none). */
+  outputConsent?: { requestedAtomic: string; minimumOutAtomic: string } | null;
   /** Display-only Lightning-handoff facts (see HandoffInfo). */
   sourceVerifiedAtMs?: number | null;
   handoffAtMs?: number | null;
@@ -574,6 +583,23 @@ export function useSettlement(): {
           return { ok: false, reason: aaPreflightMessage(aa.code), code: aa.code };
         }
       }
+      // Output floor (claim-deadline.ts): previewed BEFORE the server claim
+      // lease, from the same public provider endpoint the SDK will use.
+      const preview = await previewClaimOutput({ satoraSwapId: swap.satoraSwapId, requestedAtomic: transfer.targetAmountAtomic, destination: transfer.destination });
+      if (preview.ok) {
+        const p = preview.preview;
+        if (p.decision === "refuse") {
+          const message = `The provider would deliver at most ${usdcDisplay(p.minimumOutAtomic)} USDC of the ${usdcDisplay(p.requestedAtomic)} requested — more than 3% short, so delivery was not started. Nothing was sent. If it can't be finished, the provider refunds and your NIM can be reclaimed.`;
+          setState((s) => ({ ...s, outputConsent: null }));
+          return { ok: false, reason: message, code: "OUTPUT_TOO_LOW" };
+        }
+        const accepted = input.acceptedMinimumAtomic && /^[0-9]+$/.test(input.acceptedMinimumAtomic) ? BigInt(input.acceptedMinimumAtomic) : null;
+        if (p.decision === "consent" && (accepted === null || BigInt(p.minimumOutAtomic) < accepted - (BigInt(p.requestedAtomic) * ACCEPTED_OUTPUT_TOLERANCE_BPS) / 10_000n)) {
+          setState((s) => ({ ...s, outputConsent: { requestedAtomic: p.requestedAtomic, minimumOutAtomic: p.minimumOutAtomic } }));
+          return { ok: false, reason: `The recipient would receive at least ${usdcDisplay(p.minimumOutAtomic)} USDC instead of ${usdcDisplay(p.requestedAtomic)}. Confirm below to finish delivery.`, code: "OUTPUT_NEEDS_CONSENT" };
+        }
+        setState((s) => ({ ...s, outputConsent: null }));
+      }
       // P3: the server re-verifies everything immediately before the claim
       // (fresh provider read, the on-chain HTLC lock and deadline, the unsafe
       // window, no claim/refund yet) and takes the per-transfer claim lease.
@@ -611,7 +637,7 @@ export function useSettlement(): {
         return { ok: false, reason: "This device cannot save a claim safety record. No delivery attempt was started." };
       }
       try {
-        outcome = await claimStoredSwap(swap.satoraSwapId, authorized);
+        outcome = await claimStoredSwap(swap.satoraSwapId, authorized, input.acceptedMinimumAtomic && /^[0-9]+$/.test(input.acceptedMinimumAtomic) ? BigInt(input.acceptedMinimumAtomic) : null);
       } catch (error) {
         // claimStoredSwap classifies every SDK outcome itself and never
         // throws. A throw here has no network evidence at all, so it cannot

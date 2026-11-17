@@ -216,7 +216,9 @@ function satora(method: string, path: string, query: URLSearchParams, body: Reco
       body: {
         dex_calldata: { to: "0x" + "e2e5".repeat(10), data: "0x" + "00".repeat(4), value: "0" },
         calls_hash: "0x" + createHash("sha256").update(`calls-${String(swap.record["id"])}`).digest("hex"),
-        min_amount_out: String(swap.record["target_amount"]),
+        // Realistic: Satora's min_amount_out was exactly 99% of the target in every
+        // Thence Polygon delivery (decoded on-chain, 2026-11-17).
+        min_amount_out: String((BigInt(String(swap.record["target_amount"])) * 99n) / 100n),
       },
     };
   }
