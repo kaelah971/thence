@@ -1,32 +1,48 @@
 <div align="center">
   <img src="app/icon.png" alt="Official Thence logo" width="92" />
-  <h1>thence</h1>
+  <h1>Thence</h1>
   <h3>Your NIM can go further.</h3>
-  <p><strong>Cross-chain payments, powered by Nimiq.</strong></p>
-  <p>Pay with NIM. Your recipient gets paid in a supported asset on another blockchain.</p>
+  <p><strong>Recipient-first cross-chain payments, powered by Nimiq.</strong></p>
+  <p>Pay with NIM. Your recipient receives USDC on a supported blockchain.</p>
   <p>
-    <!-- Add "Watch the demo" here once the published Thence YouTube URL exists. Do not use a placeholder link. -->
-    <a href="https://paywiththence.cv"><strong>Try Thence</strong></a> ·
-    <a href="https://x.com/usethence">Project updates</a> ·
+    <a href="https://paywiththence.cv"><strong>▶ Launch Thence</strong></a>
+    <br/>
+    <sub>Open it inside <strong>Nimiq Pay</strong>. The direct Nimiq Pay directory link (<code>nimpay.app/miniapps/open/paywiththence.cv</code>) goes live once Thence is listed in the Mini App catalog.</sub>
+  </p>
+  <p>
+    <a href="https://paywiththence.cv">Official website</a> ·
+    <a href="https://github.com/kaelah971/thence">Source code</a> ·
     <a href="docs/hackathon/EVIDENCE.md">Payment evidence</a> ·
+    <a href="https://paywiththence.cv/api/proofs">Live proofs feed</a> ·
     <a href="docs/ARCHITECTURE.md">Architecture</a>
   </p>
+  <!-- Add "Watch the demo" here once the published Thence video URL exists. Do not use a placeholder link. -->
   <p><code>Nimiq Cycle 3 Mini App Competition</code> · <code>Pay category</code> · <code>Live mainnet payments</code> · <code>MIT licensed</code></p>
 </div>
 
 ---
 
-## The problem: your money shouldn't stop at your blockchain
+## Judge quick start
 
-Imagine holding **NIM** but needing to pay someone who uses **USDC on Polygon**.
+| | |
+|---|---|
+| **1. Open the app** | [paywiththence.cv](https://paywiththence.cv) inside **Nimiq Pay** (it uses the real Nimiq Pay wallet; a normal browser can't approve payments). |
+| **2. See real deliveries** | [Live proofs feed](https://paywiththence.cv/api/proofs): **7 verified NIM-funded USDC deliveries on Polygon mainnet**, each checked on-chain at finality. |
+| **3. Read the evidence** | [Capability-by-capability evidence](docs/hackathon/EVIDENCE.md) · [first mainnet delivery](docs/PILOT_2026-11-05_FIRST_DELIVERY.md). |
+| **4. Check the Nimiq integration** | [Mini Apps SDK calls used in the payment path](#real-nimiq-pay-integration), with source links. |
+| **5. Check the engineering** | [Architecture](docs/ARCHITECTURE.md) · [state-machine atlas](docs/architecture/STATE_MACHINE_ATLAS.md) · [reliability work in progress](#reliability-and-security-engineering). |
 
-The recipient doesn't want to open a Nimiq wallet just to receive a payment. You shouldn't have to become an expert in swaps, bridges, networks, fees and wallet compatibility to pay them.
+**Current status:** Polygon is live and **demonstrated with real mainnet deliveries**. Arbitrum is **enabled but not yet demonstrated**: no Arbitrum USDC delivery has completed yet ([details](#supported-chains-and-current-status)).
 
-That's the gap Thence is built to close: **let the sender pay with what they hold and let the recipient receive an explicitly supported asset on the chain they use.**
+## What is Thence?
 
-Thence is a **recipient-first payment mini app inside Nimiq Pay**. Instead of making users complete a standalone swap and then figure out the transfer, Thence starts with the person being paid, the destination wallet and the amount they should receive.
+Thence is a **recipient-first payment Mini App inside Nimiq Pay**. You start with the person you're paying: their wallet, their network and the amount **they** should receive. Thence then quotes the cost, you approve once in Nimiq Pay with NIM, and Thence follows the payment until the USDC has been verified in the recipient's wallet.
 
-**Available today:** NIM in Nimiq Pay → **USDC on Polygon**. Other assets and destinations are planned, **not live**.
+### The problem: your money shouldn't stop at your blockchain
+
+Imagine holding **NIM** but needing to pay someone who uses **USDC on Polygon or Arbitrum**. The recipient doesn't want to open a Nimiq wallet just to get paid. The sender shouldn't have to become an expert in swaps, bridges, networks, fees and wallet compatibility.
+
+Thence closes that gap: **the sender pays with what they hold; the recipient receives an explicitly supported asset on the chain they use.**
 
 ## See the actual app
 
@@ -43,72 +59,41 @@ Thence is a **recipient-first payment mini app inside Nimiq Pay**. Instead of ma
   </tr>
 </table>
 
-<p align="center"><em>Real Thence screenshots from mobile testing. Wallet details in the second image are blurred for privacy. Payment history includes both delivered and cancelled attempts; it is not a fabricated success screen. The NIM and USDT cards show the asset types a Nimiq Pay wallet holds; they don't mean Thence delivers USDT. The only live delivery route is <strong>USDC on Polygon</strong>.</em></p>
+<p align="center"><em>Real Thence screenshots from mobile testing. Wallet details in the second image are blurred for privacy. The activity list includes delivered and cancelled attempts; it is not a staged success screen. The NIM and USDT cards show the assets a Nimiq Pay wallet holds; Thence delivers <strong>USDC</strong>, not USDT.</em></p>
 
 <details>
 <summary><strong>More product UI: recipient-first payment experience</strong></summary>
 <br/>
 <p align="center"><img src="docs/readme/onboarding-recipient-illustration.png" alt="Thence recipient-first onboarding illustration, with a sample recipient receiving USDC on Polygon" width="500" /></p>
-<p align="center"><em>In-app illustration, not a second live asset or a different route.</em></p>
+<p align="center"><em>In-app illustration, not a separate live route.</em></p>
 </details>
 
-> **Judge shortcut:** [Open the working mini app](https://paywiththence.cv) in **Nimiq Pay**. Then see [independent payment evidence](docs/hackathon/EVIDENCE.md), [technical architecture](docs/ARCHITECTURE.md), and [tests](#run-it-locally--verify-the-code).
+## How a payment works
 
-## Where we saw the problem — before building
+1. **Choose the recipient and the amount they receive.** Pick a saved recipient or enter a wallet, its network (Polygon or Arbitrum) and the USDC amount. You can also send someone a **shareable payment request**.
+2. **Review a live quote.** Thence asks the swap provider for an *exact-receive* quote and shows the terms and expiry. It never invents a price when no live quote is available.
+3. **Approve once in Nimiq Pay.** Nimiq Pay shows the exact NIM amount and you authorize the NIM-funded Lightning payment in the real wallet.
+4. **Finish delivery.** A [Satora](https://satora.io) atomic swap locks USDC-convertible funds in a hash-time-locked contract (HTLC) on the destination chain. Once that funding is final, one **Finish delivery** tap releases it to the recipient. Only your device holds the secret that does this.
+5. **Verified, with a receipt.** Thence marks the payment **Delivered** only after it independently verifies the USDC transfer to the recipient on-chain, at finality. Activity and the receipt keep the proof.
 
-This was not a problem invented for a hackathon. We looked at discussions in the Nimiq ecosystem and at the practical friction created when the asset someone owns differs from the asset/network someone else accepts.
+No exchange account, bridge or manual swap for the sender. This does **not** mean every network is supported or that payments are fee-free or instant.
 
-| Evidence from the ecosystem | What it told us | The Thence response |
-|---|---|---|
-| [Nimiq forum: *The Future of Nimiq* (May–June 2025)](https://forum.nimiq.community/t/the-future-of-nimiq/2255) includes community discussion of confusing multi-chain stablecoin transfers, network incompatibilities and the wish for simpler handling. | Token names alone aren't enough. The receiving **network** matters, and cross-chain steps create friction for regular users. | Recipient-first destination selection, a live quote, explicit asset/network labeling, and a single payment journey. |
-| [Nimiq Pay roadmap discussion (November 2025)](https://forum.nimiq.community/t/community-question-can-a-more-detailed-roadmap-be-shared-for-nimiq-pay/2366) describes EVM support and payment-aware swap mini-apps as directions to explore. | Extending real wallet utility through mini apps fits a stated ecosystem direction. | Build **inside Nimiq Pay**, using its real wallet and payment SDK rather than a standalone demo wallet. |
-| [Nimiq's earlier USDC/Polygon testing thread (March 2023)](https://forum.nimiq.community/t/testing-usdc-support-in-the-nimiq-wallet/1878) shows that NIM/USDC swapping was already possible in the ecosystem. | The innovation is **not claiming to invent swaps**. The opportunity is to turn conversion plus sending into a payment-oriented experience. | Start with what the recipient must receive, authorize once in Nimiq Pay, follow delivery, and keep the receipt. |
-| [Cycle III's Pay category](https://miniappscompetition.com/cycle3) asks builders to extend how people use NIM and USDT to pay. | The bar is an app someone can actually use, not another conceptual bridge diagram. | Ship a working mainnet payment route with recovery, status, and on-chain verification. |
+## Features and user experience
 
-**Evidence standard:** These public discussions are *problem/market signals*, not interviews with Thence customers or proof of product-market fit. Thence's own evidence is a separate question: **did a real NIM-funded payment reach a recipient's Polygon wallet?** Yes; see the next section.
-
-## How Thence solves it
-
-1. **Choose the recipient and exact receiving amount.** Set a Polygon wallet and the amount of USDC to deliver; save recipients for later or generate a shareable payment request.
-2. **Review the live quote.** Thence requests an exact-receive route quote, shows the payment terms and expiration, and won't invent a price when a live quote is unavailable.
-3. **Approve in Nimiq Pay.** The sender authorizes the NIM-funded Lightning payment through the real Nimiq Pay wallet.
-4. **Finish delivery once.** An atomic swap via Satora funds the Polygon side. Thence waits through required funding checks and guides the one-tap claim to the recipient's wallet.
-5. **Verify and keep proof.** Thence only marks the payment **Delivered** after verifying the USDC transfer at Polygon finality; the activity timeline and receipt keep the result accessible.
-
-**No manual bridge or exchange account for the sender.** The app coordinates the supported route behind the scenes. This does **not** mean every network is available or that a payment has zero fees.
-
-## Real payments. Real proof.
-
-The proof is the transaction reaching a recipient — not merely a green status label.
-
-| What has been verified | Evidence |
+| Feature | Status in production |
 |---|---|
-| **Mainnet payment, Nov 5, 2026** | A Nimiq Pay-funded transfer delivered at least the intended **0.30 USDC** on Polygon. The original payment was verified after **256 confirmations**, the conservative policy used then. [Pilot report](docs/PILOT_2026-11-05_FIRST_DELIVERY.md). |
-| **Public payment, Nov 6** | The first public-mode payment, served from the live Hermes-hosted app, delivered at least the 0.30 USDC target on Polygon, also verified after **256 confirmations** (before the finality change). [Evidence log](docs/hackathon/EVIDENCE.md). |
-| **Faster settlement, Nov 7** | Production uses Polygon's `finalized` block tag after the claim (with fail-closed guards), replacing the previous eight-minute confirmation wait. [Finality tests and RPC evidence](docs/POLYGON_FINALITY.md). |
-| **User experience** | One **Finish delivery** tap automatically handles the 32-confirmation funding gate. The expected approval-to-Delivered time is around **two minutes**, depending on network/provider conditions; it is not an instant-settlement guarantee. |
-| **Verification and controls** | On-chain ERC-20 transfer check, recorded delivery proof, refund/reconciliation handling, payment-mode controls and database emergency stop. [Architecture](docs/ARCHITECTURE.md) · [Security review](docs/SECURITY_REVIEW.md). |
+| Connect and sign in with the Nimiq Pay wallet (wallet-signed authentication) | **Deployed** |
+| NIM balance on Home | **Deployed** |
+| Recipient-first payments with live exact-receive quotes | **Deployed** |
+| Saved recipients and shareable payment requests | **Deployed** |
+| NIM-funded Lightning payment through Nimiq Pay, Satora atomic swap | **Deployed** |
+| One-tap Finish delivery, live progress timeline, activity and receipts | **Deployed** |
+| Independent on-chain delivery verification and a public proofs feed | **Deployed** |
+| Short-delivery reporting (exact received vs requested) | **Deployed** |
+| Refund recognition, NIM-return verification, server reconciliation, emergency stop | **Deployed** |
+| Arbitrum claim hardening, claim diagnostics, stricter delivery proofs | **Implemented in open PRs [#84](https://github.com/kaelah971/thence/pull/84) / [#85](https://github.com/kaelah971/thence/pull/85), not deployed** |
 
-Payment hashes and personal recipient addresses are not published here. This README describes the verifiable process and links to the internal evidence documentation without publishing unnecessary personal wallet data. A successful test payment is not a guarantee that every future payment will complete without delays.
-
-### Reliability evidence behind the release
-
-| Check | Result |
-|---|---|
-| Polygon finalized-mode integration shards (PR #47) | **515 + 78 + 145 + 216 tests passed** locally, including finalized-mode regression checks ([details](docs/POLYGON_FINALITY.md#verification-2026-11-07-local-github-actions-blocked-by-billing)) |
-| Browser E2E against a production build (PR #47) | **21 passed, 0 failed** across Chromium desktop/mobile and WebKit/iPhone; providers/chain simulated |
-| Final onboarding polish (PR #53) | **11/11 entry/onboarding tests**, typecheck, lint and production build passed |
-| Latest Hermes production rollout | **17/17 read-only checks passed**; health and database reachable; reconciler completed without errors |
-
-These are separate pieces of evidence: simulated end-to-end tests demonstrate expected application behavior; **real mainnet payments** demonstrate actual transfer delivery. Neither is being presented as the other.
-
-## Why this matters for Nimiq
-
-Thence extends the **usefulness of holding and paying with NIM**: a Nimiq Pay user can make a payment to someone who doesn't use Nimiq, using the first supported USDC-on-Polygon route.
-
-The recipient doesn't have to switch wallets. The sender sees the payment they are approving and a record of the outcome. That makes Thence relevant to people paying freelancers, friends or small service providers in a different crypto ecosystem — **a use case**, not a claim of measured adoption by those groups yet.
-
-### Real Nimiq Pay integration
+## Real Nimiq Pay integration
 
 | Mini Apps SDK capability | What Thence does | Implementation |
 |---|---|---|
@@ -118,41 +103,113 @@ The recipient doesn't have to switch wallets. The sender sees the payment they a
 | `getBalance()` | Show NIM funds on Home | [`src/ui/lib/balance.ts`](src/ui/lib/balance.ts) |
 | `payLightningInvoice()` | Pay the authorized swap invoice with NIM | [`src/ui/lib/nimiq-pay.ts`](src/ui/lib/nimiq-pay.ts) |
 
-This is wallet/payment infrastructure used in the actual transaction path — not merely Nimiq branding.
+This is wallet and payment infrastructure in the actual transaction path, not just Nimiq branding. Thence also verifies the NIM funding transaction on the Nimiq chain independently.
 
-## What works today vs. what's next
+## Supported chains and current status
 
-| Feature or route | Status |
+| | **USDC on Polygon** | **USDC on Arbitrum** |
+|---|---|---|
+| Implemented | ✅ | ✅ |
+| Enabled in production | ✅ | ✅ |
+| Delivered on mainnet | ✅ **7 verified deliveries** ([proofs](https://paywiththence.cv/api/proofs)) | ❌ **Not yet.** Two attempts did not deliver; both were refunded on the provider side |
+| Simulated end-to-end tests | ✅ | ✅ (claim path through the real installed SDK, no money) |
+| Pending | Live run of the hardened claim path in PRs #84/#85 | A first verified live delivery |
+
+**What happened on Arbitrum:**
+- The first attempt used a provider contract version that Thence did not yet trust, so Thence correctly refused to claim. That was fixed in [#83](https://github.com/kaelah971/thence/pull/83).
+- The second attempt's in-browser claim never reached the chain. The exact browser error wasn't recorded at the time.
+- PRs #84/#85 make every claim attempt observable (which step failed, with codes, no secrets) and keep NIM recoverable.
+- In both cases the provider refunded its side. The payer's NIM returns through the Nimiq HTLC refund after its timeout.
+
+USDT and other networks (Base, Ethereum) are **not enabled**. Network options in the Mini App framework don't mean Thence supports them.
+
+## Verified mainnet transaction evidence
+
+The proof is USDC reaching a recipient on-chain, not a green status label.
+
+| Evidence | Details |
 |---|---|
-| Connect and sign in with Nimiq Pay; view NIM balance | **Live** |
-| NIM → USDC on Polygon, with live quote and payment approval | **Live** |
-| Saved recipients and shareable payment requests | **Live** |
-| One-tap Finish delivery, progress, activity history, receipts and Polygon proof | **Live** |
-| Refund/reconciliation monitoring and emergency controls | **Implemented and active** |
-| USDT delivery and additional networks such as Arbitrum, Base and Ethereum | **Coming soon — not enabled in production** |
+| **First mainnet payment (Nov 5, 2026)** | A Nimiq Pay-funded transfer delivered at least 0.30 USDC on Polygon. [Pilot report](docs/PILOT_2026-11-05_FIRST_DELIVERY.md). |
+| **Public proofs feed** | [7 verified Polygon deliveries](https://paywiththence.cv/api/proofs) (Nov 6–14, 0.30 to 2.50 USDC). Each one was checked against the NIM source transaction on the Nimiq chain and the USDC transfer at Polygon finality. |
+| **Short delivery, reported honestly** | One delivery received 0.999556 of the 1.00 USDC requested. It is labelled `DELIVERED_SHORT` with both amounts, never as a full delivery ([R7](docs/R7_SHORT_DELIVERY.md)). |
+| **Faster settlement (Nov 7)** | Polygon verification moved from 256 confirmations to the `finalized` block tag, with fail-closed guards ([details](docs/POLYGON_FINALITY.md)). |
 
-We will only mark a new route live when it has been validated with real settlement and appropriate safety controls. The Mini App framework's network support should not be confused with routes already supported by **Thence**.
+Recipient addresses beyond the public proofs, payment hashes and secrets are not published. A successful payment is not a guarantee that every future payment completes without delay.
 
 ## Technical architecture
 
 ```mermaid
 flowchart LR
-  A[Sender in Nimiq Pay] --> B[Thence: recipient + amount + quote]
+  A[Sender in Nimiq Pay] --> B[Thence: recipient, amount, live quote]
   B --> C[Nimiq Pay: approve NIM-funded Lightning invoice]
   C --> D[Satora atomic swap]
-  D --> E[USDC lock and claim on Polygon]
-  E --> F[Recipient wallet]
-  E --> G[Thence settlement verifier]
-  G --> H[Delivered + receipt + activity]
+  D --> E[USDC-convertible lock in EVM HTLC: Polygon or Arbitrum]
+  E -->|Finish delivery: claim| F[Recipient wallet receives USDC]
+  F --> G[Thence independent settlement verifier]
+  G --> H[Delivered + receipt + public proof]
 ```
 
-The application is built with **Next.js 16, React 19, TypeScript, PostgreSQL/Drizzle**, the **Nimiq Mini Apps SDK**, **Satora**, and **viem**. Money amounts use bigint atomic units; server-side checks bind destination, chain, token and amount before claim authorization. Swap secrets remain on the user's device, and Thence doesn't operate a deposit wallet holding customer funds.
+**How the two chains differ:**
 
-For the full state machine, trust boundaries and refund/recovery path, read [the architecture document](docs/ARCHITECTURE.md).
+| | Polygon (137) | Arbitrum (42161) |
+|---|---|---|
+| Claim mechanism | Satora gasless relay submits `redeemAndExecute` | Sponsored ERC-4337 UserOperation (EIP-7702 Kernel account, EntryPoint v0.7, Satora's bundler and paymaster) runs `redeemAndExecute` |
+| Swap to USDC | Provider DEX leg inside the claim | Uniswap v3 leg inside the claim |
+| Funding check before claim | 32 confirmations | Ethereum (L1) finality, about 20 minutes |
+| Delivery verified at | Polygon `finalized` block | L1-finalized Arbitrum block |
+| Pinned HTLC deployments | v6 | v6 and v7, each with its coordinator ([`HTLC_DEPLOYMENTS`](src/lib/settlement.ts)) |
 
-## Run it locally & verify the code
+**Stack:** Next.js 16, React 19, TypeScript, PostgreSQL with Drizzle, the Nimiq Mini Apps SDK, the Satora SDK, and viem.
+- Money is handled in bigint atomic units.
+- The server binds destination, chain, token, amount and HTLC terms before authorizing a claim.
+- The swap secret stays on the user's device; Thence never holds customer funds.
 
-**Prerequisites:** Node.js 20+, PostgreSQL 16+ ([setup guide](docs/LOCAL_DB.md)). Use a **separate development database**; never point local scripts at production.
+**Key source:**
+- Settlement verification: [`src/lib/settlement.ts`](src/lib/settlement.ts)
+- Claim authorization: [`src/lib/claim-intent.ts`](src/lib/claim-intent.ts)
+- Pre-payment HTLC checks: [`src/lib/htlc-preflight.ts`](src/lib/htlc-preflight.ts)
+- Reconciliation: [`src/lib/reconcile.ts`](src/lib/reconcile.ts)
+- Provider adapter: [`src/lib/satora.ts`](src/lib/satora.ts)
+- In-browser claim: [`src/ui/lib/satora-browser.ts`](src/ui/lib/satora-browser.ts)
+- Payment states: [`src/domain/transfers.ts`](src/domain/transfers.ts)
+
+**Further reading:** [architecture](docs/ARCHITECTURE.md) · [state-machine atlas and defect register](docs/architecture/STATE_MACHINE_ATLAS.md) · [server reconciler](docs/SERVER_RECONCILER.md) · [payment recovery](docs/R8_PAYMENT_RECOVERY.md) · [NIM return](docs/R2_NIM_RETURN.md).
+
+## Reliability and security engineering
+
+The two failed Arbitrum attempts led to a systematic hardening effort. It sits in two open pull requests and is **not merged or deployed yet**. CI on both is green at the commits below. The review so far has been **internal** (developer- and AI-assisted adversarial review), not an independent third-party audit.
+
+| PR | Status | What it adds |
+|---|---|---|
+| [#84](https://github.com/kaelah971/thence/pull/84) | Open · [all checks green](https://github.com/kaelah971/thence/actions/runs/44034672177) at `7a26fe9` | Claim paths must be proven before new payments use them. Claim outcomes are classified from evidence: submitted, not sent, or unknown. Secret-free claim diagnostics. Correct network wording. Finality waits that survive brief provider errors. |
+| [#85](https://github.com/kaelah971/thence/pull/85) | Draft · [all six checks green](https://github.com/kaelah971/thence/actions/runs/44092025907), including browser E2E, at `d0ef632` | Payment-integrity audit fixes, listed below. |
+
+**Fixes in #85:**
+- **Swap terms:** provider terms are bound before any NIM moves.
+- **Delivery proof:** delivery requires the bound swap's redeem event.
+- **Arbitrum finality:** it can't be weakened by configuration.
+- **Recovery integrity:** checks run on the device before the secret is revealed.
+- **Handoff:** duplicate-handoff and replay protection.
+- **Attribution:** source-transaction attribution resists poisoning.
+- **NIM returns:** source-refund and NIM-return closes require on-chain proof.
+- **Minimum output:** a quote-bound minimum-output policy. ≥ 99% of the request proceeds automatically; 97–99% needs the payer's explicit confirmation of the exact amount; below that is refused.
+
+**Engineering themes:**
+- Contract and coordinator compatibility checks.
+- Bound swap terms.
+- Claim execution instrumentation.
+- Source and destination verification.
+- Failure classification.
+- Browser recovery integrity.
+- Refund and reconciliation safeguards.
+- Adversarial and fault-injection tests that run the **real installed Satora SDK** without moving money.
+- Full release-shard and browser E2E verification.
+
+Green CI shows the application behaves correctly in simulation. It is **not** proof of live payment execution. That still requires controlled mainnet tests.
+
+## Testing and reproducibility
+
+**Prerequisites:** Node.js 20+ and PostgreSQL 16+ ([setup guide](docs/LOCAL_DB.md)). Use a **separate development database**; never point local scripts at production.
 
 ```bash
 git clone https://github.com/kaelah971/thence.git
@@ -164,42 +221,60 @@ npm run db:migrate
 npm run dev
 ```
 
-`http://localhost:3000/api/health` is the local health endpoint. For the real wallet experience, open the app inside Nimiq Pay through a properly configured HTTPS origin. Without Nimiq Pay, `/app/preview` is a clearly labeled **fictional, development-only** walkthrough (not real-payment evidence; it does not exist in production).
+`http://localhost:3000/api/health` is the local health endpoint. For the real wallet experience, open the app inside Nimiq Pay through a properly configured HTTPS origin. Without Nimiq Pay, `/app/preview` is a clearly labelled **fictional, development-only** walkthrough. It is not payment evidence and doesn't exist in production.
 
 ```bash
 npm run typecheck
 npm run lint
-npm test                 # requires isolated THENCE_TEST_DATABASE_URL
-npx playwright test      # browser E2E with simulated Nimiq Pay/Satora/Polygon
+npm test                 # requires an isolated THENCE_TEST_DATABASE_URL
+npx playwright test      # browser E2E: Chromium desktop/mobile and WebKit/iPhone, simulated Nimiq Pay/Satora/chain
 npm run build
 ```
 
-Automated E2E tests use **simulated providers**, while the mainnet deliveries described above are separate, real-payment evidence. Latest verified local release checks also passed with production-health and reconciliation checks. GitHub Actions can be blocked by account billing; **do not interpret an unavailable CI badge as a passing run**.
+Automated E2E tests use **simulated** providers and chains. The mainnet deliveries above are separate, real-payment evidence, and neither is presented as the other.
 
 ## Safety, limits and transparency
 
-- **Supported route:** only `usdc-polygon` is live. Other network selectors are labeled **Coming soon**.
-- **Payment approval:** Nimiq Pay asks the sender to authorize the NIM-funded invoice; Thence never silently initiates a payment.
-- **Time-sensitive handoff:** the sender needs to tap Finish delivery before the Polygon claim deadline. That deadline is set by the swap provider when the swap is created (Satora's `evm_refund_locktime`), not by Thence, and time spent before funding reduces it. The app shows the deadline and time left, warns in the last 15 minutes and offers no claim in the last 5 minutes ([`src/domain/claim-deadline.ts`](src/domain/claim-deadline.ts)). Refund paths and monitoring exist, but provider/network failures may delay resolution.
-- **Finality:** since 2026-11-07, production verifies Polygon `finalized` blocks (the Nov 5 and Nov 6 payments used 256 confirmations); the separate 32-confirmation funding gate before Finish delivery is unchanged. Inconsistent or unavailable RPC data does **not** become a false Delivered state. The old 256-confirmation rule remains the default fallback without the production override.
-- **Privacy:** avoid posting recipient addresses, secrets, invoice details or full transaction logs publicly. App screenshots above redact private balance/account details.
-- **Legal:** [Privacy Policy](docs/legal/PRIVACY_POLICY.md) and [Terms](docs/legal/TERMS_OF_USE.md) are drafts, not legal advice or finalized legal review.
-- **Scope:** this is a live, currently narrow payment route — not a claim to support every cryptocurrency, every blockchain, instant settlement, or fee-free transfers.
+- **Routes:** USDC on Polygon (demonstrated) and USDC on Arbitrum (enabled, not yet demonstrated). Nothing else is enabled.
+- **Payment approval:** Nimiq Pay asks the sender to authorize every payment; Thence never initiates one silently.
+- **Exact receive, measured honestly:** quotes target the exact amount the recipient should receive. The final DEX execution can land slightly above or below it, within the provider's limits. Thence reports the amount measured on-chain, and anything below the request is labelled `DELIVERED_SHORT` with both amounts.
+- **Time-sensitive delivery:** Finish delivery must happen before the provider's claim deadline (set when the swap is created). The app shows the time left, warns in the last 15 minutes and offers no claim in the last 5 ([`claim-deadline.ts`](src/domain/claim-deadline.ts)).
+- **If delivery doesn't happen:** the provider refunds its side and the payer's NIM returns through the Nimiq HTLC refund after its timeout. Thence tracks and verifies both, but provider or network problems can delay resolution.
+- **No false Delivered:** unavailable or inconsistent chain data never turns into a Delivered state.
+- **Privacy:** don't post recipient addresses, secrets, invoice details or full logs publicly. Screenshots here redact private details.
+- **Legal:** the [Privacy Policy](docs/legal/PRIVACY_POLICY.md) and [Terms](docs/legal/TERMS_OF_USE.md) are drafts, not finalized legal review.
 
-Security details: [`docs/SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md) · [`docs/PUBLIC_RELEASE_AUDIT.md`](docs/PUBLIC_RELEASE_AUDIT.md) · [`docs/RISK_IOS_WEBVIEW_STORAGE.md`](docs/RISK_IOS_WEBVIEW_STORAGE.md).
+Security details: [`SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md) · [`PUBLIC_RELEASE_AUDIT.md`](docs/PUBLIC_RELEASE_AUDIT.md) · [`RISK_IOS_WEBVIEW_STORAGE.md`](docs/RISK_IOS_WEBVIEW_STORAGE.md).
 
-## Competition & further reading
+## Why this matters for Nimiq
+
+Thence extends what holding NIM is good for. A Nimiq Pay user can pay someone who doesn't use Nimiq, and the recipient doesn't have to switch wallets. That makes it relevant for paying freelancers, friends or small service providers in other crypto ecosystems. This is a **use case**, not a claim of measured adoption.
+
+<details>
+<summary><strong>Where we saw the problem, before building</strong></summary>
+
+| Evidence from the ecosystem | What it told us | The Thence response |
+|---|---|---|
+| [Nimiq forum: *The Future of Nimiq* (May–June 2025)](https://forum.nimiq.community/t/the-future-of-nimiq/2255): discussion of confusing multi-chain stablecoin transfers and network incompatibilities. | The receiving **network** matters, and cross-chain steps create friction for regular users. | Recipient-first destination selection, a live quote, explicit asset and network labelling, and a single payment journey. |
+| [Nimiq Pay roadmap discussion (November 2025)](https://forum.nimiq.community/t/community-question-can-a-more-detailed-roadmap-be-shared-for-nimiq-pay/2366): EVM support and payment-aware swap mini apps as directions to explore. | Extending wallet utility through mini apps fits a stated ecosystem direction. | Build **inside Nimiq Pay**, using its real wallet and payment SDK. |
+| [Nimiq USDC/Polygon testing thread (March 2023)](https://forum.nimiq.community/t/testing-usdc-support-in-the-nimiq-wallet/1878): NIM/USDC swapping already existed. | The innovation is not swaps themselves, but turning conversion plus sending into a payment experience. | Start with what the recipient must receive, authorize once, follow delivery, keep the receipt. |
+| [Cycle III's Pay category](https://miniappscompetition.com/cycle3): extend how people use NIM and USDT to pay. | The bar is an app people can actually use. | A working mainnet payment route with recovery, status and on-chain verification. |
+
+These are problem signals, not customer interviews or proof of product-market fit.
+</details>
+
+## Competition and documentation
 
 Built for the **[Nimiq Mini Apps Competition — Cycle III](https://miniappscompetition.com/cycle3)**, in the **Pay** category.
 
-- [Official competition rules](https://miniappscompetition.com/rules) — public MIT code, usable app and real Nimiq Pay integration.
-- [Judging criteria](https://miniappscompetition.com/scoring) — functionality, usefulness, Nimiq integration, real usage, UX and community engagement.
-- [Capability-by-capability evidence](docs/hackathon/EVIDENCE.md) — production vs. tested vs. disabled.
-- [Payment recording checklist](docs/hackathon/RECORDING_CHECKLIST.md).
-- [Operations and deployment](docs/OPERATIONS.md).
+- [Official competition rules](https://miniappscompetition.com/rules) · [judging criteria](https://miniappscompetition.com/scoring)
+- [Capability-by-capability evidence](docs/hackathon/EVIDENCE.md)
+- [Payment recording checklist](docs/hackathon/RECORDING_CHECKLIST.md)
+- [Operations and deployment](docs/OPERATIONS.md)
+- Project updates: [@usethence](https://x.com/usethence)
 
 **Thence — Your NIM can go further.**
 
 ---
 
-Licensed under [MIT](LICENSE). Third-party frameworks and artwork retain their respective licenses; see [NOTICE](NOTICE.md).
+Licensed under [MIT](LICENSE). Third-party frameworks and artwork keep their own licenses; see [NOTICE](NOTICE.md).
