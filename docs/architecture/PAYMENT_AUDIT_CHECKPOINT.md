@@ -146,6 +146,14 @@ Next: CI on c7e01b0; production build; readiness report, Hermes deployment
 plan and per-chain controlled-test procedures (docs/PAYMENT_READINESS_2026-11-17.md);
 independent challenge review; remaining atlas/matrix deliverables.
 
+## CI evidence 2026-11-17: PR #85 d0ef632 ALL GREEN
+
+Run 44092025907: build, lint, integration (all shards), e2e (Playwright, all
+projects) SUCCESS. E2E had never completed on this branch before; the fixes
+were test-environment only (runtime canary; real SwapRedeemed in the chain
+simulator). PR #84 7a26fe9 all green. Remaining: owner decisions (route gate,
+merge, deploy, controlled tests), challenge review, atlas/matrix documents.
+
 ## Resume
 
 Read this checkpoint, git status and final audit report when present. Preserve

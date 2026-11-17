@@ -48,7 +48,8 @@ live run through the guarded path.
 
 - **PR #84 `7a26fe9`:** build, lint, integration and e2e all **SUCCESS**.
 - **PR #85 `f1fef58`:** build, lint and integration (all release shards) **SUCCESS**. E2E was superseded by the next push.
-- **PR #85 `c7e01b0`:** CI pending. Local typecheck and lint pass. Focused suites:
+- **PR #85 `d0ef632`:** build, lint, integration and **e2e** all **SUCCESS** (run 44092025907).
+- **PR #85 `c7e01b0`:** e2e was cancelled because of the test-environment issues fixed in `d0ef632`. Local typecheck and lint pass. Focused suites:
   - claim-output-floor 19/19;
   - payment-claim-safety 44/44 (installed SDK, both chains);
   - ui-p3-claim-completion 25/25 (consent flow included);
