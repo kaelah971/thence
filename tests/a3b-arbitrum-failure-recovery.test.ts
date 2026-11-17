@@ -452,10 +452,13 @@ function simulateClaim(p: Pay, claimTx: string): void {
 
 beforeAll(async () => {
   if (!LIVE) return;
-  for (const key of ["THENCE_ENABLED_ROUTES", "THENCE_ROUTE_TOKENS_JSON", "THENCE_EVM_RPCS_JSON", "THENCE_SETTLEMENT_FINALITY_JSON"]) {
+  for (const key of ["THENCE_ENABLED_ROUTES", "THENCE_ROUTE_TOKENS_JSON", "THENCE_EVM_RPCS_JSON", "THENCE_SETTLEMENT_FINALITY_JSON", "THENCE_CLAIM_EXECUTION_CANARY"]) {
     savedEnv[key] = process.env[key];
   }
   process.env.THENCE_ENABLED_ROUTES = "usdc-arbitrum";
+  // f1ca0926: Arbitrum claim paths are unproven and closed by default; this
+  // lifecycle suite runs as an explicit owner canary (see arbitrum-claim-execution.test.ts).
+  process.env.THENCE_CLAIM_EXECUTION_CANARY = "42161:6,42161:7";
   process.env.THENCE_ROUTE_TOKENS_JSON = JSON.stringify({ "usdc-arbitrum": NATIVE_USDC });
   process.env.THENCE_EVM_RPCS_JSON = JSON.stringify({ [String(ARBITRUM_CHAIN_ID)]: "https://fixture.invalid" });
   process.env.THENCE_SETTLEMENT_FINALITY_JSON = JSON.stringify({ [String(ARBITRUM_CHAIN_ID)]: { mode: "finalized", confirmations: 1 } });

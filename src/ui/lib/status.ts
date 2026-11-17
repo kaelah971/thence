@@ -114,6 +114,10 @@ export interface TimelineStep {
  */
 export interface TimelineContext {
   claimSubmitted?: boolean;
+  /** f1ca0926: the latest attempt provably sent nothing — Finish delivery is NOT done. */
+  claimNotSent?: boolean;
+  /** Submission evidence exists (hash / provider claim), not just an authorization. */
+  claimEvidence?: boolean;
   awaitingFinality?: boolean;
   /** The NIM source transaction is independently verified on-chain (copy only). */
   sourceVerified?: boolean;
@@ -131,7 +135,7 @@ function progressIndex(status: TransferStatus, ctx: TimelineContext): number {
     case "SERVER_FUNDED":
       return ctx.claimSubmitted ? 2 : 1;
     case "CLAIMING":
-      return 2;
+      return ctx.claimNotSent ? 1 : 2;
     case "DELIVERED":
     case "DELIVERED_SHORT":
       return 4;
@@ -169,10 +173,16 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
     },
     finish: {
       label: "Finish delivery",
-      detail: status === "CLIENT_FUNDED" ? `Locking the USDC on ${network} first.` : "Waiting for your tap.",
+      detail: status === "CLIENT_FUNDED"
+        ? `Locking the USDC on ${network} first.`
+        : ctx.claimNotSent
+          ? `Not sent — nothing reached ${network}.`
+          : status === "CLAIMING" && !ctx.claimEvidence
+            ? "Authorized — checking whether it was sent."
+            : "Waiting for your tap.",
     },
     verify: {
-      label: `Verifying on ${network}`,
+      label: status === "CLAIMING" && !ctx.claimEvidence && !ctx.claimNotSent ? `Checking ${network}` : `Verifying on ${network}`,
       detail: ctx.awaitingFinality
         ? network === "Arbitrum" ? "Waiting for Ethereum finality." : "Waiting for confirmations."
         : `Usually ${verifyEstimate(network)}.`,

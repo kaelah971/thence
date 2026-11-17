@@ -306,21 +306,29 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
     try {
       const out = await claimStoredSwap("swap-1");
       expect(captured).toEqual(["swap-1"]);
-      expect(out).toEqual({ success: true, txHash: "0xtxhash", message: "claimed" });
+      expect(out).toMatchObject({ success: true, txHash: "0xtxhash", message: "claimed", errorText: null });
+      expect(out.classification).toMatchObject({ submission: "unknown", code: "SEND_NO_ANSWER" });
       expect(JSON.stringify(out)).not.toMatch(/preimage|secret|mnemonic/i);
     } finally {
       setBrowserSwapClientForTests(null);
     }
   });
 
-  it("claim failures throw so callers record unknown instead of retrying", async () => {
+  it("f1ca0926: a claim that throws before sending anything is classified NOT submitted (never 'Delivery submitted')", async () => {
     setBrowserSwapClientForTests({
       createLightningToEvmSwap: (async () => ({ response: {} })) as never,
       getStoredSwap: (async () => null) as never,
       claim: (async () => { throw new Error("broadcast timeout"); }) as never,
     });
     try {
-      await expect(claimStoredSwap("swap-1")).rejects.toThrow(/broadcast timeout/);
+      const out = await claimStoredSwap("swap-1");
+      expect(out.success).toBe(false);
+      // No submission request was observed, so nothing can have been sent.
+      // A local exception with no observed request: provably nothing sent; the
+      // code comes from the evidence, never from guessing at the message text.
+      expect(out.classification).toMatchObject({ submission: "not-submitted", code: "SDK_ERROR", disclosedToInfrastructure: false, failure: null });
+      expect(out.errorText).toBe("Delivery service error. See the recorded stage and error code.");
+      expect(out.errorText).not.toMatch(/broadcast timeout/);
     } finally {
       setBrowserSwapClientForTests(null);
     }

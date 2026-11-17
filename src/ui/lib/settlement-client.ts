@@ -282,6 +282,29 @@ export function postClaimIntent(id: string, opts: Opts = {}): Promise<ApiResult<
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/claim-intent`, { ...opts, method: "POST", body: {} });
 }
 
+/**
+ * f1ca0926: what this browser's claim attempt ACTUALLY sent, as evidence for
+ * the audit trail. Codes and public hashes only; never the preimage, calldata
+ * or signatures. Advisory: the server never treats it as proof of delivery.
+ */
+export interface ClaimReport {
+  submission: "submitted" | "not-submitted" | "unknown";
+  code: string;
+  disclosedToInfrastructure: boolean;
+  userOpHash: string | null;
+  txHash: string | null;
+  errorText: string | null;
+  /** Last step attempted and the first failing request (codes only; claim-evidence.ts). */
+  stage?: string | null;
+  failure?: { step: string; kind: "rpc-error" | "http" | "network"; rpcCode: number | null; httpStatus: number | null; message: string | null } | null;
+}
+
+export function postClaimReport(id: string, report: ClaimReport, opts: Opts = {}): Promise<ApiResult<{ recorded: boolean }>> {
+  return apiRequest<{ recorded: boolean }>(`/api/transfers/${encodeURIComponent(id)}/claim-report`, { ...opts, method: "POST", body: report }).catch(
+    (): ApiResult<{ recorded: boolean }> => ({ ok: false, status: 0, kind: "network", code: null, message: "Claim report not delivered." }),
+  );
+}
+
 /** No body is sent: the server derives the swap and claim tx itself. */
 export function postVerifySettlement(id: string, opts: Opts = {}): Promise<ApiResult<{ settlement: SettlementResult }>> {
   return apiRequest(`/api/transfers/${encodeURIComponent(id)}/verify-settlement`, { ...opts, method: "POST", body: {} });

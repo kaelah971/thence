@@ -182,6 +182,10 @@ beforeEach(() => {
   previousRpcs = process.env["THENCE_EVM_RPCS_JSON"];
   process.env["THENCE_ENABLED_ROUTES"] = ROUTES;
   process.env["THENCE_EVM_RPCS_JSON"] = JSON.stringify({ "137": "https://example.invalid" });
+  // f1ca0926: Arbitrum cases here exercise expiry closure, not the new-payment
+  // claim-path gate; run them as an explicit owner canary.
+  const previousCanary = process.env["THENCE_CLAIM_EXECUTION_CANARY"];
+  process.env["THENCE_CLAIM_EXECUTION_CANARY"] = "42161:6,42161:7";
   chainLogs = () => [];
   chainDown = false;
   swapOverrides = {};
@@ -192,6 +196,8 @@ beforeEach(() => {
     else process.env["THENCE_ENABLED_ROUTES"] = previousRoutes;
     if (previousRpcs === undefined) delete process.env["THENCE_EVM_RPCS_JSON"];
     else process.env["THENCE_EVM_RPCS_JSON"] = previousRpcs;
+    if (previousCanary === undefined) delete process.env["THENCE_CLAIM_EXECUTION_CANARY"];
+    else process.env["THENCE_CLAIM_EXECUTION_CANARY"] = previousCanary;
   };
 });
 

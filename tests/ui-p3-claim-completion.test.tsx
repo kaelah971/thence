@@ -283,7 +283,7 @@ describe("P3: interruptions keep claim eligibility and never double-claim", () =
     await advance(3_000);
     expect(finishButtons()).toHaveLength(1);
 
-    claimSpy.claimStoredSwap.mockResolvedValue({ success: true, txHash: null, message: "submitted" });
+    claimSpy.claimStoredSwap.mockResolvedValue({ success: true, txHash: `0x${"5c".repeat(32)}`, message: "submitted" });
     fireEvent.click(finishButtons()[0]!);
     await advance(0);
     await advance(0);

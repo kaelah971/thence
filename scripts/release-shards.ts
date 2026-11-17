@@ -53,6 +53,8 @@ export const SHARDS: Record<string, string[]> = {
     "arbitrum-ux-gates",
     "arbitrum-htlc-v6-trust",
     "arbitrum-incident-af9dc922",
+    "arbitrum-claim-execution",
+    "arbitrum-claim-sdk-harness",
     "request-single-payment",
     "satora-fixture",
     // Skipped unless THENCE_TEST_LIVE_SATORA=1 (external-provider canary).

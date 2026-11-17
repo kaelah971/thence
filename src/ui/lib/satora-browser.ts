@@ -11,6 +11,8 @@
  *   provider must echo the server-approved destination amount.
  */
 import type { ClaimResult, StoredSwap } from "@satora/swap";
+import { ARBITRUM_AA } from "@/ui/lib/arbitrum-aa";
+import { classifyClaim, installClaimFetchObserver, observeClaimNetwork, sanitizeClaimError, type ClaimClassification } from "@/ui/lib/claim-evidence";
 
 export interface ExactSwapTerms {
   targetAddress: string;
@@ -63,6 +65,10 @@ export interface ClaimOutcome {
   success: boolean;
   txHash: string | null;
   message: string;
+  /** What the observed network evidence proves (never inferred from a throw). */
+  classification: ClaimClassification;
+  /** Secret-free SDK error text when the claim failed, for the owner and the audit. */
+  errorText: string | null;
 }
 
 let singleton: Promise<SwapClient> | null = null;
@@ -79,9 +85,16 @@ async function loadClient(): Promise<SwapClient> {
   if (!singleton) {
     singleton = (async () => {
       const { Client, IdbSwapStorage, IdbWalletStorage } = await import("@satora/swap");
+      // f1ca0926: the SDK's Satora API client captures fetch when it is BUILT;
+      // the claim observer must wrap fetch first or it misses the swap refresh
+      // and the DEX-calldata request (claim-evidence.ts).
+      installClaimFetchObserver();
+      // f1ca0926: the Arbitrum claim path is a sponsored UserOperation; pin
+      // its infrastructure explicitly (public values; see arbitrum-aa.ts).
       const client = await Client.builder()
         .withSignerStorage(new IdbWalletStorage())
         .withSwapStorage(new IdbSwapStorage())
+        .withAa({ bundlerUrl: ARBITRUM_AA.bundlerUrl, paymasterPolicyId: ARBITRUM_AA.paymasterPolicyId })
         .build();
       return client as unknown as SwapClient;
     })().catch((error: unknown) => {
@@ -214,11 +227,26 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
 export async function claimStoredSwap(swapId: string): Promise<ClaimOutcome> {
   if (!swapId) throw new Error("Missing swap id.");
   const client = await loadClient();
-  const result = await client.claim(swapId);
+  // Never throws: every outcome is classified from what was actually sent.
+  const run = await observeClaimNetwork(() => client.claim(swapId));
+  if (!run.ok) {
+    return {
+      success: false,
+      txHash: null,
+      message: sanitizeClaimError(run.error) || "The delivery software stopped.",
+      classification: classifyClaim({ evidence: run.evidence, error: run.error }),
+      errorText: sanitizeClaimError(run.error),
+    };
+  }
+  const result = run.value;
   const txHash = typeof result.txHash === "string" && result.txHash.length > 0 ? result.txHash : null;
+  const success = result.success === true;
+  const classification = classifyClaim({ evidence: run.evidence, sdkSuccess: success, sdkTxHash: txHash, ...(success ? {} : { error: new Error(String(result.message ?? "")) }) });
   return {
-    success: result.success === true,
-    txHash,
+    success,
+    txHash: txHash ?? classification.txHash,
     message: typeof result.message === "string" && result.message.length > 0 ? result.message : "No claim message returned.",
+    classification,
+    errorText: success ? null : sanitizeClaimError(result.message),
   };
 }

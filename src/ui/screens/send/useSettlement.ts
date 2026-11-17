@@ -6,6 +6,7 @@ import { TRANSFER_STATUSES, isTerminal, type TransferStatus } from "@/domain/tra
 import {
   getReconciliation,
   postClaimIntent,
+  postClaimReport,
   postVerifySettlement,
   progressCopy,
   progressForStatus,
@@ -16,7 +17,10 @@ import {
 import { evaluateClaimEligibility, isClaimFlagEnabled, isClaimWindowOpen, mayRetryClaim } from "@/ui/lib/claim-gate";
 import { claimActionAllowed, claimWindowAt } from "@/domain/claim-deadline";
 import { loadBinding, type VaultLike } from "@/ui/lib/recovery-vault";
-import { claimStoredSwap, readBackSwap } from "@/ui/lib/satora-browser";
+import { claimStoredSwap, readBackSwap, type ClaimOutcome } from "@/ui/lib/satora-browser";
+import { classifyClaim, emptyEvidence, notSubmittedMessage, sanitizeClaimError, type ClaimClassification, type ClaimSubmission } from "@/ui/lib/claim-evidence";
+import { aaPreflightMessage, arbitrumAaPreflight } from "@/ui/lib/arbitrum-aa";
+import { settlementNetworkFor } from "@/ui/lib/network-copy";
 import { canHaveReceipt, getReceipt, type ApiReceipt } from "@/ui/lib/transfers-api";
 import { kickPaymentTracker, subscribePaymentTracker, type TrackerError, type TrackerSnapshot } from "@/ui/lib/payment-tracker";
 
@@ -51,6 +55,8 @@ export interface SettlementState {
    * again; the screen shows "confirming" instead.
    */
   claimPending?: boolean;
+  /** f1ca0926: what the latest local claim attempt provably did (null = no local attempt). */
+  claimSubmission?: ClaimSubmission | null;
   /** Display-only Lightning-handoff facts (see HandoffInfo). */
   sourceVerifiedAtMs?: number | null;
   handoffAtMs?: number | null;
@@ -137,6 +143,8 @@ export const FUNDING_RETRY_BUDGET_MS = 4 * 60_000;
 export const FUNDING_RETRY_L1_INTERVAL_MS = 30_000;
 export const FUNDING_RETRY_L1_BUDGET_MS = 45 * 60_000;
 export const FUNDING_NOT_CONFIRMED = "FUNDING_NOT_CONFIRMED";
+/** Refusals that change nothing server-side and may clear on the next read. */
+export const TRANSIENT_WAIT_CODES: ReadonlySet<string> = new Set(["PROVIDER_UNAVAILABLE", "CHAIN_UNAVAILABLE", "RATE_LIMITED", "AA_UNREACHABLE"]);
 
 export type FundingRetryDecision = { retry: true; delayMs: number } | { retry: false };
 
@@ -153,8 +161,14 @@ export function fundingRetryPolicy(finality: string | null | undefined): { inter
  * tracking. Every other outcome (network failure, rate limit, deadline,
  * mismatch, success) ends the attempt exactly as before.
  */
-export function nextFundingRetry(input: { code: string | null | undefined; startedAtMs: number; nowMs: number; active: boolean; finality?: string | null }): FundingRetryDecision {
-  if (!input.active || input.code !== FUNDING_NOT_CONFIRMED) return { retry: false };
+export function nextFundingRetry(input: { code: string | null | undefined; startedAtMs: number; nowMs: number; active: boolean; finality?: string | null; waitingForFunding?: boolean }): FundingRetryDecision {
+  if (!input.active) return { retry: false };
+  // f1ca0926: one transient provider/chain read failure ended a 20-minute
+  // finality wait and left an error on screen while nothing retried. Once a
+  // funding wait is under way, transient refusals (nothing authorized,
+  // nothing revealed) keep the same wait alive within the same budget.
+  const transient = input.waitingForFunding === true && TRANSIENT_WAIT_CODES.has(input.code ?? "");
+  if (input.code !== FUNDING_NOT_CONFIRMED && !transient) return { retry: false };
   const { intervalMs, budgetMs } = fundingRetryPolicy(input.finality);
   if (input.nowMs + intervalMs - input.startedAtMs > budgetMs) return { retry: false };
   return { retry: true, delayMs: intervalMs };
@@ -209,6 +223,21 @@ interface ClaimRecord {
   submittedAt?: string | null;
   unknownAt: string | null;
   verifyCompletedSinceClaim: boolean;
+  /** f1ca0926: the attempt provably sent nothing (no submission request, or an explicit refusal). */
+  notSubmittedAt?: string | null;
+  /** Secret-free outcome code of the latest attempt (claim-evidence.ts). */
+  outcomeCode?: string | null;
+  /** ERC-4337 UserOperation hash when the bundler accepted the claim. */
+  userOpHash?: string | null;
+}
+
+/** f1ca0926: what the latest local attempt provably did, or null when none. */
+export function claimSubmissionOf(record: ClaimRecord | null): ClaimSubmission | null {
+  if (!record) return null;
+  if (record.txHash !== null || record.submittedAt != null) return "submitted";
+  if (record.unknownAt !== null) return "unknown";
+  if (record.notSubmittedAt != null) return "not-submitted";
+  return null;
 }
 
 const CLAIM_KEY = "thence.f4.3.claim.v1";
@@ -236,6 +265,9 @@ export function loadClaimRecord(transferId: string, ownerUserId: string): ClaimR
       submittedAt: typeof parsed.submittedAt === "string" ? parsed.submittedAt : null,
       unknownAt: typeof parsed.unknownAt === "string" ? parsed.unknownAt : null,
       verifyCompletedSinceClaim: parsed.verifyCompletedSinceClaim === true,
+      notSubmittedAt: typeof parsed.notSubmittedAt === "string" ? parsed.notSubmittedAt : null,
+      outcomeCode: typeof parsed.outcomeCode === "string" ? parsed.outcomeCode.slice(0, 40) : null,
+      userOpHash: typeof parsed.userOpHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(parsed.userOpHash) ? parsed.userOpHash : null,
     };
   } catch {
     return null;
@@ -410,12 +442,15 @@ export function useSettlement(): {
     }
     // P7: on-chain evidence that contradicts this payment is never "confirming".
     if (snapshot.settlementVerdict === "INVALID" && (status === "CLAIMING" || status === "SERVER_FUNDED")) {
-      const claimPending = claimPendingFor(loadClaimRecord(input.transferId, input.ownerUserId), view.latest.claimReady);
+      const localClaim = loadClaimRecord(input.transferId, input.ownerUserId);
+      const claimPending = claimPendingFor(localClaim, view.latest.claimReady);
+      const claimSubmission = claimSubmissionOf(localClaim);
       setState({
         ...base,
         phase: "attention",
         claimReady: false,
         claimPending,
+        claimSubmission,
         verifyVerdict: "INVALID",
         message: "The on-chain record doesn't match this payment (token, wallet or amount). It is NOT delivered and needs attention — don't pay again.",
       });
@@ -427,8 +462,10 @@ export function useSettlement(): {
       : view.latest.ambiguous
         ? "Checking your payment — do not resend."
         : copy.body;
-    const claimPending = claimPendingFor(loadClaimRecord(input.transferId, input.ownerUserId), view.latest.claimReady);
-    setState({ ...base, phase, claimReady: view.latest.claimReady, message, claimPending });
+    const localClaim = loadClaimRecord(input.transferId, input.ownerUserId);
+    const claimPending = claimPendingFor(localClaim, view.latest.claimReady);
+    const claimSubmission = claimSubmissionOf(localClaim);
+    setState({ ...base, phase, claimReady: view.latest.claimReady, message, claimPending, claimSubmission });
   }, []);
 
   const track = useCallback(
@@ -521,6 +558,17 @@ export function useSettlement(): {
         setState((s) => ({ ...s, message: reason }));
         return { ok: false, reason };
       }
+      const network = settlementNetworkFor(transfer.routeId);
+      // f1ca0926: on Arbitrum the claim is a sponsored UserOperation. Check the
+      // bundler, EntryPoint and sponsorship (non-financial, nothing revealed)
+      // BEFORE taking the server's claim lease, so an unreachable service
+      // never consumes the claim window.
+      if (network === "Arbitrum") {
+        const aa = await arbitrumAaPreflight();
+        if (!aa.ok) {
+          return { ok: false, reason: aaPreflightMessage(aa.code), code: aa.code };
+        }
+      }
       // P3: the server re-verifies everything immediately before the claim
       // (fresh provider read, the on-chain HTLC lock and deadline, the unsafe
       // window, no claim/refund yet) and takes the per-transfer claim lease.
@@ -553,12 +601,50 @@ export function useSettlement(): {
         return { ok: false, reason: "The delivery deadline is too close or unavailable. Check Activity for the latest status — don’t try again yet." };
       }
       kickPaymentTracker(input.transferId);
-      let outcome: { success: boolean; txHash: string | null; message: string };
+      let outcome: ClaimOutcome;
       try {
         outcome = await claimStoredSwap(swap.satoraSwapId);
       } catch (error) {
-        saveClaimRecord({ transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, txHash: null, unknownAt: new Date().toISOString(), verifyCompletedSinceClaim: false });
-        setState((s) => ({ ...s, phase: "checking", message: error instanceof Error ? `${error.message} Checking payment — do not resend.` : "Checking payment — do not resend." }));
+        // claimStoredSwap classifies every SDK outcome itself and never
+        // throws. A throw here has no network evidence at all, so it cannot
+        // prove nothing was sent: treat it as UNKNOWN (verify, never resend).
+        outcome = {
+          success: false,
+          txHash: null,
+          message: "The delivery outcome couldn't be determined.",
+          classification: { submission: "unknown", code: "SDK_ERROR", disclosedToInfrastructure: false, userOpHash: null, txHash: null },
+          errorText: sanitizeClaimError(error) || null,
+        };
+      }
+      // Defensive: an outcome without evidence (older client shape) is
+      // submitted only when the SDK itself reported success.
+      const c: ClaimClassification = outcome.classification ?? (outcome.success
+        ? classifyClaim({ evidence: emptyEvidence(), sdkSuccess: true, sdkTxHash: outcome.txHash })
+        : { submission: "unknown", code: "SDK_ERROR", disclosedToInfrastructure: false, userOpHash: null, txHash: null });
+      // f1ca0926: report what was ACTUALLY sent (codes and public hashes only).
+      void postClaimReport(input.transferId, {
+        submission: c.submission,
+        code: c.code,
+        disclosedToInfrastructure: c.disclosedToInfrastructure,
+        userOpHash: c.userOpHash,
+        txHash: c.txHash ?? outcome.txHash,
+        errorText: outcome.errorText ?? null,
+        stage: c.stage ?? null,
+        failure: c.failure ?? null,
+      });
+      const base = { transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, verifyCompletedSinceClaim: false, outcomeCode: c.code, userOpHash: c.userOpHash };
+      if (c.submission === "not-submitted") {
+        // Nothing reached the chain: say so, never "submitted". A later
+        // attempt is still gated by the server (claim lease, unspent lock,
+        // deadline window).
+        saveClaimRecord({ ...base, txHash: null, unknownAt: null, notSubmittedAt: new Date().toISOString() });
+        const message = notSubmittedMessage(c.code, network, c.disclosedToInfrastructure);
+        setState((s) => ({ ...s, phase: "attention", message }));
+        return { ok: false, reason: message, code: `CLAIM_NOT_SUBMITTED:${c.code}` };
+      }
+      if (c.submission === "unknown") {
+        saveClaimRecord({ ...base, txHash: null, unknownAt: new Date().toISOString() });
+        setState((s) => ({ ...s, phase: "checking", message: `The delivery was sent to ${network} but no answer came back. Checking payment — do not resend.` }));
         // P3: an unknown outcome is resolved by verification, never by a blind
         // retry. One verify round (after the claim had time to land) records
         // whether a claim reached the chain; only then may mayRetryClaim allow
@@ -567,14 +653,15 @@ export function useSettlement(): {
         later(UNKNOWN_CLAIM_VERIFY_DELAY_MS, () => void runVerifyLoopRef.current?.(input, 0), runId.current);
         return { ok: false, reason: "The delivery attempt couldn't be confirmed. Checking payment — do not resend." };
       }
-      if (!outcome.success) {
-        // SDK-reported failure (not unknown): surface attention, keep state for retry.
-        setState((s) => ({ ...s, phase: "attention", message: `${outcome.message} Follow the next step before starting another payment.` }));
-        return { ok: false, reason: outcome.message };
+      // Submission evidence exists (UserOperation hash, relay acceptance or SDK success).
+      saveClaimRecord({ ...base, txHash: c.txHash ?? outcome.txHash, submittedAt: new Date().toISOString(), unknownAt: null });
+      if (c.code === "USEROP_REVERTED") {
+        setState((s) => ({ ...s, phase: "checking", message: `The delivery reached ${network} but reverted. Checking payment — do not resend.` }));
+        later(UNKNOWN_CLAIM_VERIFY_DELAY_MS, () => void runVerifyLoopRef.current?.(input, 0), runId.current);
+        return { ok: false, reason: `The delivery reached ${network} but reverted. Checking payment — do not resend.` };
       }
-      saveClaimRecord({ transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, txHash: outcome.txHash, submittedAt: new Date().toISOString(), unknownAt: null, verifyCompletedSinceClaim: false });
       await runVerifyLoopRef.current?.(input, 0);
-      return { ok: true, reason: outcome.txHash ? "Delivery submitted. Confirming it arrived." : "Delivery submitted. Confirming it arrived." };
+      return { ok: true, reason: "Delivery submitted. Confirming it arrived." };
       } finally {
         claimsInFlight.delete(input.transferId);
       }
@@ -586,23 +673,36 @@ export function useSettlement(): {
     async (input: SettlementInput): Promise<{ ok: boolean; reason: string }> => {
       setClaimMessage(null);
       // F9.1: the one explicit tap keeps waiting for the funding confirmations
-      // (only FUNDING_NOT_CONFIRMED is retried; see nextFundingRetry).
+      // (FUNDING_NOT_CONFIRMED, plus transient refusals once that wait has
+      // started; see nextFundingRetry).
       const id = runId.current;
       const startedAtMs = Date.now();
+      let waiting = false;
+      let lastFinality: "l1" | null = null;
       let result = await attemptClaimOnce(input);
       for (;;) {
-        const finality = fundingFinalityFrom(result.details);
-        const decision = nextFundingRetry({ code: result.code, startedAtMs, nowMs: Date.now(), active: runId.current === id, finality });
+        const transient = TRANSIENT_WAIT_CODES.has(result.code ?? "");
+        // A transient refusal carries no finality details: keep the wait's own.
+        const finality: "l1" | null = transient ? lastFinality : fundingFinalityFrom(result.details);
+        const decision = nextFundingRetry({ code: result.code, startedAtMs, nowMs: Date.now(), active: runId.current === id, finality, waitingForFunding: waiting });
         if (!decision.retry) break;
+        if (result.code === FUNDING_NOT_CONFIRMED) {
+          waiting = true;
+          lastFinality = finality;
+        }
         const { confirmations, required } = confirmationsFrom(result.details);
-        setClaimMessage(fundingWaitMessage(confirmations, required, finality));
+        setClaimMessage(
+          transient
+            ? `${fundingWaitMessage(null, null, finality)} (The last check couldn't reach the provider; still waiting.)`
+            : fundingWaitMessage(confirmations, required, finality),
+        );
         await waitVisible(decision.delayMs, () => runId.current === id, startedAtMs + fundingRetryPolicy(finality).budgetMs);
         if (runId.current !== id) break;
         result = await attemptClaimOnce(input);
       }
       setClaimMessage(result.reason);
       const record = loadClaimRecord(input.transferId, input.ownerUserId);
-      setState((st) => ({ ...st, claimPending: claimPendingFor(record, st.claimReady) }));
+      setState((st) => ({ ...st, claimPending: claimPendingFor(record, st.claimReady), claimSubmission: claimSubmissionOf(record) }));
       return result;
     },
     [attemptClaimOnce],

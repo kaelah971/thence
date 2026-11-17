@@ -69,7 +69,7 @@ const AUTHORIZED_STATUSES: ReadonlySet<string> = new Set([...BOUND_STATUSES].fil
 
 /** Statuses a transfer may hold without any transition (creation states). */
 /** Same-state annotation rows (not hops). */
-const ANNOTATION_REASONS: ReadonlySet<string> = new Set(["SOURCE_EVIDENCE_RECORDED", "HOST_SWAP_HINT_RECORDED"]);
+const ANNOTATION_REASONS: ReadonlySet<string> = new Set(["SOURCE_EVIDENCE_RECORDED", "HOST_SWAP_HINT_RECORDED", "CLAIM_ATTEMPT_REPORTED"]);
 const INITIAL_STATUSES: ReadonlySet<string> = new Set(["DRAFT", "QUOTED"]);
 
 function proofComplete(proof: ConsistencySnapshot["proof"]): boolean {

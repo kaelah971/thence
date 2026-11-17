@@ -1,0 +1,66 @@
+{
+  "_note": "Public Satora responses for swap 347deeb2 (incident f1ca0926), captured 2026-11-16T19:59:43.061Z. No secrets exist in these responses; bolt11 removed. Used by tests/arbitrum-claim-sdk-harness.test.ts with throwaway keys.",
+  "swap": {
+    "direction": "lightning_to_evm",
+    "id": "347deeb2-e5ec-42ed-a846-d835b1a4eea1",
+    "status": "clientfundedserverrefunded",
+    "fee_sats": 9,
+    "hash_lock": "0x81bec78513452b472e01c100fdd1ca3a9c2956d4eb113d40a7fd8c023084b1a1",
+    "bolt11_invoice": "lnbc-redacted",
+    "invoice_expires_at": 1794857101,
+    "evm_fund_txid": "0xddba0f9a2e387a4b27909620043c11bade36dbb06f242e2bd40ece0889e3b0b6",
+    "evm_claim_txid": "0xb3c31d2f6270350fc324d8260fc594a16e94d93841343f336476ed396629f318",
+    "network": "bitcoin",
+    "created_at": "2026-11-16T17:55:01.637877Z",
+    "chain": "ARBITRUM",
+    "evm_chain_id": 42161,
+    "client_evm_address": "0xaE3Dd68638C7326Ad3fD2C4c9201b6437f4DfCe7",
+    "target_evm_address": "0x15451254A70e5bD6FEcA12447c42DCc9B26f3947",
+    "evm_htlc_address": "0xf12A26a6CEfc1F5a0772fAf09F94c5e5662a3948",
+    "evm_htlc_version": 6,
+    "evm_htlc_kind": "erc20",
+    "evm_coordinator_address": "0xdb76F29f1d04D1202f56a34549869b070DFcBfF0",
+    "server_evm_address": "0x5ce278AAec6d9fa67bFcaF98512fE5175dFEebac",
+    "evm_refund_locktime": 1794855301,
+    "wbtc_address": "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40",
+    "evm_expected_sats": "4640216898491",
+    "source_token": {
+      "token_id": "btc",
+      "symbol": "BTC",
+      "chain": "Lightning",
+      "name": "Bitcoin (Lightning)",
+      "decimals": 8
+    },
+    "target_token": {
+      "token_id": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "symbol": "USDC",
+      "chain": "42161",
+      "name": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "decimals": 6
+    },
+    "target_amount": "300000",
+    "source_amount": "473"
+  },
+  "dexCalldataFund": {
+    "chain": "42161",
+    "payload": {
+      "kind": "evm",
+      "calls": [
+        {
+          "target": "0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40",
+          "data": "0x095ea7b3000000000000000000000000e592427a0aece92de3edee1f18e0157c0586156400000000000000000000000000000000000000000000000000000438627adbbb",
+          "value": "0"
+        },
+        {
+          "target": "0xe592427a0aece92de3edee1f18e0157c05861564",
+          "data": "0xc04b8d59000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000db76f29f1d04d1202f56a34549869b070dfcbff0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000000000000000000000000000000000000000000000000438627adbbb00000000000000000000000000000000000000000000000000000000000484d600000000000000000000000000000000000000000000000000000000000000426c84a8f1c29108f47a79964b5fe888d4f4d0de400001f42f2a2543b76a4166549f7aab2e75bef0aefc5b0f0001f4af88d065e77c8cc2239327c5edb3a432268e5831000000000000000000000000000000000000000000000000000000000000",
+          "value": "0"
+        }
+      ]
+    },
+    "expected_amount_in": "4640216898491",
+    "estimated_amount_out": "296150",
+    "estimated_settlement_seconds": 1,
+    "router": "uniswap_v3"
+  }
+}

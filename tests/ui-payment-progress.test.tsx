@@ -49,7 +49,8 @@ import { ForegroundRefresh, FOREGROUND_REFRESH_SPACING_MS } from "@/ui/component
 import { resetPaymentTrackersForTests } from "@/ui/lib/payment-tracker";
 import { useApiResource } from "@/ui/lib/resource";
 import { createMemoryVault, RECOVERY_VAULT_VERSION } from "@/ui/lib/recovery-vault";
-import { FINISH_HEADLINE, paymentProgress, VERIFYING_HEADLINE } from "@/ui/lib/payment-progress";
+import { FINISH_HEADLINE, paymentProgress, verifyingHeadline } from "@/ui/lib/payment-progress";
+const VERIFYING_HEADLINE = verifyingHeadline("Polygon");
 import { pillLabel } from "@/ui/lib/status";
 
 const ID = INCIDENT.transfer.id;
@@ -157,7 +158,7 @@ describe("payment progress model — one message per state", () => {
   });
 
   it("claim submitted here: verifying, no second tap — even while the provider still says funded", () => {
-    const v = paymentProgress({ ...base, transferStatus: "CLAIMING", phase: "finishing", claimPending: true });
+    const v = paymentProgress({ ...base, transferStatus: "CLAIMING", phase: "finishing", claimPending: true, claimSubmission: "submitted" });
     expect(v.headline).toBe(VERIFYING_HEADLINE);
     expect(v.action).toBe("verifying");
     expect(v.steps?.map((s) => s.state)).toEqual(["done", "done", "current", "upcoming"]);

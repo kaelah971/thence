@@ -338,10 +338,13 @@ async function reconcileClaim(p: Pay, runTag: string): Promise<Awaited<ReturnTyp
 
 beforeAll(async () => {
   if (!LIVE) return;
-  for (const key of ["THENCE_ENABLED_ROUTES", "THENCE_ROUTE_TOKENS_JSON", "THENCE_EVM_RPCS_JSON", "THENCE_SETTLEMENT_FINALITY_JSON"]) {
+  for (const key of ["THENCE_ENABLED_ROUTES", "THENCE_ROUTE_TOKENS_JSON", "THENCE_EVM_RPCS_JSON", "THENCE_SETTLEMENT_FINALITY_JSON", "THENCE_CLAIM_EXECUTION_CANARY"]) {
     savedEnv[key] = process.env[key];
   }
   process.env.THENCE_ENABLED_ROUTES = "usdc-arbitrum";
+  // f1ca0926: Arbitrum claim paths are unproven and closed by default; this
+  // lifecycle suite runs as an explicit owner canary (see arbitrum-claim-execution.test.ts).
+  process.env.THENCE_CLAIM_EXECUTION_CANARY = "42161:6,42161:7";
   process.env.THENCE_ROUTE_TOKENS_JSON = JSON.stringify({ "usdc-arbitrum": NATIVE_USDC });
   process.env.THENCE_EVM_RPCS_JSON = JSON.stringify({ [String(ARBITRUM_CHAIN_ID)]: "https://fixture.invalid" });
   process.env.THENCE_SETTLEMENT_FINALITY_JSON = JSON.stringify({ [String(ARBITRUM_CHAIN_ID)]: { mode: "finalized", confirmations: 1 } });
@@ -548,6 +551,29 @@ describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated dat
     expect((await getDb().select().from(transferProofs).where(eq(transferProofs.transferId, p.id))).every((row) => row.verifiedAt === null)).toBe(true);
     expect((await getDb().select().from(transferTransitions).where(and(eq(transferTransitions.transferId, p.id), eq(transferTransitions.toStatus, "DELIVERED")))).length).toBe(0);
   }, 180_000);
+
+  it("f1ca0926: without an owner canary, a new Arbitrum payment is refused before any quote, swap or NIM (fail closed)", async () => {
+    const saved = process.env.THENCE_CLAIM_EXECUTION_CANARY;
+    delete process.env.THENCE_CLAIM_EXECUTION_CANARY;
+    try {
+      const wallet = fixtureWallet();
+      const { cookie } = await loginAs(client("login-gate"), (id) => createdUserIds.push(id), wallet);
+      const res = await createTransfer(
+        postJson(
+          "http://localhost/api/transfers",
+          { routeId: "usdc-arbitrum", targetAmountAtomic: TARGET_AMOUNT, idempotencyKey: `a3a-${RUN}-gate`, direct: { asset: "USDC", network: "Arbitrum", address: RECIPIENT } },
+          { cookie, ...client("gate") },
+        ),
+      );
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("CLAIM_PATH_UNPROVEN");
+      expect(body.message).toMatch(/no NIM was spent/);
+    } finally {
+      if (saved === undefined) delete process.env.THENCE_CLAIM_EXECUTION_CANARY;
+      else process.env.THENCE_CLAIM_EXECUTION_CANARY = saved;
+    }
+  });
 
   it("does not deliver from provider success without a matching on-chain settlement", async () => {
     const p = await createAuthorizedPayment("provider-only");

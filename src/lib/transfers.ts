@@ -38,6 +38,8 @@ import {
 import { pairForRouteId } from "@/domain/routes";
 import { checkDestination, displayNameSchema, readJsonBody, rejectForbiddenKeys } from "@/lib/recipients";
 import { createQuote } from "@/lib/quotes";
+import { CLAIM_PATH_UNPROVEN_MESSAGE, isNetworkClaimExecutable } from "@/lib/claim-execution";
+import { getEnv, parseEnabledRoutes } from "@/lib/env";
 import { recordedReturn, type RecordedNimReturn } from "@/lib/nim-return-record";
 import { assertRequestPayable } from "@/lib/request-payment";
 
@@ -389,6 +391,13 @@ export async function createTransfer(
     const ownerAddress = await getOwnerAddress(userId);
     const config = getPilotConfig();
     assertPilotIntent({ routeId: intent.routeId, targetAmountAtomic: intent.targetAmountAtomic, ownerAddress }, config);
+    // f1ca0926: no new payment on a network whose claim mechanism has not
+    // delivered. Existing transfers are unaffected (claim paths are not gated).
+    // Applied only to an ENABLED route, so unknown/disabled routes keep their
+    // existing 400 UNKNOWN_ROUTE / ROUTE_DISABLED answers from the quote step.
+    if (parseEnabledRoutes(getEnv().THENCE_ENABLED_ROUTES).includes(intent.routeId) && !isNetworkClaimExecutable(intent.network)) {
+      throw new AuthError(409, "CLAIM_PATH_UNPROVEN", CLAIM_PATH_UNPROVEN_MESSAGE);
+    }
     // F8.2 KEY 2: database kill switch. Checked BEFORE the live quote so a
     // stopped pilot never reaches the provider, and before budget/exposure so
     // a stopped pilot always reports PILOT_DISABLED ("payments temporarily

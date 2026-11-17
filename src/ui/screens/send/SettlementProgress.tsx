@@ -89,6 +89,7 @@ export function usePaymentProgress({
         providerStatus: state.providerStatus,
         claimReady: state.claimReady,
         claimPending: state.claimPending === true,
+        claimSubmission: state.claimSubmission ?? null,
         identityMismatch: state.identityMismatch === true,
         verifyVerdict: state.verifyVerdict,
         receiptReady: state.receipt !== null,

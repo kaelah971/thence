@@ -143,6 +143,12 @@ const envSchema = z.object({
   THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE: z.coerce.number().int().positive().default(120),
   /** Comma-separated list of enabled route ids, e.g. "usdt-polygon,usdc-base". Empty = none enabled. */
   THENCE_ENABLED_ROUTES: z.string().default(""),
+  /**
+   * Owner-approved canary opt-in for an UNPROVEN claim path, as
+   * "chainId:htlcVersion" entries (e.g. "42161:7"). Empty = only paths proven
+   * in src/lib/claim-execution.ts accept new payments.
+   */
+  THENCE_CLAIM_EXECUTION_CANARY: z.string().max(200).default(""),
   /** Verified token addresses per route id (see above). Empty = none verified. */
   THENCE_ROUTE_TOKENS_JSON: routeTokenMapSchema,
   /** Quote validity window in seconds. */
@@ -296,6 +302,7 @@ export function validateEnv(source: Record<string, string | undefined> = process
     THENCE_PUBLIC_PROOFS_ENABLED: source["THENCE_PUBLIC_PROOFS_ENABLED"],
     THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE: source["THENCE_PUBLIC_PROOFS_READ_RATE_PER_MINUTE"],
     THENCE_ENABLED_ROUTES: source["THENCE_ENABLED_ROUTES"],
+    THENCE_CLAIM_EXECUTION_CANARY: source["THENCE_CLAIM_EXECUTION_CANARY"],
     THENCE_ROUTE_TOKENS_JSON: source["THENCE_ROUTE_TOKENS_JSON"],
     THENCE_QUOTE_TTL_SECONDS: source["THENCE_QUOTE_TTL_SECONDS"],
     THENCE_CHALLENGE_TTL_SECONDS: source["THENCE_CHALLENGE_TTL_SECONDS"],
