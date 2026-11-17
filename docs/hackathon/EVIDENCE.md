@@ -1,6 +1,6 @@
 # Thence: capability evidence (verified vs. off vs. planned)
 
-Status as of 2026-11-06. Every claim made in the demo or submission must map to a row below.
+Status as of 2026-11-06; Arbitrum row updated 2026-11-17. Every claim made in the demo or submission must map to a row below.
 
 ## Legend
 
@@ -27,7 +27,7 @@ Status as of 2026-11-06. Every claim made in the demo or submission must map to 
 | Full approve → fund → Finish delivery → Delivered UI | VERIFIED-TEST (E2E, WebKit + Chromium) | `e2e/payment.e2e.ts`, screenshots in `docs/pr-assets/ux-mobile-payment-progress/` (simulated data) |
 | Public payment mode (any wallet, any provider-allowed amount) | **VERIFIED-MAINNET** (live since 2026-11-06 21:23Z; first public payment `1dfd7782…` delivered) | `docs/PUBLIC_PAYMENTS.md`, `tests/public-payments-mode.test.ts`. Production mode is `off`. |
 | Emergency switch | VERIFIED-MAINNET | Switched on and off around the 2026-11-05 payment; ENABLED for public payments since 2026-11-06 |
-| USDC on Arbitrum | **ENABLED, NOT YET DELIVERED** (updated 2026-11-17) | Enabled in production with native USDC and pinned HTLC v6/v7 (`src/lib/settlement.ts`). Two mainnet attempts did not deliver and were refunded on the provider side; hardening is in open PRs #84/#85 |
+| NIM → Lightning → Satora → **USDC on Arbitrum**, delivered | **VERIFIED-MAINNET** (1 controlled payment, 2026-11-17) | Sponsored ERC-4337 claim confirmed seconds after Finish delivery and verified at L1 finality. Listed in the public proofs feed with its NIM source verified. Native USDC, pinned HTLC v6/v7 (`src/lib/settlement.ts`). Two earlier attempts did not deliver and were refunded on the provider side; the fixes shipped in PRs #84/#85 |
 | USDT routes; Ethereum / Base routes | IMPLEMENTED-OFF | In `src/domain/routes.ts`, not enabled or token-verified in production |
 | Thence service fee | NOT BUILT | None is charged |
 | Push notifications, multi-device recovery | NOT BUILT | — |
@@ -79,7 +79,8 @@ Wallets, hashes, block numbers, exact amounts and absolute times are deliberatel
   confirmations."
 - ✅ "Payments are live for any Nimiq Pay wallet; a payment completes in about two minutes."
 - ✅ "Delivered only after the USDC transfer is verified on-chain at Polygon finality."
-- ❌ Don't say "supports USDT", "supports Base", "Arbitrum delivery is proven", "instant", or
-  "zero fees".
+- ✅ "Delivered on Arbitrum mainnet too: one controlled payment, verified at Ethereum finality."
+- ❌ Don't say "supports USDT", "supports Base", "Arbitrum is battle-tested" (one delivery so far),
+  "instant", or "zero fees".
 - ❌ Don't present the simulated E2E screenshots as a real payment. Label them "simulated test
   environment".

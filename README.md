@@ -27,12 +27,12 @@
 | | |
 |---|---|
 | **1. Open the app** | [paywiththence.cv](https://paywiththence.cv) inside **Nimiq Pay** (it uses the real Nimiq Pay wallet; a normal browser can't approve payments). |
-| **2. See real deliveries** | [Live proofs feed](https://paywiththence.cv/api/proofs): **7 verified NIM-funded USDC deliveries on Polygon mainnet**, each checked on-chain at finality. |
+| **2. See real deliveries** | [Live proofs feed](https://paywiththence.cv/api/proofs): **9 verified NIM-funded USDC deliveries on mainnet: 8 on Polygon and 1 on Arbitrum**, each checked on-chain at finality. |
 | **3. Read the evidence** | [Capability-by-capability evidence](docs/hackathon/EVIDENCE.md) · [first mainnet delivery](docs/PILOT_2026-11-05_FIRST_DELIVERY.md). |
 | **4. Check the Nimiq integration** | [Mini Apps SDK calls used in the payment path](#real-nimiq-pay-integration), with source links. |
 | **5. Check the engineering** | [Architecture](docs/ARCHITECTURE.md) · [state-machine atlas](docs/architecture/STATE_MACHINE_ATLAS.md) · [reliability work in progress](#reliability-and-security-engineering). |
 
-**Current status:** Polygon is live and **demonstrated with real mainnet deliveries**. Arbitrum is **enabled but not yet demonstrated**: no Arbitrum USDC delivery has completed yet ([details](#supported-chains-and-current-status)).
+**Current status:** both routes are live and **demonstrated with real mainnet deliveries**. On 2026-11-17, controlled tests through the hardened claim path delivered USDC on **Polygon** and, for the first time, on **Arbitrum** ([details](#supported-chains-and-current-status)).
 
 ## What is Thence?
 
@@ -91,7 +91,7 @@ No exchange account, bridge or manual swap for the sender. This does **not** mea
 | Independent on-chain delivery verification and a public proofs feed | **Deployed** |
 | Short-delivery reporting (exact received vs requested) | **Deployed** |
 | Refund recognition, NIM-return verification, server reconciliation, emergency stop | **Deployed** |
-| Arbitrum claim hardening, claim diagnostics, stricter delivery proofs | **Implemented in open PRs [#84](https://github.com/kaelah971/thence/pull/84) / [#85](https://github.com/kaelah971/thence/pull/85), not deployed** |
+| Arbitrum claim hardening, claim diagnostics, stricter delivery proofs ([#84](https://github.com/kaelah971/thence/pull/84), [#85](https://github.com/kaelah971/thence/pull/85)) | **Deployed** (2026-11-17) |
 
 ## Real Nimiq Pay integration
 
@@ -111,15 +111,17 @@ This is wallet and payment infrastructure in the actual transaction path, not ju
 |---|---|---|
 | Implemented | ✅ | ✅ |
 | Enabled in production | ✅ | ✅ |
-| Delivered on mainnet | ✅ **7 verified deliveries** ([proofs](https://paywiththence.cv/api/proofs)) | ❌ **Not yet.** Two attempts did not deliver; both were refunded on the provider side |
+| Delivered on mainnet | ✅ **8 verified deliveries** ([proofs](https://paywiththence.cv/api/proofs)) | ✅ **1 verified delivery** (2026-11-17, [proofs](https://paywiththence.cv/api/proofs)) |
 | Simulated end-to-end tests | ✅ | ✅ (claim path through the real installed SDK, no money) |
-| Pending | Live run of the hardened claim path in PRs #84/#85 | A first verified live delivery |
+| Hardened claim path (#84/#85) run live | ✅ 2026-11-17, delivered 0.300158 USDC for 0.30 requested | ✅ 2026-11-17, delivered 0.301553 USDC for 0.30 requested |
 
-**What happened on Arbitrum:**
+**How Arbitrum got to its first delivery:**
 - The first attempt used a provider contract version that Thence did not yet trust, so Thence correctly refused to claim. That was fixed in [#83](https://github.com/kaelah971/thence/pull/83).
 - The second attempt's in-browser claim never reached the chain. The exact browser error wasn't recorded at the time.
-- PRs #84/#85 make every claim attempt observable (which step failed, with codes, no secrets) and keep NIM recoverable.
 - In both cases the provider refunded its side. The payer's NIM returns through the Nimiq HTLC refund after its timeout.
+- PRs #84/#85 made every claim attempt observable (which step failed, with codes, no secrets) and added the guards listed [below](#reliability-and-security-engineering).
+- **2026-11-17, after the deploy:** the sponsored ERC-4337 claim was confirmed on Arbitrum seven seconds after the Finish delivery tap. Thence verified the USDC transfer at Ethereum (L1) finality about 20 minutes later. The payment is in the public proofs feed with its NIM source transaction verified.
+- One earlier attempt that day was rejected inside Nimiq Pay before any NIM moved. It expired and was closed with no funds at risk.
 
 USDT and other networks (Base, Ethereum) are **not enabled**. Network options in the Mini App framework don't mean Thence supports them.
 
@@ -130,9 +132,10 @@ The proof is USDC reaching a recipient on-chain, not a green status label.
 | Evidence | Details |
 |---|---|
 | **First mainnet payment (Nov 5, 2026)** | A Nimiq Pay-funded transfer delivered at least 0.30 USDC on Polygon. [Pilot report](docs/PILOT_2026-11-05_FIRST_DELIVERY.md). |
-| **Public proofs feed** | [7 verified Polygon deliveries](https://paywiththence.cv/api/proofs) (Nov 6–14, 0.30 to 2.50 USDC). Each one was checked against the NIM source transaction on the Nimiq chain and the USDC transfer at Polygon finality. |
+| **Public proofs feed** | [9 verified deliveries](https://paywiththence.cv/api/proofs) (Nov 6–17, 0.30 to 2.50 USDC): 8 on Polygon and 1 on Arbitrum. Each one was checked against the NIM source transaction on the Nimiq chain and the USDC transfer at destination-chain finality. |
 | **Short delivery, reported honestly** | One delivery received 0.999556 of the 1.00 USDC requested. It is labelled `DELIVERED_SHORT` with both amounts, never as a full delivery ([R7](docs/R7_SHORT_DELIVERY.md)). |
 | **Faster settlement (Nov 7)** | Polygon verification moved from 256 confirmations to the `finalized` block tag, with fail-closed guards ([details](docs/POLYGON_FINALITY.md)). |
+| **Both routes after the hardening deploy (Nov 17)** | Controlled 0.30 USDC payments through the deployed #84/#85 claim path: **Polygon** via Satora's gasless relay (0.300158 USDC) and **Arbitrum** via a sponsored ERC-4337 UserOperation (0.301553 USDC). Both were verified at finality, with secret-free claim reports. |
 
 Recipient addresses beyond the public proofs, payment hashes and secrets are not published. A successful payment is not a guarantee that every future payment completes without delay.
 
@@ -177,12 +180,12 @@ flowchart LR
 
 ## Reliability and security engineering
 
-The two failed Arbitrum attempts led to a systematic hardening effort. It sits in two open pull requests and is **not merged or deployed yet**. CI on both is green at the commits below. The review so far has been **internal** (developer- and AI-assisted adversarial review), not an independent third-party audit.
+The two failed Arbitrum attempts led to a systematic hardening effort. Both pull requests were **merged and deployed on 2026-11-17**, and the same day controlled payments on both chains delivered through the hardened path. The review so far has been **internal** (developer- and AI-assisted adversarial review), not an independent third-party audit.
 
 | PR | Status | What it adds |
 |---|---|---|
-| [#84](https://github.com/kaelah971/thence/pull/84) | Open · [all checks green](https://github.com/kaelah971/thence/actions/runs/44034672177) at `7a26fe9` | Claim paths must be proven before new payments use them. Claim outcomes are classified from evidence: submitted, not sent, or unknown. Secret-free claim diagnostics. Correct network wording. Finality waits that survive brief provider errors. |
-| [#85](https://github.com/kaelah971/thence/pull/85) | Draft · [all six checks green](https://github.com/kaelah971/thence/actions/runs/44092025907), including browser E2E, at `d0ef632` | Payment-integrity audit fixes, listed below. |
+| [#84](https://github.com/kaelah971/thence/pull/84) | Merged and deployed · [all checks green](https://github.com/kaelah971/thence/actions/runs/44034672177) at `7a26fe9` | Claim paths must be proven before new payments use them. Claim outcomes are classified from evidence: submitted, not sent, or unknown. Secret-free claim diagnostics. Correct network wording. Finality waits that survive brief provider errors. |
+| [#85](https://github.com/kaelah971/thence/pull/85) | Merged and deployed · [all six checks green](https://github.com/kaelah971/thence/actions/runs/44092025907), including browser E2E | Payment-integrity audit fixes, listed below. |
 
 **Fixes in #85:**
 - **Swap terms:** provider terms are bound before any NIM moves.
@@ -205,7 +208,7 @@ The two failed Arbitrum attempts led to a systematic hardening effort. It sits i
 - Adversarial and fault-injection tests that run the **real installed Satora SDK** without moving money.
 - Full release-shard and browser E2E verification.
 
-Green CI shows the application behaves correctly in simulation. It is **not** proof of live payment execution. That still requires controlled mainnet tests.
+Green CI shows the application behaves correctly in simulation. On its own it is not proof of live payment execution; the live evidence is the controlled mainnet deliveries above.
 
 ## Testing and reproducibility
 
@@ -235,7 +238,7 @@ Automated E2E tests use **simulated** providers and chains. The mainnet deliveri
 
 ## Safety, limits and transparency
 
-- **Routes:** USDC on Polygon (demonstrated) and USDC on Arbitrum (enabled, not yet demonstrated). Nothing else is enabled.
+- **Routes:** USDC on Polygon and USDC on Arbitrum, both demonstrated on mainnet. Nothing else is enabled.
 - **Payment approval:** Nimiq Pay asks the sender to authorize every payment; Thence never initiates one silently.
 - **Exact receive, measured honestly:** quotes target the exact amount the recipient should receive. The final DEX execution can land slightly above or below it, within the provider's limits. Thence reports the amount measured on-chain, and anything below the request is labelled `DELIVERED_SHORT` with both amounts.
 - **Time-sensitive delivery:** Finish delivery must happen before the provider's claim deadline (set when the swap is created). The app shows the time left, warns in the last 15 minutes and offers no claim in the last 5 ([`claim-deadline.ts`](src/domain/claim-deadline.ts)).

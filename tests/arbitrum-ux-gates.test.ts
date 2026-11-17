@@ -86,17 +86,34 @@ describe("route-aware progress copy", () => {
 
   it("names Arbitrum and its finality wait after Finish delivery", () => {
     const v = paymentProgress({ ...base, verifyVerdict: "INSUFFICIENT_CONFIRMATIONS", network: "Arbitrum" });
-    expect(v.headline).toBe("Delivery submitted — verifying on Arbitrum");
-    expect(v.body).toMatch(/Seen on Arbitrum\. Waiting for finality — usually about 20 minutes/);
+    // The verifier matched the transfer to their wallet; only L1 finality is pending.
+    expect(v.headline).toBe("Received in their wallet — final in about 20 min");
+    expect(v.body).toBe("The USDC is in their wallet on Arbitrum. Thence confirms it once Ethereum finalizes it, usually about 20 minutes. Nothing else to do — you can leave this screen. Don't pay again.");
+    expect(v.tone).toBe("done");
+    expect(v.action).toBe("verifying"); // still not Delivered: no receipt until VERIFIED
     expect(JSON.stringify(v)).not.toMatch(/Polygon/);
     const verify = v.steps?.find((s) => s.key === "verify");
-    expect(verify).toMatchObject({ label: "Verifying on Arbitrum", detail: "Waiting for Ethereum finality." });
+    expect(verify).toMatchObject({ label: "Received in their wallet", detail: "Final after Ethereum finality.", state: "current" });
+    expect(v.steps?.find((s) => s.key === "delivered")?.state).toBe("upcoming");
+  });
+
+  it("claim not yet mined (PENDING) never says received", () => {
+    const v = paymentProgress({ ...base, verifyVerdict: "PENDING", network: "Arbitrum" });
+    expect(v.headline).toBe("Delivery submitted — verifying on Arbitrum");
+    expect(v.body).toMatch(/Seen on Arbitrum\. Waiting for finality — usually about 20 minutes/);
+    expect(v.steps?.find((s) => s.key === "verify")).toMatchObject({ label: "Verifying on Arbitrum", detail: "Waiting for Ethereum finality." });
+  });
+
+  it("an authorization without submission evidence never says received", () => {
+    const v = paymentProgress({ ...base, providerStatus: "serverfunded", claimSubmission: "unknown", verifyVerdict: "INSUFFICIENT_CONFIRMATIONS", network: "Arbitrum" });
+    expect(v.headline).not.toMatch(/Received/);
   });
 
   it("keeps Polygon wording unchanged by default", () => {
     const v = paymentProgress({ ...base, verifyVerdict: "INSUFFICIENT_CONFIRMATIONS" });
-    expect(v.headline).toBe(VERIFYING_HEADLINE);
-    expect(v.body).toBe("Seen on Polygon. Waiting for confirmations — usually about 10 minutes. You can leave this screen.");
+    expect(v.headline).toBe("Received in their wallet — final in about 10 min");
+    expect(v.body).toBe("The USDC is in their wallet on Polygon. Thence confirms it once Polygon has enough confirmations, usually about 10 minutes. Nothing else to do — you can leave this screen. Don't pay again.");
+    expect(paymentProgress({ ...base, verifyVerdict: "PENDING" }).headline).toBe(VERIFYING_HEADLINE);
     expect(timelineFor("CLIENT_FUNDED").find((s) => s.key === "finish")?.detail).toBe("Locking the USDC on Polygon first.");
   });
 

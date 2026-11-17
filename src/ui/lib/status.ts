@@ -119,6 +119,8 @@ export interface TimelineContext {
   /** Submission evidence exists (hash / provider claim), not just an authorization. */
   claimEvidence?: boolean;
   awaitingFinality?: boolean;
+  /** The verifier matched the transfer to their wallet; only finality is pending (copy only). */
+  received?: boolean;
   /** The NIM source transaction is independently verified on-chain (copy only). */
   sourceVerified?: boolean;
   /** Settlement network for copy only (defaults to Polygon). */
@@ -182,8 +184,10 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
             : "Waiting for your tap.",
     },
     verify: {
-      label: status === "CLAIMING" && !ctx.claimEvidence && !ctx.claimNotSent ? `Checking ${network}` : `Verifying on ${network}`,
-      detail: ctx.awaitingFinality
+      label: ctx.received ? "Received in their wallet" : status === "CLAIMING" && !ctx.claimEvidence && !ctx.claimNotSent ? `Checking ${network}` : `Verifying on ${network}`,
+      detail: ctx.received
+        ? network === "Arbitrum" ? "Final after Ethereum finality." : "Final after confirmations."
+        : ctx.awaitingFinality
         ? network === "Arbitrum" ? "Waiting for Ethereum finality." : "Waiting for confirmations."
         : `Usually ${verifyEstimate(network)}.`,
     },

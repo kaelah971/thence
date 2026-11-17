@@ -49,8 +49,9 @@ import { ForegroundRefresh, FOREGROUND_REFRESH_SPACING_MS } from "@/ui/component
 import { resetPaymentTrackersForTests } from "@/ui/lib/payment-tracker";
 import { useApiResource } from "@/ui/lib/resource";
 import { createMemoryVault, RECOVERY_VAULT_VERSION } from "@/ui/lib/recovery-vault";
-import { FINISH_HEADLINE, paymentProgress, verifyingHeadline } from "@/ui/lib/payment-progress";
+import { FINISH_HEADLINE, paymentProgress, receivedHeadline, verifyingHeadline } from "@/ui/lib/payment-progress";
 const VERIFYING_HEADLINE = verifyingHeadline("Polygon");
+const RECEIVED_HEADLINE = receivedHeadline("Polygon");
 import { pillLabel } from "@/ui/lib/status";
 
 const ID = INCIDENT.transfer.id;
@@ -166,8 +167,8 @@ describe("payment progress model — one message per state", () => {
 
   it("finality pending (the 10:34 state): says it is waiting for confirmations, not 'almost there'", () => {
     const v = paymentProgress({ ...base, transferStatus: "CLAIMING", phase: "finishing", providerStatus: "serverredeemed", claimReady: false, verifyVerdict: "INSUFFICIENT_CONFIRMATIONS" });
-    expect(v.headline).toBe(VERIFYING_HEADLINE);
-    expect(v.body).toMatch(/Waiting for confirmations/);
+    expect(v.headline).toBe(RECEIVED_HEADLINE);
+    expect(v.body).toMatch(/in their wallet on Polygon.*enough confirmations/);
     expect(v.action).toBe("verifying");
   });
 
@@ -242,8 +243,8 @@ describe("Send: approval → funded → claim needed → claim submitted → fin
     api.set(ID, { status: "CLAIMING", providerStatus: "serverredeemed", observedAt: FUNDED_SEEN });
     api.settlementVerdict = "INSUFFICIENT_CONFIRMATIONS";
     await advance(60_000);
-    expectOnlyHeadline(VERIFYING_HEADLINE);
-    expect(text()).toMatch(/Waiting for confirmations/);
+    expectOnlyHeadline(RECEIVED_HEADLINE);
+    expect(text()).toMatch(/enough confirmations/);
     await advance(5 * 60_000);
     expect(delivered()).toBe(false); // no false Delivered while finality is pending
     expect(finishButtons()).toHaveLength(0); // no repeat claim offered
@@ -278,7 +279,7 @@ describe("Send: approval → funded → claim needed → claim submitted → fin
 
     renderSend(); // fresh mount = reload: nothing restored from React state
     await advance(3_000);
-    expectOnlyHeadline(VERIFYING_HEADLINE);
+    expectOnlyHeadline(RECEIVED_HEADLINE);
     expect(finishButtons()).toHaveLength(0);
     expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
   });
@@ -289,7 +290,7 @@ describe("Send: approval → funded → claim needed → claim submitted → fin
     api.settlementVerdict = "INSUFFICIENT_CONFIRMATIONS";
     renderSend();
     await advance(3_000);
-    expectOnlyHeadline(VERIFYING_HEADLINE);
+    expectOnlyHeadline(RECEIVED_HEADLINE);
     await setVisible(false); // owner switches to their wallet app
     const reads = api.count("GET", "/reconciliation");
     api.settlementVerdict = "VERIFIED";
@@ -349,7 +350,7 @@ describe("Activity reflects the verified state without a stale snapshot", () => 
     const row = screen.getAllByRole("button").find((b) => /They/.test(b.textContent ?? ""));
     fireEvent.click(row!);
     await advance(3_000);
-    expect(screen.getAllByText(VERIFYING_HEADLINE).length).toBe(1);
+    expect(screen.getAllByText(RECEIVED_HEADLINE).length).toBe(1);
     expect(finishButtons()).toHaveLength(0);
     expect(screen.queryByText("Still on its way")).toBeNull();
 

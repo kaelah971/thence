@@ -18,7 +18,7 @@ import { needsOwnerClaim, type SettlementVerdict } from "./settlement-client";
 import { timelineFor, type TimelineStep } from "./status";
 import { CLAIM_UNSAFE_WINDOW_MS, claimWindowAt } from "@/domain/claim-deadline";
 import { STALLED_HEADLINE, stalledBody } from "./handoff-risk";
-import { verifyEstimate, type SettlementNetwork } from "./network-copy";
+import { finalityShort, verifyEstimate, type SettlementNetwork } from "./network-copy";
 import { REDEEMED_STATUSES } from "@/domain/provider-status";
 
 export type NextAction =
@@ -176,6 +176,15 @@ const FINALITY_PENDING: ReadonlySet<string> = new Set(["PENDING", "INSUFFICIENT_
 export function verifyingHeadline(network: SettlementNetwork): string {
   return `Delivery submitted — verifying on ${network}`;
 }
+/**
+ * The settlement verifier returns INSUFFICIENT_CONFIRMATIONS only after it has
+ * matched the claim receipt: the ERC-20 Transfer to the destination, the bound
+ * SwapRedeemed log and the reorg guard. The USDC is in their wallet; only
+ * finality is outstanding. Never "Delivered" until the verifier says VERIFIED.
+ */
+export function receivedHeadline(network: SettlementNetwork): string {
+  return `Received in their wallet — final in ${finalityShort(network)}`;
+}
 export const FINISH_HEADLINE = "Action required — Finish delivery";
 
 function isStatus(value: string | null): value is TransferStatus {
@@ -194,11 +203,13 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   const submitted = !notSent && (s.claimPending === true || claimLanded || (status === "CLAIMING" && !s.claimReady));
   // Evidence of an actual submission (never inferred from CLAIMING alone).
   const evidenceSubmitted = claimLanded || s.claimSubmission === "submitted";
+  // Verifier matched the transfer to their wallet; only finality is pending.
+  const received = evidenceSubmitted && s.verifyVerdict === "INSUFFICIENT_CONFIRMATIONS";
   // Handed to Nimiq Pay but the server hasn't recorded it yet: same step, "confirming" wording.
   const stepStatus = status === "AWAITING_NIM_APPROVAL" && s.handedOff === true ? "LIGHTNING_HANDOFF" : status;
   const network = s.network ?? "Polygon";
   const steps = isStatus(stepStatus)
-    ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, claimNotSent: notSent, claimEvidence: evidenceSubmitted, awaitingFinality, sourceVerified: Boolean(s.sourceVerifiedAtMs), network })
+    ? timelineFor(stepStatus as TransferStatus, { claimSubmitted: submitted, claimNotSent: notSent, claimEvidence: evidenceSubmitted, awaitingFinality, received, sourceVerified: Boolean(s.sourceVerifiedAtMs), network })
     : null;
 
   // f1ca0926: the attempt provably sent nothing. Say exactly that.
@@ -283,6 +294,18 @@ export function paymentProgress(s: ProgressInput): ProgressView {
           ? `The delivery was sent but no answer came back. Thence is checking ${network} — don't pay again.`
           : `A delivery attempt was authorized. Thence is checking ${network} for it — don't pay again.`,
         tone: "neutral",
+        action: "verifying",
+        steps,
+      };
+    }
+    if (received) {
+      const wait = network === "Arbitrum"
+        ? "once Ethereum finalizes it, usually about 20 minutes"
+        : "once Polygon has enough confirmations, usually about 10 minutes";
+      return {
+        headline: receivedHeadline(network),
+        body: `The USDC is in their wallet on ${network}. Thence confirms it ${wait}. Nothing else to do — you can leave this screen. Don't pay again.`,
+        tone: "done",
         action: "verifying",
         steps,
       };
