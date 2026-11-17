@@ -450,16 +450,37 @@ describe.skipIf(!LIVE)("read-only reconciliation (mocked provider)", () => {
       const changedLock = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
       expect(changedLock.status).toBe(409);
       expect(((await changedLock.json()) as { error: string }).error).toBe("SWAP_MISMATCH");
-      // Same identity, but the refund receipt names a different HTLC than the
-      // provider's: the refund cannot be attributed and must not release funds.
+      // The settlement contract bound before any NIM moved is identity too
+      // (audit B9): a provider answer naming ANOTHER contract afterwards is
+      // refused as SWAP_MISMATCH before any refund evidence is read.
       mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX, evm_htlc_address: "0x0000000000000000000000000000000000000003" }));
+      const changedContract = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
+      expect(changedContract.status).toBe(409);
+      expect(((await changedContract.json()) as { error: string }).error).toBe("SWAP_MISMATCH");
+      expect((await getDb().select().from(transfers).where(eq(transfers.id, id)))[0]?.status).toBe("AWAITING_NIM_APPROVAL");
+      // Unchanged provider terms, but the refund receipt's event comes from a
+      // different contract than the bound HTLC: the refund cannot be
+      // attributed and must not release funds.
+      const base = refundChain();
+      setSettlementChainForTests({
+        ...base,
+        async getReceipt(...args: Parameters<ChainReads["getReceipt"]>) {
+          const receipt = await base.getReceipt(...args);
+          return receipt ? { ...receipt, logs: receipt.logs.map((log) => ({ ...log, address: "0x0000000000000000000000000000000000000003" })) } : receipt;
+        },
+      });
+      mockSwap(fixtureSwap({ status: "clientfundedserverrefunded", evm_claim_txid: REFUND_TX }));
       try {
         const res = await reconcilePost(postJson(`http://localhost/api/transfers/${id}/reconcile`, {}, { cookie, ...withClient("recon-refund-unverified") }), { params: Promise.resolve({ id }) });
         expect(res.status).toBe(200);
         const body = ((await res.json()) as { reconciliation: { status: string; advanced: boolean; lastError: string | null } }).reconciliation;
         expect(body.status).toBe("AWAITING_NIM_APPROVAL");
         expect(body.advanced).toBe(false);
-        expect(body.lastError).toBe("REFUND_INVALID");
+        // The provider's refund pointer names no event from the bound HTLC, and the
+        // bounded log scan finds none: unattributable, so INCONCLUSIVE (retry
+        // later), never a release.
+        expect(body.lastError).toBe("REFUND_INCONCLUSIVE");
+        expect((await getDb().select().from(transfers).where(eq(transfers.id, id)))[0]?.status).toBe("AWAITING_NIM_APPROVAL");
       } finally {
         setSatoraFetchersForTests(null);
       }

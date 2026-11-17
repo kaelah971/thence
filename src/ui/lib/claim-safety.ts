@@ -1,6 +1,6 @@
 import type { ClaimIntentView } from "@/ui/lib/settlement-client";
 import type { ClaimNetworkGuard } from "@/ui/lib/claim-evidence";
-import { CLAIM_UNSAFE_WINDOW_MS } from "@/domain/claim-deadline";
+import { CLAIM_UNSAFE_WINDOW_MS, minimumClaimOutput } from "@/domain/claim-deadline";
 import { decodeFunctionData, parseAbi, sha256, sliceHex, type Hex } from "viem";
 
 const KERNEL_EXECUTE = parseAbi(["function execute(bytes32 mode, bytes executionCalldata)"]);
@@ -29,7 +29,7 @@ export function claimSafetyGuard(authorized: ClaimIntentView): ClaimNetworkGuard
       const { args } = decodeFunctionData({ abi: REDEEM, data: sliceHex(execution, 52) });
       const [preimage, amount, token, sender, timelock, , sweepToken, minimum, destination] = args;
       checkPreimage(preimage);
-      if (amount !== BigInt(authorized.htlc.lockAmount) || !equal(token, authorized.htlc.lockToken) || !equal(sender, authorized.htlc.refundAddress) || timelock !== BigInt(Date.parse(authorized.claimDeadline) / 1000) || !equal(sweepToken, authorized.htlc.targetToken) || minimum < BigInt(authorized.targetAmountAtomic) || !equal(destination, authorized.destination)) refuse();
+      if (amount !== BigInt(authorized.htlc.lockAmount) || !equal(token, authorized.htlc.lockToken) || !equal(sender, authorized.htlc.refundAddress) || timelock !== BigInt(Date.parse(authorized.claimDeadline) / 1000) || !equal(sweepToken, authorized.htlc.targetToken) || minimum < minimumClaimOutput(BigInt(authorized.targetAmountAtomic)) || !equal(destination, authorized.destination)) refuse();
     } catch { refuse(); }
   };
   return {
@@ -80,7 +80,7 @@ export function claimSafetyGuard(authorized: ClaimIntentView): ClaimNetworkGuard
         if (!swapChecked) refuse();
         const data = await response.clone().json() as Record<string, unknown>;
         const amount = path === "/dex-calldata/fund" ? data["estimated_amount_out"] : data["min_amount_out"];
-        if (typeof amount !== "string" || !/^[1-9][0-9]*$/.test(amount) || BigInt(amount) < BigInt(authorized.targetAmountAtomic)) refuse();
+        if (typeof amount !== "string" || !/^[1-9][0-9]*$/.test(amount) || BigInt(amount) < minimumClaimOutput(BigInt(authorized.targetAmountAtomic))) refuse();
         safeWindow();
         calldataChecked = true;
       }

@@ -287,7 +287,9 @@ describe.skipIf(!LIVE)("P6 server reconciliation (isolated test database)", () =
     }));
     await ageObservations(p.id, 10);
     const run = await runServerReconciliation({ scope: [p.id], leaseName: lease("unverified") });
-    expect(run.errors).toMatchObject({ REFUND_INVALID: 1 });
+    // Audit B9: the provider naming another contract after binding is an identity
+    // mismatch, recorded before any refund evidence is read; nothing is released.
+    expect(run.errors).toMatchObject({ SWAP_MISMATCH: 1 });
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
     expect((await transitionsOf(p.id)).filter((r) => r.terminal)).toHaveLength(0);
   });

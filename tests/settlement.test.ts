@@ -347,7 +347,7 @@ describe.skipIf(!LIVE)(
       const cases: { name: string; receipt: NonNullable<ChainScript["receipt"]> | null; swap: Record<string, unknown>; reason: RegExp }[] = [
         { name: "wrong-recipient", receipt: goodReceipt(5000000n, "0x0000000000000000000000000000000000000002"), swap: {}, reason: /no Transfer event/i },
         { name: "wrong-token", receipt: { ...goodReceipt(), logs: [transferLog("0x0000000000000000000000000000000000000009", EVM_A, 5000000n, 0)] }, swap: {}, reason: /no Transfer event/i },
-        { name: "wrong-chain", receipt: goodReceipt(), swap: { evm_chain_id: 1 }, reason: /different chain/i },
+        { name: "wrong-chain", receipt: goodReceipt(), swap: { evm_chain_id: 1 }, reason: /settlement terms differ from the bound payment/i } /* the chain is a bound term: a provider answer on another chain is refused before the route check */,
         { name: "shortfall", receipt: goodReceipt(4999999n, EVM_A, false), swap: {}, reason: /below the requested/i },
         // Delivery needs the bound swap's SwapRedeemed whether exact or short:
         // a bare ERC-20 Transfer of the exact amount to the destination is not proof.
@@ -443,7 +443,8 @@ describe.skipIf(!LIVE)(
       setSettlementChainForTests(mockChain({ receipt: goodReceipt() }));
       try {
         const res = await verify(cookie, "settle-pending", id);
-        expect(((await res.json()) as { settlement: { verdict: string } }).settlement.verdict).toBe("INCONCLUSIVE");
+        const inconclusive = (await res.json()) as { settlement: { verdict: string; reason?: string } };
+        expect(inconclusive.settlement.verdict, JSON.stringify(inconclusive.settlement)).toBe("INCONCLUSIVE");
       } finally {
         setSatoraFetchersForTests(null);
         setSettlementChainForTests(null);
@@ -518,7 +519,8 @@ describe.skipIf(!LIVE)(
       // RPC can't provide finality evidence: undecided, never delivered.
       expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: null })).body.settlement?.verdict).toBe("INCONCLUSIVE");
       // Stale/lagging finality (claim block not yet finalized): not yet.
-      expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM - 1n })).body.settlement?.verdict).toBe("INSUFFICIENT_CONFIRMATIONS");
+      const stale = await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM - 1n });
+      expect(stale.body.settlement?.verdict, JSON.stringify(stale.body.settlement)).toBe("INSUFFICIENT_CONFIRMATIONS");
       // Inconsistent RPC: finalized above its own head → refused as evidence.
       expect((await verdictWith(cookie, id, tx, { receipt: goodReceipt(), latest: BLOCK_NUM + 4n, finalized: BLOCK_NUM + 50n })).body.settlement?.verdict).toBe("INCONCLUSIVE");
       // Reorg: the block at the claim height changed, even though "finalized" covers it.

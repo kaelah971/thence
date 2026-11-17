@@ -513,14 +513,16 @@ describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated dat
 
     provider.set(p.swapId, { ...good, evm_htlc_address: "0x0000000000000000000000000000000000000009" });
     response = await authorizeClaim(p);
+    // Audit B9: a contract or amount changed after binding is refused against the
+    // terms recorded before any NIM moved, before the funding verifier runs.
     expect(response.status).toBe(409);
-    expect(await errorCode(response)).toBe("FUNDING_INVALID");
+    expect(await errorCode(response)).toBe("HTLC_TERMS_MISMATCH");
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
 
     provider.set(p.swapId, { ...good, evm_expected_sats: (HTLC_AMOUNT + 1n).toString() });
     response = await authorizeClaim(p);
     expect(response.status).toBe(409);
-    expect(await errorCode(response)).toBe("FUNDING_INVALID");
+    expect(await errorCode(response)).toBe("HTLC_TERMS_MISMATCH");
     expect(await statusOf(p.id)).toBe("SERVER_FUNDED");
 
     provider.set(p.swapId, good);

@@ -185,7 +185,8 @@ beforeEach(() => {
   // f1ca0926: Arbitrum cases here exercise expiry closure, not the new-payment
   // claim-path gate; run them as an explicit owner canary.
   const previousCanary = process.env["THENCE_CLAIM_EXECUTION_CANARY"];
-  process.env["THENCE_CLAIM_EXECUTION_CANARY"] = "42161:6,42161:7";
+  // Polygon (137:6) cases need the same opt-in: the audit branch marks it unproven too.
+  process.env["THENCE_CLAIM_EXECUTION_CANARY"] = "137:6,42161:6,42161:7";
   chainLogs = () => [];
   chainDown = false;
   swapOverrides = {};

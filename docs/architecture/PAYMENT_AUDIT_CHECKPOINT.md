@@ -91,6 +91,33 @@ the overlapping edits. No agents remain needed for implementation.
    FAIL-CLOSED / NOT READY for new payments in the audit branch. Production
    deployment/configuration is unchanged and has NOT been certified safe.
 
+## Session 2026-11-17 (Opus/Fable takeover) — shard regressions on ce3847c
+
+Owner decision (2026-11-17): Polygon and Arbitrum stay ENABLED in production as
+configured. No route changes. The audit branch's `137:6 proven: false` gate is a
+code-level change only; it must be raised with the owner before any deploy.
+
+Full release-shard run on ce3847c (log: ~/.thence/incident-f1ca0926/shards-ce3847c-partial.log,
+stopped during S3 to fix failures): S1 1 failed / 905 passed; S2 2 failed /
+142 passed; S3 partial: p4 11 failed, p6 1 failed, a3a 1 failed.
+
+Diagnosis and resolution (none weakens a safety invariant):
+
+| Failure | Root cause | Resolution |
+| --- | --- | --- |
+| ui-reauth-recovery "same wallet signs in again" | Not a blocked recovery: claim ran once; the test expected the old one-argument call | Assert the claim runs with the authorized terms for THIS transfer/swap |
+| NEW defect N1 (P0 for delivery): claim-safety output floor = 100% of request | Decoded on-chain: all 7 Thence Polygon deliveries had provider minAmountOut = exactly 99%; f1ca0926 quotes were 98.48-98.72%. A 100% floor refuses every real claim (NIM locked until timeout) | `CLAIM_OUTPUT_FLOOR_BPS = 9700` in src/domain/claim-deadline.ts; guard uses `minimumClaimOutput`; tests accept 300000/297000/296150/295446/291000 and refuse 290999/150000/1 before disclosure |
+| NEW defect N2 (P1): omitted provider term treated as durable SWAP_MISMATCH | An incomplete provider answer (missing address/version/amount) was recorded as identity_mismatch, blocking later evidence-gated closes | `providerTermsIncomplete()` (htlc-preflight.ts): reconcile records PROVIDER_UNAVAILABLE (transient); settlement skips the drift verdict (delivery still needs full bound identity) |
+| settlement.test wrong-chain reason | Chain is a bound term; drift check precedes route check | Expect "settlement terms differ from the bound payment" (still INVALID, 422, state unchanged) |
+| reconciliation refund-unverified | Changed contract is now SWAP_MISMATCH (409) before refund evidence; foreign-event receipt is INCONCLUSIVE via pointer fallback + scan | Test asserts both, plus no state change |
+| p4 (11) | Suite canary "42161:6,42161:7" replaced the test-wide 137:6 opt-in | Suite canary includes 137:6 |
+| p6 unverifiable refund | Same as reconciliation (SWAP_MISMATCH) | Expect SWAP_MISMATCH; SERVER_FUNDED, no terminal row |
+| a3a wrong HTLC / amount | Bound-terms check refuses before the funding verifier | Expect HTLC_TERMS_MISMATCH (409), state unchanged |
+| settlement "ignores forged" / "reports pending" / F9.2 in one run | Knock-on of the loop test exceeding 300 s on this PC; both pass alone | Re-run file in isolation (in progress) |
+
+Correction to earlier reports: "no on-chain operation" does NOT rule out a bundler
+accepting the operation and never including it.
+
 ## Resume
 
 Read this checkpoint, git status and final audit report when present. Preserve

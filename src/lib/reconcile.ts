@@ -47,6 +47,7 @@ import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
 import { claimBoundTermsProblem, readStoredBoundHtlc } from "@/lib/claim-intent";
+import { providerTermsIncomplete } from "@/lib/htlc-preflight";
 import { verifyHtlcFunding, verifyHtlcRefund, type HtlcFundingResult, type HtlcRefundResult } from "@/lib/settlement";
 import { recordPath, recordTransition } from "@/lib/transitions";
 import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
@@ -476,12 +477,14 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
     // recorded ("legacy", no record) keeps its historical behaviour; a
     // partial or drifted record is a durable identity mismatch.
     const storedTerms = await readStoredBoundHtlc(tx, transfer.id);
-    const termsDrifted = storedTerms.kind === "bound" && claimBoundTermsProblem(storedTerms, facts) !== null;
+    // An OMITTED term is an incomplete provider answer (transient, retried), never a durable mismatch.
+    const termsIncomplete = storedTerms.kind === "bound" && providerTermsIncomplete(facts);
+    const termsDrifted = storedTerms.kind === "bound" && !termsIncomplete && claimBoundTermsProblem(storedTerms, facts) !== null;
     if (!identityMatches(transfer, attachment, facts) || evidence.kind === "route_mismatch" || termsDrifted) {
       await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" }, false);
       return await mismatchSummary(tx, transfer.id);
     }
-    if (evidence.kind === "route_error") {
+    if (evidence.kind === "route_error" || termsIncomplete) {
       await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "provider_error", errorCode: "PROVIDER_UNAVAILABLE" }, false);
       const summary = await buildSummary(tx, transfer.id, { providerInvoiceExpiresAt: facts.invoiceExpiresAt });
       if (!summary) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");

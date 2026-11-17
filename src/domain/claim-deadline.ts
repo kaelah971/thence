@@ -68,3 +68,27 @@ export function validateLocktime(
   if (invoiceExpiresAt && ms >= invoiceExpiresAt.getTime()) return "implausible";
   return new Date(ms);
 }
+
+/**
+ * Lowest provider output floor (in basis points of the requested amount) the
+ * browser accepts before it reveals the preimage.
+ *
+ * Evidence (public chain data, decoded 2026-11-17): all seven Thence Polygon
+ * deliveries were claimed with `redeemAndExecute.minAmountOut` = exactly 99%
+ * of the requested amount (Satora's 100 bps slippage), and delivered between
+ * 99.96% and 100.07%. The Arbitrum quote for incident f1ca0926 was 98.48% to
+ * 98.72% of the request (295,446 and 296,150 for 300,000).
+ *
+ * A floor of 100% therefore refuses every real claim: the payment is never
+ * delivered and the NIM stays locked until its HTLC timeout. A floor far
+ * below the provider's own lets a wrong quote shortchange the recipient.
+ * 97% covers the provider's slippage plus the drift observed; anything lower
+ * is refused before disclosure. Delivery below the request is still reported
+ * as DELIVERED_SHORT with exact amounts, never as a full delivery.
+ */
+export const CLAIM_OUTPUT_FLOOR_BPS = 9_700n;
+
+/** Smallest acceptable `minAmountOut` (atomic, rounded up) for a requested amount. */
+export function minimumClaimOutput(requestedAtomic: bigint): bigint {
+  return (requestedAtomic * CLAIM_OUTPUT_FLOOR_BPS + 9_999n) / 10_000n;
+}

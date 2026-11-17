@@ -1681,7 +1681,10 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
   const claimTx = facts.evmClaimTxid && facts.evmClaimTxid.length > 0 ? facts.evmClaimTxid : null;
   const { claimBoundTermsProblem, readStoredBoundHtlc } = await import("@/lib/claim-intent");
   const recordedTerms = await readStoredBoundHtlc(db, transferId);
-  if (recordedTerms.kind === "bound" && claimBoundTermsProblem(recordedTerms, facts) !== null) {
+  // An OMITTED term is not a changed term: the checks below already refuse to
+  // deliver without the full bound identity (IDENTITY_UNAVAILABLE).
+  const { providerTermsIncomplete } = await import("@/lib/htlc-preflight");
+  if (recordedTerms.kind === "bound" && !providerTermsIncomplete(facts) && claimBoundTermsProblem(recordedTerms, facts) !== null) {
     return { verdict: "INVALID", reason: "Provider settlement terms differ from the bound payment.", transferId, status: current, providerStatus: facts.status, claimTxHash: claimTx, proof: null, confirmations: null };
   }
   if (!claimTx || !CLAIM_PROGRESS.has(facts.status)) {

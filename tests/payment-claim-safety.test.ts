@@ -46,10 +46,20 @@ describe.each([137, 42161])("installed SDK safety boundary chain %i", (chainId) 
     expect(classification).toMatchObject({ submission: "not-submitted", disclosedToInfrastructure: false });
     expect(report.steps.some((step) => /claim-gasless|Paymaster|estimateUserOperation|sendUserOperation/.test(step.name))).toBe(false);
   });
-  it("refuses a below-request DEX floor before revealing the preimage", async () => {
-    const { report, classification } = await run(chainId, "accept", undefined, "296150");
+  // Floor = 97% of the request (src/domain/claim-deadline.ts). These values are real:
+  // 297000 is the provider minimum in Thence's 0.30 USDC Polygon deliveries (99%);
+  // 296150 and 295446 are Satora's quotes for incident f1ca0926 (98.72%, 98.48%).
+  // A 100% floor refused all of them, turning deliverable payments into NIM locks.
+  it.each(["300000", "297000", "296150", "295446", "291000"])("accepts provider output floor %s (at or above 97 percent of 300000)", async (minimum) => {
+    const { report, classification } = await run(chainId, "accept", undefined, minimum);
+    expect(report.outcome.ok, JSON.stringify(report.outcome)).toBe(true);
+    expect(classification).toMatchObject({ submission: "submitted" });
+  });
+  it.each(["290999", "150000", "1"])("refuses output floor %s (below 97 percent) before revealing the preimage", async (minimum) => {
+    const { report, classification } = await run(chainId, "accept", undefined, minimum);
     expect(report.outcome.ok).toBe(false);
     expect(classification).toMatchObject({ submission: "not-submitted", disclosedToInfrastructure: false });
+    expect(report.steps.some((step) => /claim-gasless|Paymaster|estimateUserOperation|sendUserOperation/.test(step.name))).toBe(false);
   });
   it.each(["send-no-answer", "send-rejected"] as const)("retains precise %s evidence", async (scenario) => {
     const { classification } = await run(chainId, scenario);
