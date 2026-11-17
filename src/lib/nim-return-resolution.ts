@@ -194,18 +194,30 @@ export function recordedVerifiedSource(
   return { txHash: first.txHash, ownerAddress: first.ownerAddress, amountLuna: first.amountLuna };
 }
 
-/** Pure local gates for R2 (P4's, except NIM funding must be PRESENT, not absent). */
-export function assessLocalForNimReturn(status: string, local: LocalEvidence): NimReturnRefusal | null {
+/**
+ * Pure local gates for R2 (P4's, except NIM funding must be PRESENT, not absent).
+ *
+ * Movement rules:
+ * - Any server-side movement (the provider funded, redeemed or refunded an
+ *   EVM lock, or an EVM fund/claim tx was observed) ALWAYS refuses.
+ * - Client-side movement (e.g. `clientfunded`, `clientfundingseen`: the
+ *   Lightning payment reached the provider) refuses UNLESS there is positive
+ *   evidence it was unwound: the transfer is NEEDS_ATTENTION (exists because
+ *   the provider refused after the client paid), or the FRESH provider read
+ *   reports `clientrefunded` (the provider's own statement that it returned
+ *   the client's funding; audit B15).
+ * - `providerStatus === null` means "before the provider read": the
+ *   client-side rule is deferred and the caller MUST call again with the
+ *   fresh provider status before committing.
+ */
+export function assessLocalForNimReturn(status: string, local: LocalEvidence, providerStatus: string | null): NimReturnRefusal | null {
   if (!NIM_RETURN_PATHS[status as TransferStatus]) return "NOT_RESOLVABLE";
   if (!local.nimiqFundingRecorded) return "NIM_SOURCE_NOT_VERIFIED";
   if (local.evmProofRecorded) return "EVM_PROOF_RECORDED";
   if (local.identityMismatchObservations > 0) return "LOCAL_IDENTITY_MISMATCH_RECORDED";
-  // NEEDS_ATTENTION exists BECAUSE the provider reported a refusal after the
-  // client's Lightning payment, so client-side movement is expected there.
-  // Any sign that the provider funded, redeemed or refunded an EVM lock still
-  // refuses, exactly as before.
-  const movement = local.serverSideMovementObservations;
-  if (movement > 0) return "LOCAL_MOVEMENT_RECORDED";
+  if (local.serverSideMovementObservations > 0) return "LOCAL_MOVEMENT_RECORDED";
+  const clientSideUnwound = status === "NEEDS_ATTENTION" || providerStatus === "clientrefunded";
+  if (providerStatus !== null && !clientSideUnwound && local.movementObservations > 0) return "LOCAL_MOVEMENT_RECORDED";
   if (local.activeReservations > 0) return "ATTEMPT_STILL_RESERVED";
   return null;
 }
@@ -271,7 +283,8 @@ export async function closeExpiredNimReturned(userId: string, transferId: string
 
   const gatheredAt = Date.now();
   const localA = await readLocalEvidence(db, transfer.id, gatheredAt);
-  const localRefusal = assessLocalForNimReturn(transfer.status, localA);
+  // Client-side movement is judged after the fresh provider read (below).
+  const localRefusal = assessLocalForNimReturn(transfer.status, localA, null);
   if (localRefusal) throw nimReturnRefusal(localRefusal);
   const source = await readRecordedSource(db, transfer.id);
   if (source === "NONE") throw nimReturnRefusal("NIM_SOURCE_NOT_VERIFIED");
@@ -302,6 +315,8 @@ export async function closeExpiredNimReturned(userId: string, transferId: string
   }
   const providerRefusal = assessProviderEvidence({ transfer, attachment, facts, routeMatches, now: gatheredAt, acceptedStatuses: nimReturnProviderStatuses(transfer.status) });
   if (providerRefusal) throw nimReturnRefusal(providerRefusal);
+  const movementRefusal = assessLocalForNimReturn(transfer.status, localA, facts.status);
+  if (movementRefusal) throw nimReturnRefusal(movementRefusal);
   const window = scanWindow(attachment, facts);
   if (!window) throw nimReturnRefusal("INVOICE_NOT_SETTLED");
   const chain = await verifyNoHtlcActivity({
@@ -384,7 +399,7 @@ export async function closeExpiredNimReturned(userId: string, transferId: string
       const now = Date.now();
       if (now - gatheredAt > EVIDENCE_MAX_AGE_MS) throw nimReturnRefusal("EVIDENCE_STALE");
       const localB = await readLocalEvidence(tx, transfer.id, now);
-      const againLocal = assessLocalForNimReturn(current.status, localB);
+      const againLocal = assessLocalForNimReturn(current.status, localB, facts.status);
       if (againLocal) throw nimReturnRefusal(againLocal);
       const sourceB = await readRecordedSource(tx, transfer.id);
       if (sourceB === "NONE" || sourceB === "AMBIGUOUS" || sourceB.txHash !== source.txHash) throw nimReturnRefusal("NIM_SOURCE_AMBIGUOUS");

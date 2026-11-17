@@ -214,7 +214,10 @@ const EXPIRED_ONLY: ReadonlySet<string> = new Set(["expired"]);
 /**
  * Provider statuses that never mean the provider acted on the EVM side:
  * Lightning-side progress by the client, and the provider's refusals to fund
- * (Satora `clientinvalidfunded`, `clientfundedtoolate`, `serverwontfund`).
+ * (Satora `clientinvalidfunded`, `clientfundedtoolate`, `serverwontfund`),
+ * and the provider returning the client's own funding (`clientrefunded`; no
+ * EVM lock was ever created; audit B15). An observed EVM fund/claim tx is
+ * always server-side, whatever the status (readLocalEvidence).
  */
 export const CLIENT_SIDE_MOVEMENT: ReadonlySet<string> = new Set([
   "clientfundingseen",
@@ -222,6 +225,7 @@ export const CLIENT_SIDE_MOVEMENT: ReadonlySet<string> = new Set([
   "clientinvalidfunded",
   "clientfundedtoolate",
   "serverwontfund",
+  "clientrefunded",
 ]);
 
 /** Chain scan window for a bound swap: [bound − lead, latest invoice expiry + tail]. */

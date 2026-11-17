@@ -307,7 +307,8 @@ describe.skipIf(!LIVE)("R2 close-nim-returned (isolated test database, simulated
     expect((await closeReturned(stuck)).status).toBe(409);
     expect(await terminalRows(stuck.id)).toHaveLength(0);
     refund(stuck);
-    expect((await closeReturned(stuck)).status).toBe(200);
+    const closed = await closeReturned(stuck);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     expect(await statusOf(stuck.id)).toBe("EXPIRED_UNFUNDED");
     expect(await terminalRows(stuck.id)).toHaveLength(1);
   });
