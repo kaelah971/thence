@@ -246,7 +246,12 @@ function describe(input: unknown, init?: { method?: string; body?: unknown }): {
 }
 
 /** The evidence of the claim currently being observed (null = pass-through). */
-let active: { ev: ClaimNetworkEvidence; pending: Promise<void>[] } | null = null;
+export interface ClaimNetworkGuard {
+  beforeRequest: (url: string, method: string, body: string | null) => void;
+  afterResponse: (url: string, response: Response) => Promise<void>;
+}
+
+let active: { ev: ClaimNetworkEvidence; pending: Promise<void>[]; guard?: ClaimNetworkGuard | undefined } | null = null;
 const INSTALLED = Symbol.for("thence.claimFetchObserver");
 
 function wrap(original: FetchLike, scope: Scope): FetchLike {
@@ -254,7 +259,9 @@ function wrap(original: FetchLike, scope: Scope): FetchLike {
     const rec = active;
     if (!rec) return original.call(scope, input, init);
     const d = describe(input, init);
-    const req = noteRequest(rec.ev, d.url, d.method, await d.body());
+    const body = await d.body();
+    rec.guard?.beforeRequest(d.url, d.method, body);
+    const req = noteRequest(rec.ev, d.url, d.method, body);
     const relevant = req.gasless || req.satoraStep !== null || req.rpc.length > 0;
     let response: Response;
     try {
@@ -275,6 +282,7 @@ function wrap(original: FetchLike, scope: Scope): FetchLike {
           .catch(() => undefined),
       );
     }
+    await rec.guard?.afterResponse(d.url, response);
     return response;
   };
   (observed as unknown as Record<symbol, boolean>)[INSTALLED] = true;
@@ -300,9 +308,10 @@ export function installClaimFetchObserver(scope: Scope = globalThis as unknown a
 export async function observeClaimNetwork<T>(
   fn: () => Promise<T>,
   scope: Scope = globalThis as unknown as Scope,
+  guard?: ClaimNetworkGuard,
 ): Promise<{ ok: true; value: T; evidence: ClaimNetworkEvidence } | { ok: false; error: unknown; evidence: ClaimNetworkEvidence }> {
   if (active !== null) return { ok: false, error: new Error("Another claim is being observed. No second claim was started."), evidence: emptyEvidence() };
-  const rec = { ev: emptyEvidence(), pending: [] as Promise<void>[] };
+  const rec = { ev: emptyEvidence(), pending: [] as Promise<void>[], guard };
   const temporary = !(scope.fetch as unknown as Record<symbol, boolean>)[INSTALLED];
   const original = scope.fetch;
   if (temporary) scope.fetch = wrap(original, scope);

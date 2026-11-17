@@ -178,7 +178,7 @@ describe("P3: the Nov 2 failure path now completes — explicit Finish delivery,
     await advance(0);
     await advance(0);
     expect(claimSpy.claimStoredSwap).toHaveBeenCalledTimes(1);
-    expect(claimSpy.claimStoredSwap).toHaveBeenCalledWith(SWAP);
+    expect(claimSpy.claimStoredSwap).toHaveBeenCalledWith(SWAP, expect.objectContaining({ satoraSwapId: SWAP, transferId: ID }));
     // The server authorized THIS attempt immediately before the SDK claim.
     expect(posts()).toContain("claim-intent");
     expect(api.state[ID]!.status).toBe("CLAIMING");

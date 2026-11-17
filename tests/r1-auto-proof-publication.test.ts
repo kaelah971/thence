@@ -40,7 +40,7 @@ import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route
 import { POST as verifySettlementPost } from "../app/api/transfers/[id]/verify-settlement/route";
 import { GET as receiptGet } from "../app/api/transfers/[id]/receipt/route";
 import { GET as reconciliationGet } from "../app/api/transfers/[id]/reconciliation/route";
-import { declaredHtlc } from "./htlc-fixture";
+import { boundRedeemLog, declaredHtlc } from "./htlc-fixture";
 /** Fixed per run: a real provider never moves a swap's deadline between reads. */
 const FIXTURE_LOCKTIME = Math.floor(Date.now() / 1000) + 3300;
 
@@ -70,7 +70,11 @@ function chain(): ChainReads {
         status: "success" as const,
         blockNumber: CLAIM_BLOCK,
         blockHash: CLAIM_BLOCK_HASH,
-        logs: [{ address: USDC_POLYGON, topics: [TRANSFER_EVENT_TOPIC, pad(HTLC), pad(EVM_A)], data: "0x" + (300000).toString(16).padStart(64, "0"), logIndex: 3 }],
+        // Delivery needs the bound SwapRedeemed (pinned HTLC, bound lock, full SwapKey) beside the Transfer.
+        logs: [
+          boundRedeemLog(swapShape("claim-fixture", "0"), { logIndex: 2 }),
+          { address: USDC_POLYGON, topics: [TRANSFER_EVENT_TOPIC, pad(HTLC), pad(EVM_A)], data: "0x" + (300000).toString(16).padStart(64, "0"), logIndex: 3 },
+        ],
       };
     },
     async getLatestBlockNumber() { return BigInt(SCAN.toBlock); },

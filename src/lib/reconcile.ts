@@ -23,7 +23,7 @@
  *   retirement (the server verifies pre-handoff or terminal expired evidence),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
-import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { assessHandoffStall, emitHandoffStallAlert, type HandoffStall } from "@/lib/handoff-stall";
 import { readHostSwapHint, recordHostSwapHint } from "@/lib/host-swap-hint";
@@ -36,6 +36,7 @@ import {
   reconciliationObservations,
   swapAttachments,
   transferProofs,
+  transferSourceEvidence,
   transferTransitions,
   transfers,
   users,
@@ -45,13 +46,13 @@ import type { TransferStatus } from "@/domain/transfers";
 import { getProviderSwap, resolveRoute, SatoraError } from "@/lib/satora";
 import type { VerifiedSwapFacts } from "@/lib/satora";
 import { lockTransfer } from "@/lib/handoff";
+import { claimBoundTermsProblem, readStoredBoundHtlc } from "@/lib/claim-intent";
 import { verifyHtlcFunding, verifyHtlcRefund, type HtlcFundingResult, type HtlcRefundResult } from "@/lib/settlement";
 import { recordPath, recordTransition } from "@/lib/transitions";
 import { claimActionAllowed, claimWindowAt, validateLocktime, type ClaimWindow } from "@/domain/claim-deadline";
 import { getEnv } from "@/lib/env";
 import { NIMIQ_PAY_FAILURE_REASONS } from "@/lib/nimiq-pay-failure-reasons";
 import {
-  isNimiqSourceHashUnattributed,
   verifyNimiqSourceTransaction,
   type VerifiedNimiqSource,
 } from "@/lib/nimiq-source";
@@ -468,7 +469,15 @@ export async function reconcileCore(transferId: string, actor: ReconcileActor): 
     // Identity revalidation on every read: never trust a drifting swap. The
     // mismatch observation must be DURABLE (it gates claim readiness and P4
     // closure), so the committed summary is returned; the route answers 409.
-    if (!identityMatches(transfer, attachment, facts) || evidence.kind === "route_mismatch") {
+    // Settlement terms bound at attach (contract, version, coordinator, lock
+    // token/amount/parties, route token) are part of the identity: the refund
+    // verifier, funding advancement and every later claim take their
+    // expectations from this fresh read. A swap bound before terms were
+    // recorded ("legacy", no record) keeps its historical behaviour; a
+    // partial or drifted record is a durable identity mismatch.
+    const storedTerms = await readStoredBoundHtlc(tx, transfer.id);
+    const termsDrifted = storedTerms.kind === "bound" && claimBoundTermsProblem(storedTerms, facts) !== null;
+    if (!identityMatches(transfer, attachment, facts) || evidence.kind === "route_mismatch" || termsDrifted) {
       await recordObservationDeduped(tx, transfer.id, attachment.satoraSwapId, { providerStatus: facts.status || "unknown", kind: "identity_mismatch", errorCode: "SWAP_MISMATCH" }, false);
       return await mismatchSummary(tx, transfer.id);
     }
@@ -861,6 +870,9 @@ export async function readBoundProviderEvidence(
     routeMatches = false;
   }
   identityMatch = identityMatch && routeMatches;
+  // Bound settlement terms are identity too (legacy rows without a record keep the old behaviour).
+  const storedTerms = await readStoredBoundHtlc(db, transfer.id);
+  if (storedTerms.kind === "bound" && claimBoundTermsProblem(storedTerms, facts) !== null) identityMatch = false;
   // Fail closed: if the gate preview can't be read, nothing is offered as closable.
   const { readCloseEligibility, CLOSE_PREVIEW_UNAVAILABLE } = await import("@/lib/close-eligibility");
   const closeEligibility = await readCloseEligibility(db, { transfer, attachment, facts, routeMatches }).catch(() => CLOSE_PREVIEW_UNAVAILABLE);
@@ -1117,23 +1129,40 @@ async function persistNimiqSourceHint(tx: TxLike, transferId: string, sourceTxHa
   return true;
 }
 
+/**
+ * Transfers OTHER than `transferId` that hold an independently VERIFIED source
+ * proof for this exact hash: an audit row with `nimiqSourceVerification =
+ * VERIFIED`, or an operator-recorded VERIFIED `transfer_source_evidence` row.
+ * A bare `transfer_proofs.nimiq_tx_hash` is only a client-supplied hint (any
+ * owner can submit any 32-byte hash), so it is never attribution by itself.
+ */
+export async function verifiedSourceHolders(tx: Pick<Db, "select">, transferId: string, hash: string): Promise<string[]> {
+  const audited = await tx
+    .select({ transferId: transferTransitions.transferId })
+    .from(transferTransitions)
+    .where(
+      and(
+        sql`${transferTransitions.transferId} <> ${transferId}`,
+        sql`${transferTransitions.evidence}->>'nimiqSourceVerification' = 'VERIFIED'`,
+        sql`lower(regexp_replace(${transferTransitions.evidence}->>'nimiqSourceTxHash', '^0x', '', 'i')) = ${hash}`,
+      ),
+    );
+  const recorded = await tx
+    .select({ transferId: transferSourceEvidence.transferId })
+    .from(transferSourceEvidence)
+    .where(and(sql`${transferSourceEvidence.transferId} <> ${transferId}`, eq(transferSourceEvidence.nimiqTxHash, hash), eq(transferSourceEvidence.verdict, "VERIFIED")));
+  return [...new Set([...audited, ...recorded].map((row) => row.transferId))];
+}
+
 async function bindVerifiedNimiqSource(tx: TxLike, transferId: string, evidence: VerifiedNimiqSource): Promise<boolean> {
   // Advisory locking closes the check-then-write race because the schema must
   // remain unchanged for this additive proof path.
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`nimiq-source:${evidence.transactionHash}`}))`);
-  const owners = await tx
-    .select({ transferId: transferProofs.transferId, nimiqTxHash: transferProofs.nimiqTxHash })
-    .from(transferProofs)
-    .where(isNotNull(transferProofs.nimiqTxHash));
-  if (
-    !isNimiqSourceHashUnattributed(
-      evidence.transactionHash,
-      transferId,
-      owners.map((row) => ({ transferId: row.transferId, transactionHash: row.nimiqTxHash })),
-    )
-  ) {
-    return false;
-  }
+  // Only a VERIFIED attribution elsewhere blocks. Another owner's UNVERIFIED
+  // hint for the same hash (an attacker can pre-submit a victim's hash) must
+  // not stop the rightful sender's verified proof; the verifier already binds
+  // the transaction to THIS owner's wallet and THIS transfer's payment hash.
+  if ((await verifiedSourceHolders(tx, transferId, evidence.transactionHash)).length > 0) return false;
   return persistNimiqSourceHint(tx, transferId, evidence.transactionHash);
 }
 

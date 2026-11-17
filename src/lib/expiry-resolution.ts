@@ -92,6 +92,7 @@ const MOVEMENT_STATUSES = [
   "clientinvalidfunded",
   "clientfundedtoolate",
   "serverwontfund",
+  "clientrefunded",
   "clientfundedserverrefunded",
   "clientrefundedserverfunded",
   "clientrefundedserverrefunded",
@@ -296,12 +297,12 @@ export function chainRefusal(chain: HtlcActivityResult): ResolutionRefusal | nul
 /** Read every local fact the gates depend on (used in BOTH phases). */
 export async function readLocalEvidence(db: Reader, transferId: string, now: number): Promise<LocalEvidence> {
   const observations = await db
-    .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind })
+    .select({ providerStatus: reconciliationObservations.providerStatus, kind: reconciliationObservations.kind, evmFundTxid: reconciliationObservations.evmFundTxid, evmClaimTxid: reconciliationObservations.evmClaimTxid })
     .from(reconciliationObservations)
     .where(eq(reconciliationObservations.transferId, transferId));
-  const movement = observations.filter((o) => (MOVEMENT_STATUSES as readonly string[]).includes(o.providerStatus));
+  const movement = observations.filter((o) => (MOVEMENT_STATUSES as readonly string[]).includes(o.providerStatus) || o.evmFundTxid || o.evmClaimTxid);
   const movementObservations = movement.length;
-  const serverSideMovementObservations = movement.filter((o) => !CLIENT_SIDE_MOVEMENT.has(o.providerStatus)).length;
+  const serverSideMovementObservations = movement.filter((o) => !CLIENT_SIDE_MOVEMENT.has(o.providerStatus) || o.evmFundTxid || o.evmClaimTxid).length;
   const identityMismatchObservations = observations.filter((o) => o.kind === "identity_mismatch").length;
   const proofs = await db
     .select({ nimiqTxHash: transferProofs.nimiqTxHash, evmTxHash: transferProofs.evmTxHash })

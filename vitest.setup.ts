@@ -11,6 +11,7 @@ import { beforeAll, inject } from "vitest";
 
 import { installDeterministicSatora, isLiveSatoraRequested } from "./tests/satora-fixture";
 import { installTestDatabaseUrl } from "./tests/test-db";
+process.env["THENCE_CLAIM_EXECUTION_CANARY"] ??= "137:6";
 
 // Release tests never depend on Satora's availability: the singleton SDK
 // client answers reference data and quotes from captured real responses

@@ -35,7 +35,7 @@ import { POST as handoffResultPost } from "../app/api/transfers/[id]/handoff-res
 import { POST as reconcilePost } from "../app/api/transfers/[id]/reconcile/route";
 import { POST as closeExpiredPost } from "../app/api/transfers/[id]/close-expired/route";
 import { POST as claimIntentPost } from "../app/api/transfers/[id]/claim-intent/route";
-import { declaredHtlc } from "./htlc-fixture";
+import { boundRedeemLog, declaredHtlc } from "./htlc-fixture";
 
 const ARBITRUM_CHAIN_ID = 42161;
 const NATIVE_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
@@ -95,7 +95,7 @@ const provider = new Map<string, Record<string, unknown> | "unavailable">();
 const funded = new Map<string, Pay>();
 const refundReceipts = new Map<string, RefundReceipt>();
 const claimTransactions = new Set<string>();
-const claimReceipts = new Map<string, ClaimReceipt>();
+const claimReceipts = new Map<string, ClaimReceipt & { pay: Pay }>();
 const lifecycleStates = new Map<string, number>();
 const lifecycleLogs: FixtureLog[] = [];
 const createdUserIds: string[] = [];
@@ -250,12 +250,16 @@ function syntheticChain(): ChainReads {
         status: claim.status,
         blockNumber: CLAIM_BLOCK,
         blockHash: CLAIM_BLOCK_HASH,
-        logs: [{
-          address: claim.token,
-          topics: [TRANSFER_EVENT_TOPIC, addressTopic(HTLC_CLAIM_ADDRESS), addressTopic(claim.to)],
-          data: `0x${word(claim.amount)}`,
-          logIndex: 7,
-        }],
+        logs: [
+          // Delivery needs the bound SwapRedeemed (pinned HTLC, bound lock, full SwapKey) beside the Transfer.
+          boundRedeemLog(swapShape(claim.pay), { logIndex: 6 }),
+          {
+            address: claim.token,
+            topics: [TRANSFER_EVENT_TOPIC, addressTopic(HTLC_CLAIM_ADDRESS), addressTopic(claim.to)],
+            data: `0x${word(claim.amount)}`,
+            logIndex: 7,
+          },
+        ],
       };
     },
     async getLatestBlockNumber() {
@@ -446,7 +450,7 @@ async function authorizeClaim(p: Pay): Promise<Response> {
 
 function simulateClaim(p: Pay, claimTx: string): void {
   claimTransactions.add(claimTx.toLowerCase());
-  claimReceipts.set(claimTx.toLowerCase(), { status: "success", to: RECIPIENT, amount: BigInt(TARGET_AMOUNT), token: NATIVE_USDC });
+  claimReceipts.set(claimTx.toLowerCase(), { status: "success", to: RECIPIENT, amount: BigInt(TARGET_AMOUNT), token: NATIVE_USDC, pay: p });
   putSwap(p, { status: "clientredeemed", evm_fund_txid: p.fundTx, evm_claim_txid: claimTx });
 }
 

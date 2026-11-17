@@ -55,6 +55,10 @@ export const SHARDS: Record<string, string[]> = {
     "arbitrum-incident-af9dc922",
     "arbitrum-claim-execution",
     "arbitrum-claim-sdk-harness",
+    "payment-browser-integrity",
+    "payment-handoff-integrity",
+    "payment-server-integrity",
+    "payment-claim-safety",
     "request-single-payment",
     "satora-fixture",
     // Skipped unless THENCE_TEST_LIVE_SATORA=1 (external-provider canary).

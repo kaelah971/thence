@@ -94,6 +94,7 @@ export const NIM_RETURN_PATHS: Readonly<Partial<Record<TransferStatus, readonly 
   LIGHTNING_HANDOFF: ["OUTCOME_UNKNOWN", "RECONCILING", "EXPIRED_UNFUNDED"],
   OUTCOME_UNKNOWN: ["RECONCILING", "EXPIRED_UNFUNDED"],
   RECONCILING: ["EXPIRED_UNFUNDED"],
+  CLIENT_FUNDED: ["OUTCOME_UNKNOWN", "RECONCILING", "EXPIRED_UNFUNDED"],
   NEEDS_ATTENTION: ["RECONCILING", "EXPIRED_UNFUNDED"],
 };
 
@@ -102,7 +103,7 @@ export const PROVIDER_REFUSED_TO_FUND: ReadonlySet<string> = new Set(["clientinv
 
 /** Terminal provider statuses R2 accepts for a transfer in `status`. */
 export function nimReturnProviderStatuses(status: string): ReadonlySet<string> {
-  return status === "NEEDS_ATTENTION" ? new Set(["expired", ...PROVIDER_REFUSED_TO_FUND]) : new Set(["expired"]);
+  return status === "NEEDS_ATTENTION" ? new Set(["expired", "clientrefunded", ...PROVIDER_REFUSED_TO_FUND]) : new Set(["expired", "clientrefunded"]);
 }
 
 export type NimReturnRefusal =
@@ -203,7 +204,7 @@ export function assessLocalForNimReturn(status: string, local: LocalEvidence): N
   // client's Lightning payment, so client-side movement is expected there.
   // Any sign that the provider funded, redeemed or refunded an EVM lock still
   // refuses, exactly as before.
-  const movement = status === "NEEDS_ATTENTION" ? local.serverSideMovementObservations : local.movementObservations;
+  const movement = local.serverSideMovementObservations;
   if (movement > 0) return "LOCAL_MOVEMENT_RECORDED";
   if (local.activeReservations > 0) return "ATTEMPT_STILL_RESERVED";
   return null;
@@ -221,8 +222,8 @@ async function readRecordedSource(db: Reader, transferId: string): Promise<Recor
 
 /** No other transfer may own this source hash (mirrors R1 attribution). */
 async function sourceAttributedElsewhere(db: Reader, transferId: string, txHash: string): Promise<boolean> {
-  const rows = await db.select({ transferId: transferProofs.transferId, nimiqTxHash: transferProofs.nimiqTxHash }).from(transferProofs);
-  return rows.some((r) => r.transferId !== transferId && normalizeNimiqSourceHash(r.nimiqTxHash) === txHash);
+  const { verifiedSourceHolders } = await import("@/lib/reconcile");
+  return (await verifiedSourceHolders(db, transferId, txHash)).length > 0;
 }
 
 /** Non-secret evidence persisted with every hop of the audited path. */

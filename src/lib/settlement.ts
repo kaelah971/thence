@@ -1679,6 +1679,11 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
   }
 
   const claimTx = facts.evmClaimTxid && facts.evmClaimTxid.length > 0 ? facts.evmClaimTxid : null;
+  const { claimBoundTermsProblem, readStoredBoundHtlc } = await import("@/lib/claim-intent");
+  const recordedTerms = await readStoredBoundHtlc(db, transferId);
+  if (recordedTerms.kind === "bound" && claimBoundTermsProblem(recordedTerms, facts) !== null) {
+    return { verdict: "INVALID", reason: "Provider settlement terms differ from the bound payment.", transferId, status: current, providerStatus: facts.status, claimTxHash: claimTx, proof: null, confirmations: null };
+  }
   if (!claimTx || !CLAIM_PROGRESS.has(facts.status)) {
     return {
       verdict: "INCONCLUSIVE",
@@ -1819,29 +1824,32 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
       confirmations: null,
     };
   }
-  // R7: a positive but short output is decided only AFTER the reorg and
-  // finality checks below, and only when the receipt redeems the bound swap.
+  // A matching ERC-20 Transfer to the destination is not enough, whether the
+  // amount is exact or short: anyone can send the destination tokens. Both
+  // outcomes require a SwapRedeemed log from the pinned HTLC for the bound
+  // hash lock and the complete bound SwapKey. Decided AFTER the amount check
+  // and BEFORE the reorg/finality checks below.
   const isShort = !match.matched;
-  let boundRedeem: BoundRedeemVerdict | null = null;
-  if (isShort) {
-    boundRedeem = matchBoundSwapRedeem(receipt.logs, {
-      chainId,
-      htlcAddress: facts.evmHtlcAddress,
-      hashLock: attachment.paymentHash,
-      locktimeSec: attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null,
-      tokenAddress: facts.evmHtlcTokenAddress,
-      amountAtomic: facts.evmHtlcAmountAtomic,
-      refundAddress: facts.evmHtlcRefundAddress,
-      claimAddress: facts.evmHtlcClaimAddress,
-    });
-  }
-  if (isShort && boundRedeem !== "MATCH") {
+  const boundRedeem: BoundRedeemVerdict = matchBoundSwapRedeem(receipt.logs, {
+    chainId,
+    htlcAddress: facts.evmHtlcAddress,
+    hashLock: attachment.paymentHash,
+    locktimeSec: attachment.evmRefundLocktime ? Math.floor(attachment.evmRefundLocktime.getTime() / 1000) : null,
+    tokenAddress: facts.evmHtlcTokenAddress,
+    amountAtomic: facts.evmHtlcAmountAtomic,
+    refundAddress: facts.evmHtlcRefundAddress,
+    claimAddress: facts.evmHtlcClaimAddress,
+  });
+  if (boundRedeem !== "MATCH") {
+    const subject = isShort ? "Verified recipient output is below the requested atomic amount" : "Verified recipient output matches the requested atomic amount";
     return {
       verdict: "INVALID",
       reason:
         boundRedeem === "IDENTITY_UNAVAILABLE"
-          ? "Verified recipient output is below the requested atomic amount; the bound swap identity is unavailable, so it is not classified as a short delivery."
-          : "Verified recipient output is below the requested atomic amount, and the claim does not redeem the bound swap.",
+          ? isShort
+            ? `${subject}; the bound swap identity is unavailable, so it is not classified as a short delivery.`
+            : `${subject}, but the bound swap identity is unavailable, so it is not accepted as delivery.`
+          : `${subject}, and the claim does not redeem the bound swap.`,
       transferId,
       status: current,
       providerStatus: facts.status,
@@ -1886,7 +1894,9 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
 
   // Finality policy (fail-closed).
   const overrides = getEnv().THENCE_SETTLEMENT_FINALITY_JSON as Record<string, { mode: string; confirmations: number }>;
-  const policy = overrides[String(chainId)] ?? DEFAULT_FINALITY_POLICY[chainId]!;
+  // Arbitrum delivery requires the same L1-finalized tag as funding, refund and
+  // lifecycle; a configurable confirmation count must never weaken it.
+  const policy = chainId === 42161 ? DEFAULT_FINALITY_POLICY[42161]! : overrides[String(chainId)] ?? DEFAULT_FINALITY_POLICY[chainId]!;
   let finalityLevel: string | null = null;
   let confirmations: number | null = null;
   try {
@@ -2080,6 +2090,7 @@ export async function verifySettlementCore(transferId: string, actor: Settlement
         logIndexes: match.logIndexes,
         verifiedAmountAtomic: match.totalAtomic.toString(),
         finalityLevel,
+        swapIdentity: "BOUND_REDEEM_MATCH",
         ...(short
           ? {
               requestedAmountAtomic: freshRequired.toString(),

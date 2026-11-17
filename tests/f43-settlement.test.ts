@@ -10,6 +10,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import { syntheticClaimIntent, syntheticStoredSwap } from "./payment-crypto-fixture";
 import { buildTransferBody } from "@/ui/lib/prepare-flow";
 import { createMemoryVault } from "@/ui/lib/recovery-vault";
 import { claimStoredSwap, readBackSwap, setBrowserSwapClientForTests } from "@/ui/lib/satora-browser";
@@ -99,18 +100,7 @@ const reconView = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const storedSwap = {
-  version: 2,
-  swapId: "swap-1",
-  keyIndex: 0,
-  response: { id: "swap-1", hash_lock: `0x${"ab".repeat(32)}`, bolt11_invoice: INVOICE },
-  publicKey: "02" + "ab".repeat(32),
-  preimage: "ab".repeat(32),
-  preimageHash: "cd".repeat(32),
-  secretKey: "ef".repeat(32),
-  storedAt: Date.now(),
-  updatedAt: Date.now(),
-};
+const storedSwap = syntheticStoredSwap();
 
 function fakeLocalStorage(): void {
   const store = new Map<string, string>();
@@ -304,7 +294,7 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
       }) as never,
     });
     try {
-      const out = await claimStoredSwap("swap-1");
+      const out = await claimStoredSwap("swap-1", syntheticClaimIntent());
       expect(captured).toEqual(["swap-1"]);
       expect(out).toMatchObject({ success: true, txHash: "0xtxhash", message: "claimed", errorText: null });
       expect(out.classification).toMatchObject({ submission: "unknown", code: "SEND_NO_ANSWER" });
@@ -321,7 +311,7 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
       claim: (async () => { throw new Error("broadcast timeout"); }) as never,
     });
     try {
-      const out = await claimStoredSwap("swap-1");
+      const out = await claimStoredSwap("swap-1", syntheticClaimIntent());
       expect(out.success).toBe(false);
       // No submission request was observed, so nothing can have been sent.
       // A local exception with no observed request: provably nothing sent; the
@@ -341,7 +331,7 @@ describe("duplicate claim prevention and unknown claim outcome", () => {
       claim: (async () => ({ success: false, message: "not funded yet" })) as never,
     });
     try {
-      const out = await claimStoredSwap("swap-1");
+      const out = await claimStoredSwap("swap-1", syntheticClaimIntent());
       expect(out.success).toBe(false);
       expect(out.txHash).toBeNull();
     } finally {

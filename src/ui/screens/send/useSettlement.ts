@@ -274,11 +274,16 @@ export function loadClaimRecord(transferId: string, ownerUserId: string): ClaimR
   }
 }
 
-export function saveClaimRecord(record: ClaimRecord): void {
+export function saveClaimRecord(record: ClaimRecord): boolean {
   try {
-    claimStore()?.setItem(`${CLAIM_KEY}:${record.transferId}`, JSON.stringify(record));
+    const store = claimStore();
+    if (!store) return false;
+    const key = `${CLAIM_KEY}:${record.transferId}`;
+    const serialized = JSON.stringify(record);
+    store.setItem(key, serialized);
+    return store.getItem(key) === serialized;
   } catch {
-    /* best-effort; authoritative state lives server-side */
+    return false;
   }
 }
 
@@ -602,8 +607,11 @@ export function useSettlement(): {
       }
       kickPaymentTracker(input.transferId);
       let outcome: ClaimOutcome;
+      if (!saveClaimRecord({ transferId: input.transferId, ownerUserId: input.ownerUserId, satoraSwapId: swap.satoraSwapId, txHash: null, unknownAt: new Date().toISOString(), verifyCompletedSinceClaim: false })) {
+        return { ok: false, reason: "This device cannot save a claim safety record. No delivery attempt was started." };
+      }
       try {
-        outcome = await claimStoredSwap(swap.satoraSwapId);
+        outcome = await claimStoredSwap(swap.satoraSwapId, authorized);
       } catch (error) {
         // claimStoredSwap classifies every SDK outcome itself and never
         // throws. A throw here has no network evidence at all, so it cannot

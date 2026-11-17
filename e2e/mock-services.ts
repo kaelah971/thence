@@ -19,6 +19,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { keccak256 } from "viem";
+import { syntheticInvoice } from "../tests/payment-crypto-fixture";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:https";
 import { readFileSync } from "node:fs";
@@ -126,7 +127,7 @@ function createSwap(body: Record<string, unknown>): Record<string, unknown> {
     fee_sats: 6,
     hash_lock: hashLock,
     // SIMULATED hold invoice: well-formed prefix, not payable anywhere.
-    bolt11_invoice: `lnbc3880n1pe2esimulated${randomBytes(20).toString("hex")}`,
+    bolt11_invoice: syntheticInvoice(hashLock as `0x${string}`, String(QUOTED_SOURCE_SATS + state.repriceSats)),
     invoice_expires_at: now + 5_400,
     evm_fund_txid: null,
     evm_claim_txid: null,

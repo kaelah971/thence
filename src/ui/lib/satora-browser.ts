@@ -12,6 +12,9 @@
  */
 import type { ClaimResult, StoredSwap } from "@satora/swap";
 import { ARBITRUM_AA } from "@/ui/lib/arbitrum-aa";
+import { recoveryIntegrityProblem } from "@/ui/lib/recovery-integrity";
+import { claimSafetyGuard } from "@/ui/lib/claim-safety";
+import type { ClaimIntentView } from "@/ui/lib/settlement-client";
 import { classifyClaim, installClaimFetchObserver, observeClaimNetwork, sanitizeClaimError, type ClaimClassification } from "@/ui/lib/claim-evidence";
 
 export interface ExactSwapTerms {
@@ -42,6 +45,7 @@ export interface SwapReadback {
 }
 
 type SwapClient = {
+  getEvmAddress?: () => string;
   createLightningToEvmSwap: (opts: {
     targetAddress: string;
     tokenAddress: string;
@@ -157,6 +161,14 @@ export async function createExactReceiveSwap(terms: ExactSwapTerms): Promise<Pub
   if (typeof rawExpiry === "number" && Number.isFinite(rawExpiry) && rawExpiry > 0) {
     invoiceExpiresAt = new Date(rawExpiry * 1000).toISOString();
   }
+  // The SDK persisted secrets client-side during creation. Success is only
+  // reported once that stored material is proven consistent with what the
+  // provider returned; otherwise the invoice must never reach a payment screen.
+  const readback = await readBackSwap(satoraSwapId, { allowLegacyWalletIdentity: false });
+  if (!readback.ok) throw new Error(`Saved swap recovery material failed validation: ${readback.reason ?? "unknown reason"}`);
+  if (readback.paymentHash?.toLowerCase() !== paymentHash.toLowerCase()) {
+    throw new Error("Saved swap recovery material failed validation: payment hash differs from the created swap.");
+  }
   return { satoraSwapId, bolt11Invoice, paymentHash, sourceSats, targetAtomic, invoiceExpiresAt };
 }
 
@@ -164,7 +176,7 @@ export async function createExactReceiveSwap(terms: ExactSwapTerms): Promise<Pub
  * Read back the SDK-persisted swap and confirm recovery material exists.
  * Returns only public facts — secrets are checked for presence, never returned.
  */
-export async function readBackSwap(swapId: string): Promise<SwapReadback> {
+export async function readBackSwap(swapId: string, options: { allowLegacyWalletIdentity?: boolean } = {}): Promise<SwapReadback> {
   if (!swapId) return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Missing swap id." };
   let client: SwapClient;
   try {
@@ -198,18 +210,26 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
   if (stored.swapId !== swapId) {
     return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Saved swap does not match." };
   }
-  const hasSecrets =
-    typeof stored.preimage === "string" &&
-    stored.preimage.length >= 32 &&
-    typeof stored.secretKey === "string" &&
-    stored.secretKey.length >= 32 &&
-    typeof stored.preimageHash === "string" &&
-    stored.preimageHash.length > 0;
-  if (!hasSecrets) {
-    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: "Recovery material is incomplete." };
-  }
+  // Independent local proof (recovery-integrity.ts): preimage -> preimageHash
+  // -> provider hash_lock, secret key -> claim address, invoice hash/amount.
+  // The SDK's #getClaimEvmSigningKey falls back to its wallet-level key when
+  // the per-swap key does not own client_evm_address (legacy swaps); that
+  // wallet identity is accepted only on explicit readback of an older swap,
+  // never for a freshly created one. Reasons are static, never secret-derived.
   const response = stored.response as unknown as Record<string, unknown>;
-  const paymentHash = typeof response["hash_lock"] === "string" ? (response["hash_lock"] as string) : stored.preimageHash;
+  let walletAddress: string | undefined;
+  if (options.allowLegacyWalletIdentity !== false) {
+    try {
+      walletAddress = client.getEvmAddress?.();
+    } catch {
+      walletAddress = undefined;
+    }
+  }
+  const problem = response["id"] !== swapId ? "Saved swap response does not match." : recoveryIntegrityProblem(stored, walletAddress);
+  if (problem) {
+    return { ok: false, satoraSwapId: swapId, hasRecoveryMaterial: false, paymentHash: null, evmRefundLocktime: null, reason: problem };
+  }
+  const paymentHash = response["hash_lock"] as string;
   const rawRefundLocktime = response["evm_refund_locktime"];
   const evmRefundLocktime = typeof rawRefundLocktime === "number" && Number.isSafeInteger(rawRefundLocktime) && rawRefundLocktime > 0 ? rawRefundLocktime : null;
   return { ok: true, satoraSwapId: swapId, hasRecoveryMaterial: true, paymentHash, evmRefundLocktime };
@@ -224,11 +244,12 @@ export async function readBackSwap(swapId: string): Promise<SwapReadback> {
  * callers report unknown and reconcile instead of retrying blindly.
  * Funded execution stays behind the explicit owner/recovery claim gate.
  */
-export async function claimStoredSwap(swapId: string): Promise<ClaimOutcome> {
+export async function claimStoredSwap(swapId: string, authorized?: ClaimIntentView): Promise<ClaimOutcome> {
   if (!swapId) throw new Error("Missing swap id.");
+  if (!authorized || authorized.satoraSwapId !== swapId || !authorized.htlc) throw new Error("Missing verified claim authorization.");
   const client = await loadClient();
   // Never throws: every outcome is classified from what was actually sent.
-  const run = await observeClaimNetwork(() => client.claim(swapId));
+  const run = await observeClaimNetwork(() => client.claim(swapId), undefined, claimSafetyGuard(authorized));
   if (!run.ok) {
     return {
       success: false,

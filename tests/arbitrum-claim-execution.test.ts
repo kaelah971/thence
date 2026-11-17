@@ -69,8 +69,8 @@ function facts(v: typeof V6 | typeof V7, chainId = 42161): VerifiedSwapFacts {
 const EARLY = { nowMs: (DEADLINE - 3600) * 1000 };
 
 describe("fail closed: Arbitrum claim paths are unproven (f1ca0926)", () => {
-  it("records Polygon v6 as proven and both Arbitrum versions as unproven sponsored-UserOp paths", () => {
-    expect(CLAIM_PATHS["137:6"]).toMatchObject({ proven: true, mechanism: "satora-gasless-relay" });
+  it("records both networks as unproven pending corrected-path evidence", () => {
+    expect(CLAIM_PATHS["137:6"]).toMatchObject({ proven: false, mechanism: "satora-gasless-relay" });
     expect(CLAIM_PATHS["42161:6"]).toMatchObject({ proven: false, mechanism: "sponsored-userop-7702" });
     expect(CLAIM_PATHS["42161:7"]).toMatchObject({ proven: false, mechanism: "sponsored-userop-7702" });
   });
@@ -81,11 +81,11 @@ describe("fail closed: Arbitrum claim paths are unproven (f1ca0926)", () => {
     expect(isClaimPathExecutable(42161, v.version, none)).toBe(false);
   });
 
-  it("closes the Arbitrum network for new payments and keeps Polygon open", () => {
+  it("closes both networks for new payments without explicit opt-in", () => {
     const none = new Set<string>();
     expect(isChainClaimExecutable(42161, none)).toBe(false);
     expect(isNetworkClaimExecutable("Arbitrum", none)).toBe(false);
-    expect(isNetworkClaimExecutable("Polygon", none)).toBe(true);
+    expect(isNetworkClaimExecutable("Polygon", none)).toBe(false);
     expect(isNetworkClaimExecutable("Lightning", none)).toBe(true); // non-EVM: not this gate
   });
 

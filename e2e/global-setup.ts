@@ -94,6 +94,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     THENCE_NEXT_DIST_DIR: ".next-e2e",
     NEXT_PUBLIC_THENCE_ENABLE_PAYMENT: "1",
     NEXT_PUBLIC_THENCE_ENABLE_CLAIM: "1",
+    THENCE_CLAIM_EXECUTION_CANARY: "137:6",
     NEXT_PUBLIC_THENCE_BUILD_REF: "e2e-sim",
     DATABASE_URL: "postgresql://build:build@build.invalid:5432/none",
     NODE_ENV: "production",

@@ -33,7 +33,7 @@ import { GET as listTransfers } from "../app/api/transfers/route";
 import { GET as getTransfer } from "../app/api/transfers/[id]/route";
 import { POST as logoutPost } from "../app/api/session/logout/route";
 import { handoffAttempts } from "@/db/schema";
-import { declaredHtlc } from "./htlc-fixture";
+import { boundRedeemLog, declaredHtlc } from "./htlc-fixture";
 
 const INC = fixture.incident_077770a1;
 const LOCK = INC.attachment.payment_hash;
@@ -57,7 +57,8 @@ const CLAIM_BLOCK = 80_000_500n;
 let latestBlock = FUND_BLOCK + 1_000n;
 /** fund tx hash → on-chain timelock the fund event carries */
 const fundReceipts = new Map<string, number>();
-const claimReceipts = new Set<string>();
+/** claim tx hash → the claim deadline (lock) of the swap it redeems. */
+const claimReceipts = new Map<string, number>();
 /** fund tx hashes whose lock was later redeemed on chain (SIMULATED HTLC redeem event). */
 const spentFunds = new Set<string>();
 let chainDown = false;
@@ -79,12 +80,17 @@ function syntheticChain(): ChainReads {
           logs: [{ address: HTLC, topics: [SWAP_FUNDED_EVENT_TOPIC, LOCK, pad(HTLC_REFUND_ADDRESS), pad(HTLC_CLAIM_ADDRESS)], data: "0x" + word(BigInt(`0x${HTLC_TOKEN.slice(2)}`)) + word(392) + word(lock) + syntheticSwapKey(LOCK, 392, HTLC_TOKEN, HTLC_REFUND_ADDRESS, HTLC_CLAIM_ADDRESS, lock).slice(2), logIndex: 1 }],
         };
       }
-      if (claimReceipts.has(hash)) {
+      const claimLock = claimReceipts.get(hash);
+      if (claimLock !== undefined) {
         return {
           status: "success" as const,
           blockNumber: CLAIM_BLOCK,
           blockHash: `0x${"c1".repeat(32)}`,
-          logs: [{ address: USDC, topics: [TRANSFER_EVENT_TOPIC, pad(HTLC), pad(EVM_A)], data: "0x" + word(300000), logIndex: 7 }],
+          // Delivery needs the bound SwapRedeemed (pinned HTLC, bound lock, full SwapKey) beside the Transfer.
+          logs: [
+            boundRedeemLog(swapShape({ swapId: "claim-fixture", sourceSats: "0", lock: claimLock }), { logIndex: 6 }),
+            { address: USDC, topics: [TRANSFER_EVENT_TOPIC, pad(HTLC), pad(EVM_A)], data: "0x" + word(300000), logIndex: 7 },
+          ],
         };
       }
       return null;
@@ -267,7 +273,7 @@ describe.skipIf(!LIVE)("P3 claim authorization (isolated test database)", () => 
 
     // The browser's SDK claim lands (simulated by the provider); the owner closes the app.
     const claimTx = hex32("claim-happy");
-    claimReceipts.add(claimTx);
+    claimReceipts.set(claimTx, p.lock);
     latestBlock = CLAIM_BLOCK + 300n;
     provider.set(p.swapId, swapShape(p, { status: "clientredeemed", evm_fund_txid: p.fundTx, evm_claim_txid: claimTx }));
     await ageObservations(p.id);
