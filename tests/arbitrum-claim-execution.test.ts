@@ -99,11 +99,19 @@ describe("fail closed: Arbitrum claim paths are unproven (f1ca0926)", () => {
     expect(isClaimPathExecutable(42161, null, canaryClaimPaths("42161:6,42161:7"))).toBe(false);
   });
 
-  it("reads the canary from the environment (default: closed)", () => {
+  it("reads the canary from the environment: unset = owner default (both routes open); explicit values are honoured exactly", () => {
     const prev = process.env.THENCE_CLAIM_EXECUTION_CANARY;
     try {
       delete process.env.THENCE_CLAIM_EXECUTION_CANARY;
+      // Owner decision 2026-11-17: Polygon and Arbitrum stay enabled by default.
+      expect(htlcPreflight(facts(V6), EARLY)).toMatchObject({ ok: true });
+      expect(htlcPreflight(facts(V7), EARLY)).toMatchObject({ ok: true });
+      expect(isNetworkClaimExecutable("Polygon")).toBe(true);
+      expect(isNetworkClaimExecutable("Arbitrum")).toBe(true);
+      // An explicit empty value closes every unproven path.
+      process.env.THENCE_CLAIM_EXECUTION_CANARY = "";
       expect(htlcPreflight(facts(V6), EARLY)).toMatchObject({ ok: false, code: "CLAIM_PATH_UNPROVEN" });
+      expect(isNetworkClaimExecutable("Arbitrum")).toBe(false);
       process.env.THENCE_CLAIM_EXECUTION_CANARY = "42161:6";
       expect(htlcPreflight(facts(V6), EARLY)).toMatchObject({ ok: true });
       expect(htlcPreflight(facts(V7), EARLY)).toMatchObject({ ok: false, code: "CLAIM_PATH_UNPROVEN" });

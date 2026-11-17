@@ -592,9 +592,9 @@ describe.skipIf(!LIVE)("A3a Arbitrum native USDC payment lifecycle (isolated dat
     }
   }, 180_000);
 
-  it("f1ca0926: without an owner canary, a new Arbitrum payment is refused before any quote, swap or NIM (fail closed)", async () => {
+  it("f1ca0926: with the claim paths explicitly closed, a new Arbitrum payment is refused before any quote, swap or NIM (fail closed)", async () => {
     const saved = process.env.THENCE_CLAIM_EXECUTION_CANARY;
-    delete process.env.THENCE_CLAIM_EXECUTION_CANARY;
+    process.env.THENCE_CLAIM_EXECUTION_CANARY = "";
     try {
       const wallet = fixtureWallet();
       const { cookie } = await loginAs(client("login-gate"), (id) => createdUserIds.push(id), wallet);

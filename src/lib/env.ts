@@ -10,6 +10,9 @@
  */
 import { z } from "zod";
 
+/** Owner decision 2026-11-17: both payment routes stay enabled (see THENCE_CLAIM_EXECUTION_CANARY). */
+export const OWNER_DEFAULT_CLAIM_PATHS = "137:6,42161:6,42161:7";
+
 /** `0x` EVM address shape — validated, never guessed. */
 const evmAddressSchema = z
   .string()
@@ -144,11 +147,15 @@ const envSchema = z.object({
   /** Comma-separated list of enabled route ids, e.g. "usdt-polygon,usdc-base". Empty = none enabled. */
   THENCE_ENABLED_ROUTES: z.string().default(""),
   /**
-   * Owner-approved canary opt-in for an UNPROVEN claim path, as
-   * "chainId:htlcVersion" entries (e.g. "42161:7"). Empty = only paths proven
-   * in src/lib/claim-execution.ts accept new payments.
+   * Claim paths that accept NEW payments in addition to those proven in
+   * src/lib/claim-execution.ts, as "chainId:htlcVersion" entries.
+   *
+   * Owner decision 2026-11-17: Polygon and Arbitrum stay enabled, so when the
+   * variable is UNSET the default opens Polygon v6 and Arbitrum v6/v7. To
+   * close paths, set it explicitly: an empty value ("") or a subset (e.g.
+   * "137:6") is honoured exactly. Existing transfers are never gated.
    */
-  THENCE_CLAIM_EXECUTION_CANARY: z.string().max(200).default(""),
+  THENCE_CLAIM_EXECUTION_CANARY: z.string().max(200).default(OWNER_DEFAULT_CLAIM_PATHS),
   /** Verified token addresses per route id (see above). Empty = none verified. */
   THENCE_ROUTE_TOKENS_JSON: routeTokenMapSchema,
   /** Quote validity window in seconds. */
