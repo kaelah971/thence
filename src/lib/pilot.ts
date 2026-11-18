@@ -41,6 +41,7 @@
  * OFF independently: this gate alone never authorizes a host payment.
  * Blocked attempts throw AuthError (403 PILOT_*, never a zero or silent pass).
  */
+import { hostRejectedWithoutMovement } from "@/lib/host-rejection";
 import { eq, sql } from "drizzle-orm";
 import { AuthError } from "@/lib/auth";
 import { getDb } from "@/lib/db";
@@ -441,6 +442,13 @@ export async function assertFundingExposure(
   const exposed = new Set<string>();
   for (const row of mine) {
     if (row.id !== excludeTransferId && isFundingExposureStatus(row.status)) exposed.add(row.id);
+  }
+  // Ada/Rev (2026-11-18): a payment the user refused in Nimiq Pay (no
+  // transaction returned, no movement recorded) stays RECONCILING and watched,
+  // but no longer holds the slot. Any recorded movement keeps it held.
+  const reconciling = [...exposed].filter((id) => byId.get(id)?.status === "RECONCILING");
+  if (reconciling.length > 0) {
+    for (const id of await hostRejectedWithoutMovement(db, reconciling)) exposed.delete(id);
   }
   for (const reservation of reservations) {
     const reservedTransfer = byId.get(reservation.transferId);

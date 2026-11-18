@@ -7,9 +7,10 @@
  * runs one bounded, lease-protected batch of the SAME reconciliation core
  * the owner route uses, and returns/logs a non-secret summary.
  *
- * Never claims, releases preimages, pays, creates swaps, refunds, clears
- * uncertain exposure or applies the owner-only P4 close. Not gated by the
- * pilot kill switch: reconciliation is recovery, not new funding.
+ * Never claims, releases preimages, pays, creates swaps or refunds. Applies
+ * the evidence-gated P4 close by itself once its gates pass (see
+ * server-reconciler.ts). Not gated by the pilot kill switch: reconciliation is
+ * recovery, not new funding.
  *
  * Scheduling limits (verified 2026-11-03): the project's team is on the
  * Vercel Hobby plan — cron runs at most ONCE PER DAY, invoked anywhere within

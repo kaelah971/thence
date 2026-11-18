@@ -101,6 +101,7 @@ export function usePaymentProgress({
         invoiceExpiresAtMs: state.invoiceExpiresAtMs ?? null,
         invoiceExpired: state.invoiceExpired === true,
         handoffStalled: state.handoffStalled === true,
+        hostRejected: state.hostRejected === true,
         claimDeadlineMs: state.claimDeadlineMs ?? null,
         nowMs: now,
         network: settlementNetworkFor(routeId),

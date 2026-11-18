@@ -338,18 +338,38 @@ export interface ResolutionResult {
   deduplicated: boolean;
 }
 
+/** Who applies the close: the payment's owner (Close button) or the server reconciler. */
+export type CloseActor = { kind: "owner"; userId: string } | { kind: "system" };
+
 /**
  * Owner-initiated, evidence-gated close of an expired, unfunded payment.
  * Throws AuthError with a plain-language refusal on any doubt.
  */
 export async function closeExpiredUnfunded(userId: string, transferId: string): Promise<ResolutionResult> {
+  return closeExpiredUnfundedAs({ kind: "owner", userId }, transferId);
+}
+
+/**
+ * The same close, applied by the server reconciler (Ada/Rev, 2026-11-18:
+ * payments sat open for hours until their owners came back to tap Close).
+ * Identical gates, evidence and audit record; only the actor differs. The
+ * owner's tap never added evidence, so nothing about safety changes.
+ */
+export async function closeExpiredUnfundedBySystem(transferId: string): Promise<ResolutionResult> {
+  return closeExpiredUnfundedAs({ kind: "system" }, transferId);
+}
+
+async function closeExpiredUnfundedAs(actor: CloseActor, transferId: string): Promise<ResolutionResult> {
   const db = getDb();
+  const scope = actor.kind === "owner"
+    ? and(eq(transfers.id, transferId), eq(transfers.ownerUserId, actor.userId))
+    : eq(transfers.id, transferId);
 
   // ---- Phase A: gather evidence (no lock held during network I/O) ----
   const rows = await db
     .select()
     .from(transfers)
-    .where(and(eq(transfers.id, transferId), eq(transfers.ownerUserId, userId)))
+    .where(scope)
     .limit(1);
   const transfer = rows[0];
   if (!transfer) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
@@ -436,7 +456,7 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
       const fresh = await tx
         .select()
         .from(transfers)
-        .where(and(eq(transfers.id, transfer.id), eq(transfers.ownerUserId, userId)))
+        .where(scope)
         .limit(1);
       const current = fresh[0];
       if (!current) throw new AuthError(404, "NOT_FOUND", "Transfer not found.");
@@ -457,8 +477,8 @@ export async function closeExpiredUnfunded(userId: string, transferId: string): 
         transferId: transfer.id,
         from: current.status as TransferStatus,
         to: "EXPIRED_UNFUNDED",
-        actor: "owner",
-        actorUserId: userId,
+        actor: actor.kind === "owner" ? "owner" : "reconciler",
+        actorUserId: actor.kind === "owner" ? actor.userId : null,
         reasonCode: "EXPIRED_UNFUNDED_VERIFIED",
         evidence: evidence as unknown as Record<string, unknown>,
       });

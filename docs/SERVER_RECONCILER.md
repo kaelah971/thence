@@ -46,9 +46,20 @@ not whether a claim happens.
 
 ## Safety properties
 
-- Never claims, releases preimages, pays, creates swaps/invoices, refunds,
-  clears uncertain exposure, or applies P4's owner-only `EXPIRED_UNFUNDED`
-  close. Not gated by the pilot kill switch (recovery, not new funding).
+- Never claims, releases preimages, pays, creates swaps/invoices or refunds.
+  Not gated by the pilot kill switch (recovery, not new funding).
+- **Auto-close (since 2026-11-18):** after each batch it applies the same
+  evidence-gated P4 `EXPIRED_UNFUNDED` close as the owner's Close button
+  (`closeExpiredUnfundedBySystem`), to at most 3 `RECONCILING` payments whose
+  chain scan window (invoice expiry + 60 min) has ended. It uses the same gates:
+  - fresh provider `expired` with no EVM transaction;
+  - invoice settled;
+  - a finalized chain scan with no HTLC activity;
+  - no recorded movement, mismatch, proof or NIM funding.
+
+  A refusal keeps the payment open and is retried with backoff: 10 min when
+  time can fix it, 6 h when it needs review. It appears in the run summary's
+  `autoCloseRefused`, not in `errors`. Audit actor: `reconciler`.
 - Terminal transitions (e.g. `REFUNDED`) require the same identity checks
   and independent on-chain refund verification as the owner route.
 - Two-phase core: provider/RPC calls happen with NO lock held; the commit is

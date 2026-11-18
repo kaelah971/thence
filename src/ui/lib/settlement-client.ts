@@ -52,6 +52,8 @@ export interface ReconciliationLatest {
   handoffAt?: string | null;
   /** R3: server-derived stall (verified NIM lock, provider still pending 5+ min). Display only. */
   handoffStall?: { stalled: boolean; stalledSince: string | null; anchorAt: string | null } | null;
+  /** Nimiq Pay reported the user's refusal with no transaction and nothing moved (display only). */
+  hostRejected?: boolean;
 }
 
 export interface ReconciliationView {

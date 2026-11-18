@@ -65,6 +65,8 @@ export interface ProgressInput {
   invoiceExpired?: boolean;
   /** R3: server-derived stalled handoff (display only, never state). */
   handoffStalled?: boolean;
+  /** Server: refused in Nimiq Pay, no transaction returned, nothing moved (display only). */
+  hostRejected?: boolean;
   /** Polygon claim deadline (ms, Satora evm_refund_locktime from the server); null when unknown. */
   claimDeadlineMs?: number | null;
   /** Clock for the delay message (defaults to Date.now()). */
@@ -251,6 +253,21 @@ export function paymentProgress(s: ProgressInput): ProgressView {
   // claim preparation failed either. An unknown host outcome can follow a successful submission
   // with delayed or missing evidence, so absence of source verification proves nothing.
   // Live: transfer 75f05d35 (2026-11-14) is RECONCILING with no on-chain NIM funding.
+  // Ada/Rev (2026-11-18): the payer pressed Cancel in Nimiq Pay and the host
+  // returned no transaction. The server confirms nothing moved and has freed
+  // the payment slot; it keeps a background check and closes this by itself.
+  if (s.hostRejected === true && status === "RECONCILING" && !s.receiptReady && !s.claimReady) {
+    return {
+      headline: "Cancelled in Nimiq Pay",
+      body:
+        "Nothing was paid: Nimiq Pay sent no transaction. You can start a new payment now. "
+        + "Thence keeps a final safety check running and closes this one automatically.",
+      tone: "neutral",
+      action: "none",
+      steps: null,
+    };
+  }
+
   const nimVerified = typeof s.sourceVerifiedAtMs === 'number' && s.sourceVerifiedAtMs > 0
   if (!nimVerified && (status === 'RECONCILING' || status === 'OUTCOME_UNKNOWN') && !s.receiptReady && !s.claimReady) {
     return {
