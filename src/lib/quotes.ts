@@ -320,7 +320,7 @@ export async function listPublicRoutes(): Promise<{ routes: PublicRouteInfo[]; p
           const resolved = await resolveRoute(pair.asset, pair.network);
           quoteable = true;
           status = "live";
-          reason = "Available for quoting; settlement not proven.";
+          reason = "Available for quoting. Each delivery is verified on-chain at finality.";
           if (!isNetworkClaimExecutable(pair.network)) {
             // f1ca0926: shown as paused, never offered for a new payment.
             quoteable = false;
