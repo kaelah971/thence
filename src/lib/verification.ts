@@ -34,6 +34,7 @@ import { lockRecipient } from "@/lib/recipients";
 import { recipientDestinations, recipientVerifications, recipients } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { checkDestination } from "@/lib/recipients";
+import { isUniqueViolation } from "@/lib/transitions";
 
 const EVM_NETWORKS: ReadonlySet<string> = new Set(["Polygon", "Arbitrum", "Ethereum", "Base"]);
 const SIGNATURE_RE = /^0x[0-9a-fA-F]{130}$/;
@@ -184,7 +185,7 @@ export async function startDestinationVerification(
           expiresAt: expiresAt.toISOString(),
         };
       } catch (err) {
-        if ((err as { code?: string }).code === "23505" && attempt < 4) continue;
+        if (isUniqueViolation(err) && attempt < 4) continue;
         throw new AuthError(500, "VERIFY_START_FAILED", "Could not start verification.");
       }
     }

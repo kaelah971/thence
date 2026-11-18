@@ -11,7 +11,7 @@
  * DATABASE_URL is scrubbed from every worker.
  */
 import "dotenv/config";
-import type { GlobalSetupContext } from "vitest/node";
+import type { TestProject } from "vitest/node";
 import { loadProductionDatabaseUrl } from "../scripts/db-guard";
 import {
   hashDatabaseUrl,
@@ -28,7 +28,7 @@ declare module "vitest" {
   }
 }
 
-export default async function setup({ provide }: GlobalSetupContext): Promise<void> {
+export default async function setup({ provide }: TestProject): Promise<void> {
   const testUrl = resolveTestDatabaseUrl(process.env);
   const refuse = (reason: string) => {
     provide("thenceTestDbProof", null);

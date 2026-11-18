@@ -1,0 +1,11 @@
+[Unit]
+Description=Check verified Thence treasury payments after startup and each completed run
+
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=thence-desk-worker.service
+
+[Install]
+WantedBy=timers.target

@@ -33,6 +33,30 @@ import { LIVE } from "./helpers";
 
 const FIX = join(__dirname, "fixtures", "a3d6");
 const load = (name: string): Record<string, any> => JSON.parse(readFileSync(join(FIX, name), "utf8"));
+
+// PostgreSQL errors now arrive wrapped by drizzle's DrizzleQueryError, whose own
+// message is "Failed query: …". Guard-trigger text lives on the cause chain, so
+// collect every message before matching.
+async function rejectsWithMessage(promise: Promise<unknown>, pattern: RegExp): Promise<void> {
+  let caught: unknown;
+  let threw = false;
+  try {
+    await promise;
+  } catch (error) {
+    caught = error;
+    threw = true;
+  }
+  expect(threw).toBe(true);
+  const seen = new Set<unknown>();
+  const messages: string[] = [];
+  let current = caught;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    messages.push(String((current as { message?: unknown }).message ?? ""));
+    current = (current as { cause?: unknown }).cause;
+  }
+  expect(messages.join("\n")).toMatch(pattern);
+}
 // The authenticated owner is the HTLC refund sender encoded in the public NOV6
 // creation data (bytes 0–19); no wallet literal is kept in the repository.
 const OWNER = toUserFriendlyAddress(
@@ -426,9 +450,9 @@ describe.skipIf(!LIVE)("A3d.6 recovery plan/apply (isolated database, rolled bac
       const transferId = await seed(tx, NOV6);
       await applyRecovery(tx, await planRecovery(tx, NOV6.c), META);
       await tx.execute(sql`SAVEPOINT a`);
-      await expect(tx.execute(sql`UPDATE transfer_source_evidence SET operator_ref = 'x' WHERE transfer_id = ${transferId}::uuid`)).rejects.toThrow(/append-only/);
+      await rejectsWithMessage(tx.execute(sql`UPDATE transfer_source_evidence SET operator_ref = 'x' WHERE transfer_id = ${transferId}::uuid`), /append-only/);
       await tx.execute(sql`ROLLBACK TO SAVEPOINT a`);
-      await expect(tx.execute(sql`DELETE FROM transfer_source_evidence WHERE transfer_id = ${transferId}::uuid`)).rejects.toThrow(/append-only/);
+      await rejectsWithMessage(tx.execute(sql`DELETE FROM transfer_source_evidence WHERE transfer_id = ${transferId}::uuid`), /append-only/);
       await tx.execute(sql`ROLLBACK TO SAVEPOINT a`);
       const other = await seed(tx, NOV7, { owner: OTHER_OWNER });
       await expect(

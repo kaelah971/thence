@@ -27,6 +27,7 @@ import { getEnv, parseEnabledRoutes } from "@/lib/env";
 import { atomicToDecimal, decimalToAtomic, parseAtomicAmount } from "@/domain/money";
 import { buildRouteRegistry, getRoute, isSupportedPair, routeIdForPair } from "@/domain/routes";
 import { checkDestination, displayNameSchema, readJsonBody, rejectForbiddenKeys } from "@/lib/recipients";
+import { isUniqueViolation } from "@/lib/transitions";
 
 /** Canonical smallest-unit precision per supported asset. */
 const ASSET_DECIMALS: Record<string, number> = { USDT: 6, USDC: 6, BTC: 8 };
@@ -208,8 +209,7 @@ export async function createRequest(userId: string, body: unknown): Promise<Owne
       return toOwnerView(row);
     } catch (err) {
       if (err instanceof AuthError) throw err;
-      const code = (err as { code?: string }).code;
-      if (code === "23505" && attempt < 4) continue; // public_id collision: retry
+      if (isUniqueViolation(err) && attempt < 4) continue; // public_id collision: retry
       throw new AuthError(500, "REQUEST_FAILED", "Could not create request.");
     }
   }
