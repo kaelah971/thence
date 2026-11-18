@@ -1,0 +1,17 @@
+[Unit]
+Description=Thence Polygon treasury delivery worker
+After=thence-web-production.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=thence-prod
+Group=thence-prod
+LoadCredential=cron-secret:/etc/thence-web-prod/desk-cron-secret
+ExecStart=/opt/thence/node/bin/node /opt/thence/bin/thence-desk-worker.cjs
+TimeoutStartSec=100
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6

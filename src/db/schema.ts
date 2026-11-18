@@ -7,8 +7,9 @@
  *   cross-user access must always filter by it (enforced at API layer, B2+).
  * - Exact-value amounts: atomic-unit integers as TEXT with a `^[0-9]+$`
  *   CHECK — never floats, never double precision.
- * - No custody: no private keys, mnemonics, preimages or recovery secrets.
- *   Transfer proofs carry only public/non-secret identifiers.
+ * - No private keys, mnemonics, preimages or recovery secrets in PostgreSQL.
+ *   Legacy transfers are non-custodial. The separate treasury pilot holds
+ *   operator funds; its signing key is server configuration only.
  */
 import {
   bigint,
@@ -676,6 +677,37 @@ export const pilotControls = pgTable("pilot_controls", {
 });
 
 export type User = typeof users.$inferSelect;
+
+/** Treasury pilot ledger. Separate from historical non-custodial/Lightning transfers. */
+export const deskOrders = pgTable("desk_orders", {
+  id: uuid("id").primaryKey(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id),
+  requestKey: varchar("request_key", { length: 80 }).notNull(),
+  state: text("state").notNull(),
+  amountAtomic: text("amount_atomic").notNull(),
+  payoutWallet: text("payout_wallet").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  depositHash: text("deposit_hash").unique(),
+  payoutHash: text("payout_hash").unique(),
+  payoutNonce: bigint("payout_nonce", { mode: "number" }),
+  signedPayout: text("signed_payout"),
+  payload: jsonb("payload").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("desk_owner_request_idx").on(t.ownerId, t.requestKey),
+  uniqueIndex("desk_wallet_nonce_idx").on(t.payoutWallet, t.payoutNonce),
+  index("desk_pending_idx").on(t.state),
+  check("desk_amount_atomic_check", sql`${t.amountAtomic} ~ '^[1-9][0-9]*$'`),
+  check("desk_state_check", sql`${t.state} IN ('QUOTED','AWAITING_NIM','VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED','DELIVERED','REFUND_DUE','REFUNDED','EXPIRED')`),
+]);
+export const deskEvents = pgTable("desk_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orderId: uuid("order_id").notNull().references(() => deskOrders.id),
+  state: text("state").notNull(),
+  code: text("code").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 export type NewUser = typeof users.$inferInsert;
 export type Transfer = typeof transfers.$inferSelect;
 export type NewTransfer = typeof transfers.$inferInsert;

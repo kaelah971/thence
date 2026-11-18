@@ -22,7 +22,6 @@ export default defineConfig({
     // database (THENCE_TEST_DATABASE_URL — never production) and the live
     // Satora API. Unbounded parallelism exhausts connections and trips
     // provider throttling, producing load flakes. Prefer --maxWorkers=2.
-    minWorkers: 1,
     maxWorkers: 4,
   },
 });

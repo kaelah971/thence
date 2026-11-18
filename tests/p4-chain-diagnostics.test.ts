@@ -85,7 +85,7 @@ afterEach(() => {
   warn.mockRestore();
 });
 
-const logged = (): string => warn.mock.calls.map((c) => String(c[0])).join("\n");
+const logged = (): string => warn.mock.calls.map((c: unknown[]) => String(c[0])).join("\n");
 
 describe("P4 chain scan: strict verdicts unchanged", () => {
   it("a healthy chain with no events is still NO_ACTIVITY and logs nothing", async () => {

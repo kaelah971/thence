@@ -42,6 +42,7 @@ import { CLAIM_PATH_UNPROVEN_MESSAGE, isNetworkClaimExecutable } from "@/lib/cla
 import { getEnv, parseEnabledRoutes } from "@/lib/env";
 import { recordedReturn, type RecordedNimReturn } from "@/lib/nim-return-record";
 import { assertRequestPayable } from "@/lib/request-payment";
+import { isUniqueViolation } from "@/lib/transitions";
 
 export const MAX_BODY_BYTES = 8_192;
 
@@ -464,7 +465,7 @@ export async function createTransfer(
     if (!row) throw new AuthError(500, "TRANSFER_FAILED", "Could not create transfer.");
     return { transfer: await toView(db, row), deduplicated: false };
   } catch (err) {
-    if ((err as { code?: string }).code === "23505") {
+    if (isUniqueViolation(err)) {
       // Concurrent identical create won the race: compare and converge.
       const existing = await db
         .select()

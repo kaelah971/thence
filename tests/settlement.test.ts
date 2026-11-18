@@ -340,11 +340,10 @@ describe.skipIf(!LIVE)(
     }
   });
 
-  it("rejects wrong recipient, token, chain, shortfall, reverts and empty receipts", async () => {
-    const prevRoutes = setEnv("THENCE_ENABLED_ROUTES", ROUTES);
-    const prevRpcs = setEnv("THENCE_EVM_RPCS_JSON", RPCS);
-    try {
-      const cases: { name: string; receipt: NonNullable<ChainScript["receipt"]> | null; swap: Record<string, unknown>; reason: RegExp }[] = [
+  // Each scenario performs a full live DB setup. A shared five-minute loop
+  // budget can time out while its async work continues and mutates the next
+  // test's provider override. Give every case its own lifecycle and cleanup.
+  const invalidSettlementCases: { name: string; receipt: NonNullable<ChainScript["receipt"]> | null; swap: Record<string, unknown>; reason: RegExp }[] = [
         { name: "wrong-recipient", receipt: goodReceipt(5000000n, "0x0000000000000000000000000000000000000002"), swap: {}, reason: /no Transfer event/i },
         { name: "wrong-token", receipt: { ...goodReceipt(), logs: [transferLog("0x0000000000000000000000000000000000000009", EVM_A, 5000000n, 0)] }, swap: {}, reason: /no Transfer event/i },
         { name: "wrong-chain", receipt: goodReceipt(), swap: { evm_chain_id: 1 }, reason: /settlement terms differ from the bound payment/i } /* the chain is a bound term: a provider answer on another chain is refused before the route check */,
@@ -368,11 +367,14 @@ describe.skipIf(!LIVE)(
         { name: "reverted", receipt: { ...goodReceipt(), status: "reverted" }, swap: {}, reason: /reverted/i },
         { name: "empty", receipt: { ...goodReceipt(), logs: [] }, swap: {}, reason: /no Transfer event/i },
       ];
-      let n = 0;
-      for (const c of cases) {
-        const caseNumber = n++;
+  it.each(invalidSettlementCases)("rejects invalid settlement: $name", async (c) => {
+    const prevRoutes = setEnv("THENCE_ENABLED_ROUTES", ROUTES);
+    const prevRpcs = setEnv("THENCE_EVM_RPCS_JSON", RPCS);
+    try {
+        const caseNumber = c.name;
+        const caseTx = claimTxFor(`bad-${invalidSettlementCases.findIndex(scenario => scenario.name === c.name)}`);
+        expect(caseTx).toContain(Buffer.from(RUN).toString("hex"));
         const { cookie } = await login(`settle-bad-${caseNumber}`);
-        const caseTx = claimTxFor(`bad-${caseNumber}-${c.name}`);
         const id = await claimingTransfer(cookie, "settle-bad", `bad-${caseNumber}`, `swap-b44-${c.name}-${RUN}`, "5000000", caseTx);
         mockSwap(fixtureSwap({ status: "clientredeemed", evm_claim_txid: caseTx, ...c.swap }));
         setSettlementChainForTests(mockChain({ receipt: c.receipt }));
@@ -388,7 +390,6 @@ describe.skipIf(!LIVE)(
           setSatoraFetchersForTests(null);
           setSettlementChainForTests(null);
         }
-      }
     } finally {
       restoreEnv("THENCE_ENABLED_ROUTES", prevRoutes);
       restoreEnv("THENCE_EVM_RPCS_JSON", prevRpcs);

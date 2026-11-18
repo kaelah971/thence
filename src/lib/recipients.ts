@@ -22,6 +22,7 @@ import { AuthError } from "@/lib/auth";
 import { recipientDestinations, recipientVerifications, recipients, transfers } from "@/db/schema";
 import { SUPPORTED_ASSETS, SUPPORTED_NETWORKS, isSupportedPair } from "@/domain/routes";
 import { keccak256 } from "@/lib/keccak";
+import { isUniqueViolation } from "@/lib/transitions";
 
 const EVM_NETWORKS: ReadonlySet<string> = new Set(["Polygon", "Arbitrum", "Ethereum", "Base"]);
 const BOLT11_PREFIX_RE = /^(lnbc|lnbcrt|lntb|lntbs)/i;
@@ -298,7 +299,7 @@ async function withUniqueRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T
     try {
       return await fn();
     } catch (err) {
-      if ((err as { code?: string }).code !== "23505") throw err;
+      if (!isUniqueViolation(err)) throw err;
       last = err;
     }
   }
