@@ -350,7 +350,7 @@ describe.skipIf(!LIVE)("live multi-route exact quotes (read-only)", () => {
       };
       expect(body.providerFresh).toBe(true);
       const byId = new Map(body.routes.map((r) => [r.id, r]));
-      expect(byId.get("usdc-polygon")).toMatchObject({ status: "live", quoteable: true });
+      expect(byId.get("usdc-polygon")).toMatchObject({ status: "live", quoteable: true, availabilityReason: "Available for quoting. Each delivery is verified on-chain at finality." });
       // f1ca0926: networks whose claim path is unproven are paused for new payments.
       expect(byId.get("usdc-arbitrum")).toMatchObject({ status: "disabled", quoteable: false });
       expect(byId.get("usdc-arbitrum")?.availabilityReason).toMatch(/claim path is verified/);
@@ -375,7 +375,7 @@ describe.skipIf(!LIVE)("live multi-route exact quotes (read-only)", () => {
       const byId = new Map(body.routes.map((r) => [r.id, r]));
       expect(byId.get("usdc-arbitrum")).toMatchObject({ status: "unavailable-token", quoteable: false });
       expect(byId.get("usdc-arbitrum")?.availabilityReason).toMatch(/approved token/i);
-      expect(byId.get("usdc-polygon")).toMatchObject({ status: "live", quoteable: true });
+      expect(byId.get("usdc-polygon")).toMatchObject({ status: "live", quoteable: true, availabilityReason: "Available for quoting. Each delivery is verified on-chain at finality." });
     } finally {
       restoreRoutes(previous);
     }
