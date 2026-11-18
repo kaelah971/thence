@@ -22,3 +22,8 @@ export function settlementNetworkFor(routeId: string | null | undefined): Settle
 export function verifyEstimate(network: SettlementNetwork): string {
   return network === "Arbitrum" ? "about 20 minutes (Ethereum finality)" : "about 10 minutes";
 }
+
+/** Short form for headlines: how long until the verified claim is final. */
+export function finalityShort(network: SettlementNetwork): string {
+  return network === "Arbitrum" ? "about 20 min" : "about 10 min";
+}
