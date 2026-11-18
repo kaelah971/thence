@@ -24,6 +24,7 @@ export interface HostProvider {
   sign: NimiqProvider["sign"];
   getBalance?: NimiqProvider["getBalance"];
   listAccounts?: NimiqProvider["listAccounts"];
+  sendBasicTransactionWithData?: NimiqProvider["sendBasicTransactionWithData"];
 }
 
 export type ProviderFailure = "unavailable" | "rejected" | "network" | "unsupported" | "invalid" | "failed";

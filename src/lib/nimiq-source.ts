@@ -138,6 +138,59 @@ export function normalizeNimiqSourceHash(value: unknown): string | null {
   return value.replace(/^0x/i, "").toLowerCase();
 }
 
+/** Treasury pilot: an ordinary, owner-authenticated NIM payment, not a Lightning HTLC. */
+export async function verifyDeskNimPayment(input: {
+  txHash: string; ownerAddress: string; recipientAddress: string; amountLuna: string;
+  memo: string; earliestMs: number; config: NimiqSourceRpcConfig;
+}): Promise<{ ok: true; timestampMs: number; blockNumber: number } | { ok: false; code: string }> {
+  const hash = normalizeNimiqSourceHash(input.txHash);
+  const owner = cleanAddress(input.ownerAddress), recipient = cleanAddress(input.recipientAddress);
+  if (!hash || !owner || !recipient || !/^https:\/\//.test(input.config.url) || !/^[1-9]\d*$/.test(input.amountLuna)) return { ok: false, code: "INVALID_INPUT" };
+  const signal = AbortSignal.timeout(input.config.timeoutMs ?? NIMIQ_SOURCE_RPC_TIMEOUT_MS);
+  const call: RpcCall = async (method, params = []) => rpcResult(await postJson(input.config.url, JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal));
+  try {
+    const tx = transactionRecord(await call("getTransactionByHash", [hash]));
+    if (!tx) return { ok: false, code: "TRANSACTION_NOT_FOUND" };
+    const sender = cleanAddress(tx["from"] ?? tx["sender"]);
+    const fromType = safeNumber(tx["fromType"] ?? tx["senderType"], true);
+    const toType = safeNumber(tx["toType"] ?? tx["recipientType"], true);
+    const value = integer(tx["value"], false), fee = integer(tx["fee"], true);
+    const data = hexBytes(tx["recipientData"] ?? tx["recipient_data"]);
+    const senderData = hexBytes(tx["senderData"] ?? tx["sender_data"]);
+    const flags = safeNumber(tx["flags"], true);
+    const height = safeNumber(tx["validityStartHeight"] ?? tx["validity_start_height"], true);
+    const blockNumber = safeNumber(tx["blockNumber"], true);
+    const confirmations = safeNumber(tx["confirmations"], true);
+    const timestampMs = safeNumber(tx["timestamp"], true);
+    if (normalizeNimiqSourceHash(tx["hash"]) !== hash || tx["executionResult"] !== true || !hasExpectedNetwork(tx["networkId"], input.config.network)) return { ok: false, code: "INVALID_TRANSACTION" };
+    if (!sender || toType !== 0 || flags !== 0 || !data || !senderData || senderData.length !== 0 || cleanAddress(tx["to"] ?? tx["recipient"]) !== recipient || value !== BigInt(input.amountLuna) || fee === null || height === null || !Number.isSafeInteger(timestampMs) || timestampMs! < input.earliestMs || timestampMs! > Date.now() + 30_000 || Buffer.from(data).toString("hex") !== Buffer.from(input.memo, "utf8").toString("hex")) return { ok: false, code: "PAYMENT_MISMATCH" };
+    if (fromType === 0) {
+      if (sender !== owner) return { ok: false, code: "WRONG_SENDER" };
+    } else if (fromType === 2) {
+      const content = serializeNimiqTransactionContent({ data, senderAddress: sender, senderType: 2, recipient: addressBytes(recipient)!, recipientType: 0, value, fee, validityStartHeight: height, networkId: input.config.network === "mainnet" ? 24 : 5, flags: 0, senderData });
+      if (!hasAuthenticatedHtlcOwnerProof(hexBytes(tx["proof"]), content, owner)) return { ok: false, code: "WRONG_SENDER" };
+    } else return { ok: false, code: "WRONG_SENDER" };
+    if (blockNumber === null || confirmations === null || confirmations < input.config.minConfirmations) return { ok: false, code: "INSUFFICIENT_FINALITY" };
+    const finality = await macroFinality(call, blockNumber, input.config.network);
+    if (!finality.ok) return finality;
+    return { ok: true, timestampMs: timestampMs!, blockNumber };
+  } catch { return { ok: false, code: "PROVIDER_UNAVAILABLE" }; }
+}
+
+/** Positive-only discovery for the treasury pilot. Truncated history never proves non-payment. */
+export async function findDeskDepositHashes(url: string, address: string, memo: string): Promise<string[]> {
+  const result = rpcResult(await postJson(url, JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransactionsByAddress", params: { address: normalizeNimiqAddress(address), max: 500 } }), AbortSignal.timeout(8000)));
+  if (!Array.isArray(result)) throw new Error("NIM history unavailable");
+  const expected = Buffer.from(memo, "utf8").toString("hex");
+  const hashes = result.flatMap(item => {
+    const tx = transactionRecord(item);
+    const data = tx && hexBytes(tx["recipientData"] ?? tx["recipient_data"]);
+    const hash = tx && normalizeNimiqSourceHash(tx["hash"]);
+    return tx && data && hash && cleanAddress(tx["to"] ?? tx["recipient"]) === normalizeNimiqAddress(address) && Buffer.from(data).toString("hex") === expected ? [hash] : [];
+  });
+  return [...new Set(hashes)];
+}
+
 export interface NimiqSourceAttribution {
   transferId: string;
   transactionHash: string | null;

@@ -204,6 +204,7 @@ export function Home(): React.JSX.Element {
             </p>
             <p className={styles.accountNote}>{balanceSourceNote(balance.state)}</p>
             <WalletDiagnostics address={address} />
+            <ButtonLink href="/app/desk" variant="soft" block>Polygon treasury pilot</ButtonLink>
             <Button variant="soft" block icon="close" onClick={() => void signOut()} disabled={signingOut} aria-busy={signingOut}>
               {signingOut ? "Signing out…" : "Sign out of Thence"}
             </Button>
