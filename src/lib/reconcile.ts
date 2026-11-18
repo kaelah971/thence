@@ -23,6 +23,7 @@
  *   retirement (the server verifies pre-handoff or terminal expired evidence),
  *   initiated, or unknown. It can never report funded/claimed/delivered.
  */
+import { HOST_REJECTED_REASON, hostRejectedWithoutMovement, isHostRejection } from "@/lib/host-rejection";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { assessHandoffStall, emitHandoffStallAlert, type HandoffStall } from "@/lib/handoff-stall";
@@ -231,6 +232,12 @@ export interface ReconciliationBase {
   handoffAt: string | null;
   /** R3: derived stalled-handoff condition (display and alert only; never a state). */
   handoffStall: HandoffStall;
+  /**
+   * Nimiq Pay reported the user's refusal with no transaction, and nothing on
+   * record shows movement (host-rejection.ts). Display and exposure only: the
+   * transfer stays RECONCILING and watched until the P4 close retires it.
+   */
+  hostRejected: boolean;
 }
 
 export interface ReconciliationSummary extends ReconciliationBase {
@@ -680,6 +687,7 @@ async function buildSummary(
     sourceVerifiedAt: sourceRows[0]?.at.toISOString() ?? null,
     handoffAt: handoffRows[0]?.at.toISOString() ?? null,
     handoffStall,
+    hostRejected: transfer.status === "RECONCILING" && (await hostRejectedWithoutMovement(db, [transfer.id])).has(transfer.id),
   };
 }
 
@@ -1414,9 +1422,15 @@ export async function reportHandoffOutcome(
         const next = await applyPath(["USER_CANCELLED"], "CANCELLED_PROVIDER_EXPIRED", { providerStatus: read.facts.status });
         return { transferId, status: next, deduplicated: false };
       }
-      const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"], "CANCEL_UNPROVEN_RECONCILE", {
+      // Ada/Rev (2026-11-18): Nimiq Pay reported the user's refusal and no
+      // transaction. Same reconcilable path (still watched, never terminal
+      // here); the distinct reason only frees the wallet's payment slot while
+      // no movement is recorded (host-rejection.ts) and lets the screen say so.
+      const hostRejected = isHostRejection(parsed.data.diagnostics);
+      const next = await applyPath(["LIGHTNING_HANDOFF", "OUTCOME_UNKNOWN", "RECONCILING"], hostRejected ? HOST_REJECTED_REASON : "CANCEL_UNPROVEN_RECONCILE", {
         providerStatus: read.kind === "facts" ? read.facts.status || "unknown" : "unknown",
         providerError: read.kind === "error" ? read.code : null,
+        ...(hostRejected ? { hostRejected: true } : {}),
       });
       return { transferId, status: next, deduplicated: false };
     }

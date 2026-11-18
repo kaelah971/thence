@@ -617,6 +617,25 @@ describe('unverified NIM funding (transfer 75f05d35 shape)', () => {
   })
 })
 
+describe('Cancel in Nimiq Pay (Ada/Rev, 2026-11-18)', () => {
+  const base = { phase: 'handoff', providerStatus: 'pending', claimReady: false, receiptReady: false, sourceVerifiedAtMs: null }
+
+  it('says it was cancelled, nothing was paid, and a new payment can start', () => {
+    const view = paymentProgress({ ...base, transferStatus: 'RECONCILING', hostRejected: true })
+    expect(view.headline).toBe('Cancelled in Nimiq Pay')
+    expect(view.body).toMatch(/Nothing was paid/)
+    expect(view.body).toMatch(/start a new payment now/)
+    expect(view.body).toMatch(/closes this one automatically/)
+    expect(view.action).toBe('none')
+  })
+
+  it('only for RECONCILING, and never over claim or receipt states', () => {
+    expect(paymentProgress({ ...base, transferStatus: 'OUTCOME_UNKNOWN', hostRejected: true }).headline).toBe('Payment status still being verified')
+    expect(paymentProgress({ ...base, transferStatus: 'RECONCILING', hostRejected: true, claimReady: true }).headline).not.toBe('Cancelled in Nimiq Pay')
+    expect(paymentProgress({ ...base, transferStatus: 'RECONCILING', hostRejected: false }).headline).toBe('Payment status still being verified')
+  })
+})
+
 describe('paths that must not be affected by the unverified branch', () => {
   const base = { phase: 'handoff', providerStatus: 'pending', claimReady: false, receiptReady: false }
 

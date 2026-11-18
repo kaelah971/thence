@@ -28,6 +28,9 @@ import { assertFundingExposure, getPilotConfig } from "@/lib/pilot";
 import { resetSatoraCachesForTests, setSatoraFetchersForTests } from "@/lib/satora";
 import { computeHtlcSwapKey, SWAP_REFUNDED_EVENT_TOPIC, setSettlementChainForTests, type ChainLog, type ChainReads } from "@/lib/settlement";
 import { TRUSTED_HTLC_CONTRACTS } from "@/lib/expiry-resolution";
+import { HOST_REJECTED_REASON } from "@/lib/host-rejection";
+import { resetAutoCloseBackoffForTests, runServerReconciliation } from "@/lib/server-reconciler";
+import { randomUUID } from "node:crypto";
 import { LIVE, RUN, loginAs, postJson } from "./helpers";
 import { POST as createTransfer } from "../app/api/transfers/route";
 import { POST as preparePost } from "../app/api/transfers/[id]/prepare/route";
@@ -130,7 +133,17 @@ function installProvider(): void {
  */
 async function stuckReconciling(
   tag: string,
-  options: { routeId?: string; network?: string; chainId?: number; htlcAddress?: string; tokenAddress?: string } = {},
+  options: {
+    routeId?: string;
+    network?: string;
+    chainId?: number;
+    htlcAddress?: string;
+    tokenAddress?: string;
+    /** Provider swap id (the scheduled reconciler only selects UUIDs). */
+    swapId?: string;
+    /** Handoff report that puts the payment in RECONCILING (default: unknown outcome). */
+    report?: Record<string, unknown>;
+  } = {},
 ): Promise<{ id: string; userId: string; cookie: string; hashLock: string }> {
   const routeId = options.routeId ?? "usdc-polygon";
   const network = options.network ?? "Polygon";
@@ -143,7 +156,7 @@ async function stuckReconciling(
   const prep = await preparePost(postJson(`http://localhost/api/transfers/${transfer.id}/prepare`, { expectedQuoteRevision: 1 }, { cookie, ...client(tag) }), params(transfer.id));
   if (prep.status !== 201) throw new Error(`setup prepare failed: ${prep.status}`);
   const token = ((await prep.json()) as { attemptToken: string }).attemptToken;
-  const swapId = `p4-swap-${RUN}-${tag}`;
+  const swapId = options.swapId ?? `p4-swap-${RUN}-${tag}`;
   const hashLock = `0x${Buffer.from(`${RUN}-${tag}`).toString("hex").padEnd(64, "0").slice(0, 64)}`;
   swaps.set(swapId, swapFor(swapId, hashLock, transfer.quote.sourceSats, options));
   swapOverrides = {};
@@ -155,8 +168,8 @@ async function stuckReconciling(
   if (attached.status !== 201) throw new Error(`setup attach failed: ${attached.status} ${JSON.stringify(await attached.json())}`);
   const authed = await authorizePost(postJson(`http://localhost/api/transfers/${transfer.id}/authorize-handoff`, { attemptToken: token }, { cookie, ...client(tag) }), params(transfer.id));
   if (authed.status !== 200) throw new Error(`setup authorize failed: ${authed.status}`);
-  const unknown = await reportPost(postJson(`http://localhost/api/transfers/${transfer.id}/handoff-result`, { outcome: "unknown" }, { cookie, ...client(tag) }), params(transfer.id));
-  if (unknown.status !== 200) throw new Error(`setup unknown failed: ${unknown.status}`);
+  const unknown = await reportPost(postJson(`http://localhost/api/transfers/${transfer.id}/handoff-result`, options.report ?? { outcome: "unknown" }, { cookie, ...client(tag) }), params(transfer.id));
+  if (unknown.status !== 200) throw new Error(`setup report failed: ${unknown.status} ${JSON.stringify(await unknown.json())}`);
   // Age the bound swap in the TEST database: bound 3 h ago, invoice expired 2 h ago.
   const boundAt = new Date(Date.now() - 3 * 3600_000);
   const expiredAt = new Date(Date.now() - 2 * 3600_000);
@@ -452,5 +465,93 @@ describe.skipIf(!LIVE)("P4 close-expired (isolated test database)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ fromStatus: "RECONCILING", toStatus: "SERVER_FUNDED", actor: "reconciler", reasonCode: "PROVIDER_SERVERFUNDED", terminal: false });
     void SWAP_REFUNDED_EVENT_TOPIC;
+  });
+});
+
+/* ---------------- Ada/Rev (2026-11-18): Cancel in Nimiq Pay, then auto-close ---------------- */
+
+const hostDiagnostics = (over: Record<string, unknown> = {}) => ({
+  providerErrorType: "PERMISSION_DENIED",
+  providerErrorCode: 4001,
+  providerReason: null,
+  durationMs: 3165,
+  normalizedOutcome: "cancelled",
+  hasHash: false,
+  hasSwapId: false,
+  ...over,
+});
+const reasonsOf = async (id: string) =>
+  (await getDb().select({ r: transferTransitions.reasonCode }).from(transferTransitions).where(eq(transferTransitions.transferId, id))).map((row) => row.r);
+
+describe.skipIf(!LIVE)("Cancel in Nimiq Pay frees the payment slot (isolated test database)", () => {
+  it("a host refusal with no transaction stays watched in RECONCILING but no longer blocks a new payment", async () => {
+    const { id, userId } = await stuckReconciling("host-reject", { report: { outcome: "cancelled", diagnostics: hostDiagnostics() } });
+    expect(await statusOf(id)).toBe("RECONCILING"); // never terminal here: a late payment stays recoverable
+    expect(await reasonsOf(id)).toContain(HOST_REJECTED_REASON);
+    await expect(assertFundingExposure(userId, "300000", unarmed)).resolves.toBeUndefined();
+    // Any recorded sign of movement takes the slot back.
+    const swapId = (await getDb().select({ s: swapAttachments.satoraSwapId }).from(swapAttachments).where(eq(swapAttachments.transferId, id)))[0]!.s;
+    await getDb().insert(reconciliationObservations).values({ transferId: id, satoraSwapId: swapId, providerStatus: "clientfundingseen", kind: "observation", errorCode: null, evmFundTxid: null, evmClaimTxid: null });
+    await expect(assertFundingExposure(userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+  });
+
+  it("a recorded NIM source hint keeps the slot held", async () => {
+    const { id, userId } = await stuckReconciling("host-reject-nim", { report: { outcome: "cancelled", diagnostics: hostDiagnostics() } });
+    await getDb().insert(transferProofs).values({ transferId: id, nimiqTxHash: "a".repeat(64) }).onConflictDoUpdate({ target: transferProofs.transferId, set: { nimiqTxHash: "a".repeat(64) } });
+    await expect(assertFundingExposure(userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+  });
+
+  it.each([
+    ["no-diag", { outcome: "cancelled" }],
+    ["with-hash", { outcome: "cancelled", diagnostics: hostDiagnostics({ hasHash: true }) }],
+    ["with-swap", { outcome: "cancelled", diagnostics: hostDiagnostics({ hasSwapId: true }) }],
+    ["other-error", { outcome: "cancelled", diagnostics: hostDiagnostics({ providerErrorType: "NETWORK_ERROR" }) }],
+  ] as Array<[string, Record<string, unknown>]>)("a cancel without host proof (%s) keeps the slot held", async (tag, report) => {
+    const { id, userId } = await stuckReconciling(`cancel-${tag}`, { report });
+    expect(await statusOf(id)).toBe("RECONCILING");
+    expect(await reasonsOf(id)).not.toContain(HOST_REJECTED_REASON);
+    await expect(assertFundingExposure(userId, "300000", unarmed)).rejects.toMatchObject({ code: "PAYMENT_EXPOSURE_UNCERTAIN" });
+  });
+});
+
+describe.skipIf(!LIVE)("Server auto-close: the same P4 gates, applied by the reconciler (isolated test database)", () => {
+  beforeEach(() => resetAutoCloseBackoffForTests());
+
+  it("retires a proven expired-unfunded payment without the owner, audited as the reconciler", async () => {
+    const { id, userId, hashLock } = await stuckReconciling("auto", { swapId: randomUUID(), report: { outcome: "cancelled", diagnostics: hostDiagnostics() } });
+    const run = await runServerReconciliation({ scope: [id], leaseName: `p4-auto-${RUN}-1` });
+    expect(run.errors).toEqual({});
+    expect(run.autoClosed).toBe(1);
+    expect(run.advanced).toContainEqual({ transferId: id, from: "RECONCILING", to: "EXPIRED_UNFUNDED" });
+    expect(await statusOf(id)).toBe("EXPIRED_UNFUNDED");
+    const audit = await terminalRows(id);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ toStatus: "EXPIRED_UNFUNDED", actor: "reconciler", actorUserId: null, reasonCode: "EXPIRED_UNFUNDED_VERIFIED" });
+    expect((audit[0]!.evidence as Record<string, Record<string, unknown>>)["chain"]).toMatchObject({ hashLock: hashLock.toLowerCase(), verdict: "NO_ACTIVITY" });
+    await expect(assertFundingExposure(userId, "300000", unarmed)).resolves.toBeUndefined();
+  });
+
+  it("refuses on chain activity: stays open, reported outside errors, and backs off instead of retrying every run", async () => {
+    const { id } = await stuckReconciling("auto-activity", { swapId: randomUUID() });
+    chainLogs = (lock) => [{ address: HTLC, topics: [FUND_TOPIC, lock], data: "0x", logIndex: 7 }];
+    const first = await runServerReconciliation({ scope: [id], leaseName: `p4-auto-${RUN}-2` });
+    expect(await statusOf(id)).toBe("RECONCILING");
+    expect(first.autoClosed).toBeUndefined();
+    expect(first.autoCloseRefused).toEqual({ CHAIN_ACTIVITY_FOUND: 1 });
+    expect(first.errors).toEqual({});
+    const second = await runServerReconciliation({ scope: [id], leaseName: `p4-auto-${RUN}-3` });
+    expect(second.autoCloseRefused).toBeUndefined(); // backing off
+    expect(await statusOf(id)).toBe("RECONCILING");
+    expect(await terminalRows(id)).toHaveLength(0);
+  });
+
+  it("leaves a payment alone until its whole scan window has ended", async () => {
+    const { id } = await stuckReconciling("auto-early", { swapId: randomUUID() });
+    // Invoice expired only 20 minutes ago: the 60-minute scan tail is still open.
+    await getDb().update(swapAttachments).set({ invoiceExpiresAt: new Date(Date.now() - 20 * 60_000) }).where(eq(swapAttachments.transferId, id));
+    const run = await runServerReconciliation({ scope: [id], leaseName: `p4-auto-${RUN}-4` });
+    expect(run.autoClosed).toBeUndefined();
+    expect(run.autoCloseRefused).toBeUndefined();
+    expect(await statusOf(id)).toBe("RECONCILING");
   });
 });

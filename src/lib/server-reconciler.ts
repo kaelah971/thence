@@ -8,8 +8,14 @@
  * bounding and scheduling.
  *
  * Never: claims, releases preimages, initiates payments, creates swaps or
- * invoices, refunds, closes uncertain exposure, or applies P4's owner-only
- * EXPIRED_UNFUNDED close (the planner only *reports* that exit).
+ * invoices, refunds, or closes uncertain exposure on its own judgement.
+ *
+ * Auto-close (2026-11-18, Ada/Rev): after the reconcile batch it applies the
+ * SAME evidence-gated P4 close the owner's Close button runs
+ * (`closeExpiredUnfundedBySystem`): fresh provider `expired` with no EVM tx,
+ * invoice settled, a finalized chain scan with no HTLC activity, and no
+ * recorded movement, mismatch, proof or NIM funding. Any refusal keeps the
+ * payment open; it is retried later with backoff.
  *
  * Bounds:
  * - single runner via a job lease (atomic upsert, no long-held DB lock),
@@ -33,6 +39,7 @@ import { AuthError } from "@/lib/auth";
 import { reconcileCore } from "@/lib/reconcile";
 import { verifySettlementCore } from "@/lib/settlement";
 import { claimWindowAt } from "@/domain/claim-deadline";
+import { closeExpiredUnfundedBySystem, SCAN_TAIL_MS } from "@/lib/expiry-resolution";
 import type { TransferStatus } from "@/domain/transfers";
 import { CLAIM_ACTIVITY_STATUSES } from "@/domain/provider-status";
 
@@ -75,8 +82,8 @@ export interface Candidate {
  * - funded: 1 min while a claim is still possible (deadline awareness),
  *   2 min after it closes (watch for the provider refund);
  * - pre-funding/uncertain: 2 min while the invoice is live, 10 min after;
- * - provider reported terminal `expired`: 6 h (only the owner's P4 close
- *   can retire it; refreshing faster learns nothing);
+ * - provider reported terminal `expired`: 6 h (the P4 close retires it, see
+ *   auto-close below; refreshing faster learns nothing);
  * - last read failed: at least 5 min (backoff; Vercel never retries).
  */
 export function dueIntervalMs(c: Candidate, now: number): number {
@@ -177,6 +184,41 @@ async function loadCandidates(scope: string[] | null): Promise<{ candidates: Can
   return { candidates, excludedMalformedSwapIds };
 }
 
+/* ---------------- auto-close (P4, system actor) ---------------- */
+
+/** At most this many close attempts per run (each runs a provider read and a chain scan). */
+export const AUTO_CLOSE_MAX_PER_RUN = 3;
+/** Retry after a refusal that time can fix (finality, provider or chain briefly unavailable). */
+export const AUTO_CLOSE_RETRY_MS = 10 * 60_000;
+/** Retry after a refusal that needs review (movement, mismatch, NIM funding recorded). */
+export const AUTO_CLOSE_REVIEW_RETRY_MS = 6 * 60 * 60_000;
+const TRANSIENT_REFUSALS: ReadonlySet<string> = new Set([
+  "CHAIN_NOT_FINAL",
+  "CHAIN_UNAVAILABLE",
+  "PROVIDER_UNAVAILABLE",
+  "INVOICE_NOT_SETTLED",
+  "ATTEMPT_STILL_RESERVED",
+  "EVIDENCE_STALE",
+  "PROVIDER_NOT_EXPIRED",
+]);
+/** Per-process backoff (one long-lived process on Hermes; a restart only retries sooner). */
+const autoCloseNextTry = new Map<string, number>();
+/** Test seam. */
+export function resetAutoCloseBackoffForTests(): void {
+  autoCloseNextTry.clear();
+}
+
+/**
+ * RECONCILING payments whose whole chain scan window has ended (latest invoice
+ * expiry + SCAN_TAIL_MS) and that are not backing off. Pure. Oldest first.
+ */
+export function autoCloseCandidates(candidates: readonly Candidate[], now: number): Candidate[] {
+  return candidates
+    .filter((c) => c.status === "RECONCILING" && c.invoiceExpiresAt !== null && c.invoiceExpiresAt.getTime() + SCAN_TAIL_MS <= now)
+    .filter((c) => (autoCloseNextTry.get(c.transferId) ?? 0) <= now)
+    .sort((a, b) => a.invoiceExpiresAt!.getTime() - b.invoiceExpiresAt!.getTime());
+}
+
 /* ---------------- lease ---------------- */
 
 export async function acquireLease(name: string, holder: string, now = Date.now()): Promise<"acquired" | "held" | "too-soon"> {
@@ -242,6 +284,10 @@ export interface RunSummary {
   stalledHandoffs?: number;
   /** R7: transfers committed as DELIVERED_SHORT in this run (absent when 0). */
   shortDeliveries?: number;
+  /** P4 auto-close: payments retired as EXPIRED_UNFUNDED in this run (absent when 0). */
+  autoClosed?: number;
+  /** P4 auto-close refusals by code (the payment stays open; not an error). Absent when none. */
+  autoCloseRefused?: Record<string, number>;
 }
 
 /** One bounded reconciliation run. Safe to invoke concurrently and repeatedly. */
@@ -312,6 +358,27 @@ export async function runServerReconciliation(options: RunOptions = {}): Promise
       } catch (err) {
         const code = err instanceof AuthError ? err.code : "RECONCILE_FAILED";
         summary.errors[code] = (summary.errors[code] ?? 0) + 1;
+      }
+    }
+    // Auto-close: same gates as the owner's Close, applied by the server.
+    // Re-read candidates so a payment this batch just advanced is not tried.
+    const afterBatch = Date.now();
+    if (afterBatch - started <= budget) {
+      const fresh = (await loadCandidates(options.scope ?? null)).candidates;
+      for (const candidate of autoCloseCandidates(fresh, afterBatch).slice(0, AUTO_CLOSE_MAX_PER_RUN)) {
+        if (Date.now() - started > budget) break;
+        try {
+          const closed = await closeExpiredUnfundedBySystem(candidate.transferId);
+          autoCloseNextTry.delete(candidate.transferId);
+          if (!closed.deduplicated) {
+            summary.advanced.push({ transferId: candidate.transferId, from: candidate.status, to: closed.status });
+            summary.autoClosed = (summary.autoClosed ?? 0) + 1;
+          }
+        } catch (err) {
+          const code = err instanceof AuthError ? err.code : "AUTO_CLOSE_FAILED";
+          autoCloseNextTry.set(candidate.transferId, Date.now() + (TRANSIENT_REFUSALS.has(code) ? AUTO_CLOSE_RETRY_MS : AUTO_CLOSE_REVIEW_RETRY_MS));
+          summary.autoCloseRefused = { ...(summary.autoCloseRefused ?? {}), [code]: (summary.autoCloseRefused?.[code] ?? 0) + 1 };
+        }
       }
     }
   } catch {
