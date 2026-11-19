@@ -15,8 +15,8 @@ const TABS: ReadonlyArray<{ href: string; linkHref?: string; label: string; icon
 
 export function BottomNav(): React.JSX.Element {
   const pathname = usePathname();
-  // Requests live under the Send tab (Send · Request).
-  const path = pathname.startsWith("/app/requests") ? "/app/send" : pathname;
+  // Requests and the treasury desk live under the Send tab (Send · Request / Pay).
+  const path = pathname.startsWith("/app/requests") || pathname.startsWith("/app/desk") ? "/app/send" : pathname;
   const active = Math.max(0, TABS.findIndex((tab) => path.startsWith(tab.href)));
   return (
     <nav className={styles.navWrap} aria-label="Main">

@@ -40,10 +40,17 @@ export function Desk() {
   const running = useRef(false);
   // Send hands off the exact recipient and amount after its own amount step.
   const preset = useRef(false);
+  const newestActive = (orders: PublicDeskOrder[]) =>
+    orders.find(o => !["DELIVERED", "REFUNDED", "EXPIRED"].includes(o.state)) ?? null;
   const refresh = async () => {
     const next = await api<DeskView>();
     setView(next);
-    setSelected(current => next.orders.find(o => o.id === current?.id) ?? next.orders[0] ?? null);
+    setSelected(current => {
+      const same = next.orders.find(o => o.id === current?.id);
+      // An expired quote must not sit above the form as a second card.
+      if (same && same.state === "EXPIRED") return newestActive(next.orders);
+      return same ?? newestActive(next.orders);
+    });
   };
   useEffect(() => {
     let active = true;
@@ -51,7 +58,7 @@ export function Desk() {
     void api<DeskView>().then(next => {
       if (!active) return;
       setView(next);
-      setSelected(next.orders[0] ?? null);
+      setSelected(newestActive(next.orders));
       // Send hands off recipient + amount after its own amount step.
       const params = new URLSearchParams(window.location.search);
       const to = params.get("recipient") ?? "", value = params.get("amount") ?? "";
@@ -105,21 +112,25 @@ export function Desk() {
     await refresh();
   });
   const canQuote = view?.enabled && (!selected || ["QUOTED", "DELIVERED", "REFUNDED", "EXPIRED"].includes(selected.state));
+  // One action at a time: while an order needs attention the form is hidden,
+  // so the screen never shows "Get a quote" and "Continue in Nimiq Pay" together.
+  const active = selected !== null && !["DELIVERED", "REFUNDED", "EXPIRED"].includes(selected.state);
+  const canCheck = selected !== null && ["AWAITING_NIM", "VERIFIED", "PAYOUT_PREPARED", "PAYOUT_SUBMITTED", "REFUND_DUE"].includes(selected.state);
   return <main className={styles.screen}>
     <ButtonLink href="/app/home" variant="ghost" size="sm">Back to home</ButtonLink>
     <header><p className={styles.eyebrow}>Open pilot · Polygon</p><h1>Pay NIM. Deliver USDC.</h1><p>Thence receives your NIM and pays the recipient from its own USDC wallet.</p></header>
     {message && <Notice live title="Payment update">{message}</Notice>}
     {!view && !message && <p role="status">Loading your payments…</p>}
     {view && !view.enabled && <Notice>New payments are paused. Existing payments can still be checked.</Notice>}
-    {canQuote && <form className={styles.card} onSubmit={event => { event.preventDefault(); void quote(); }}>
-      <label htmlFor="desk-network">Network</label>
-      <select id="desk-network" value={network} onChange={e => setNetwork(e.target.value === "arbitrum" ? "arbitrum" : "polygon")} disabled={busy}>
-        <option value="polygon">Polygon</option>
-        <option value="arbitrum">Arbitrum</option>
-      </select>
+    {canQuote && !active && <form className={styles.card} onSubmit={event => { event.preventDefault(); void quote(); }}>
+      <div className={styles.networks} role="group" aria-label="Network">
+        <button type="button" aria-pressed={network === "polygon"} disabled={busy} onClick={() => { setNetwork("polygon"); setSelected(null); }}>Polygon</button>
+        <button type="button" aria-pressed={network === "arbitrum"} disabled={busy} onClick={() => { setNetwork("arbitrum"); setSelected(null); }}>Arbitrum</button>
+      </div>
       <label htmlFor="desk-recipient">Recipient’s {network === "arbitrum" ? "Arbitrum" : "Polygon"} address</label><input id="desk-recipient" value={recipient} onChange={e => setRecipient(e.target.value)} autoComplete="off" spellCheck={false} disabled={busy} required />
       <label htmlFor="desk-amount">USDC they receive</label><input id="desk-amount" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" disabled={busy} required />
-      <Button type="submit" disabled={busy} block>Get a quote</Button>
+      <Button type="submit" disabled={busy} block>Get exact amount</Button>
+      <p className={styles.hint}>We’ll show the exact NIM to send before anything leaves your wallet.</p>
     </form>}
     {selected && <section className={styles.card} aria-label="Payment details">
       <h2>{selected.state === "QUOTED" ? "Review payment" : "Payment status"}</h2><p role="status">{descriptions[selected.state]}</p>
@@ -134,8 +145,8 @@ export function Desk() {
       {selected.state === "VERIFIED" && <Button variant="soft" disabled={busy} onClick={() => void run(async () => { await api({ action: "request-refund", id: selected.id }); await refresh(); })}>Request NIM return instead</Button>}
       {selected.payoutHash && <a href={`https://${selected.network === "arbitrum" ? "arbiscan.io" : "polygonscan.com"}/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
       {selected.refundHash && <p className={styles.hash}>Verified NIM return: {selected.refundHash}</p>}
-      <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>
+      {canCheck && <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>}
     </section>}
-    {view && view.orders.length > 1 && <section className={styles.card}><h2>Your pilot payments</h2>{view.orders.map(o => <Button key={o.id} variant="soft" size="sm" onClick={() => { setSelected(o); setHash(""); setConsent(false); }} disabled={busy}>{usdc(o.amountAtomic)} USDC · {o.network === "arbitrum" ? "Arbitrum" : "Polygon"} · {o.state.replaceAll("_", " ")} · {o.id.slice(0, 8)}</Button>)}</section>}
+
   </main>;
 }
