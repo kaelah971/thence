@@ -16,6 +16,9 @@ vi.mock("@/lib/desk/evm", () => ({
   deskEvm: () => ({ getChainId: async () => 137, getTransactionCount: async () => 0, sendRawTransaction: async ({ serializedTransaction }: { serializedTransaction: string }) => { mocks.broadcasts.push(serializedTransaction); if (mocks.broadcastFails) throw new Error("unknown response"); } }),
   signDeskPayout: async (_o: unknown, nonce: number) => { mocks.signs++; return { raw: `0x02${nonce}`, hash: `0x${nonce.toString(16).padStart(64, "0")}` }; },
   validateSignedDeskPayout: async () => {}, deskPayoutResult: async () => mocks.receipt,
+  deskPayoutEvidence: async () => mocks.receipt === "delivered"
+    ? { outcome: "delivered", blockNumber: 21, blockHash: `0x${"ab".repeat(32)}`, logIndexes: [0] }
+    : { outcome: mocks.receipt },
 }));
 
 describe.skipIf(!LIVE)("treasury ledger concurrency and recovery (isolated TEST DB)", () => {
@@ -31,6 +34,10 @@ describe.skipIf(!LIVE)("treasury ledger concurrency and recovery (isolated TEST 
   afterAll(async () => {
     await getPool().query("DELETE FROM desk_events WHERE order_id IN (SELECT id FROM desk_orders WHERE owner_id=ANY($1::uuid[]))", [ids]);
     await getPool().query("DELETE FROM desk_orders WHERE owner_id=ANY($1::uuid[])", [ids]);
+    // Source evidence restricts transfer deletion, so clear it first.
+    await getPool().query("DELETE FROM transfer_source_evidence WHERE transfer_id IN (SELECT id FROM transfers WHERE owner_user_id=ANY($1::uuid[]))", [ids]);
+    await getPool().query("DELETE FROM transfer_proofs WHERE transfer_id IN (SELECT id FROM transfers WHERE owner_user_id=ANY($1::uuid[]))", [ids]);
+    await getPool().query("DELETE FROM transfers WHERE owner_user_id=ANY($1::uuid[])", [ids]);
     await getPool().query("DELETE FROM users WHERE id=ANY($1::uuid[])", [ids]);
     vi.unstubAllEnvs();
   });

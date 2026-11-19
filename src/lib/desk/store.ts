@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { getPool } from "@/lib/db";
+import type { DeskSourceFacts } from "@/lib/nimiq-source";
 import { DeskError, type DeskState } from "./policy";
 import { syncMirror } from "./ledger";
 
@@ -8,7 +9,7 @@ export interface DeskPayload {
   nimLuna: string; feeLuna: string; baseLuna: string; memo: string;
   rateE18: string; rateObservedAt: string; feeBps: number;
   authorizedAt?: number; fundingDeadline?: number; code?: string;
-  refundHash?: string; reportedHash?: string; transferId?: string;
+  refundHash?: string; reportedHash?: string; transferId?: string; source?: DeskSourceFacts;
 }
 export interface DeskOrder {
   id: string; owner_id: string; state: DeskState; amount_atomic: string;
@@ -36,10 +37,10 @@ export async function loadDeskOrder(c: PoolClient, id: string, ownerId?: string)
   if (!rows[0]) throw new DeskError("NOT_FOUND", "Payment not found.", 404);
   return rows[0];
 }
-export async function transition(c: PoolClient, order: DeskOrder, state: DeskState, code: string): Promise<DeskOrder> {
+export async function transition(c: PoolClient, order: DeskOrder, state: DeskState, code: string, evidence?: Record<string, unknown>): Promise<DeskOrder> {
   const { rows } = await c.query<DeskOrder>("UPDATE desk_orders SET state=$2, payload=$3, updated_at=now() WHERE id=$1 RETURNING *", [order.id, state, JSON.stringify({ ...order.payload, code })]);
   await c.query("INSERT INTO desk_events(order_id,state,code) VALUES($1,$2,$3)", [order.id, state, code]);
-  await syncMirror(c, rows[0]!);
+  await syncMirror(c, rows[0]!, evidence);
   return rows[0]!;
 }
 export function publicDeskOrder(o: DeskOrder) {

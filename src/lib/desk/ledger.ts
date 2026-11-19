@@ -14,6 +14,7 @@ import type { PoolClient } from "pg";
 import { isTerminal, type TransferStatus } from "@/domain/transfers";
 import type { DeskState } from "./policy";
 import type { DeskOrder } from "./store";
+import { POLYGON_USDC } from "./policy";
 
 const DESK_STATUS: Record<DeskState, TransferStatus> = {
   QUOTED: "QUOTED",
@@ -65,7 +66,7 @@ export async function mirrorQuote(c: PoolClient, order: DeskOrder): Promise<stri
  * Mirrors one desk state change into its transfer row and the audit trail.
  * Silently does nothing for orders created before the mirror existed.
  */
-export async function syncMirror(c: PoolClient, order: DeskOrder): Promise<void> {
+export async function syncMirror(c: PoolClient, order: DeskOrder, extra?: Record<string, unknown>): Promise<void> {
   const transferId = order.payload.transferId;
   if (!transferId) return;
   const next = DESK_STATUS[order.state];
@@ -76,6 +77,73 @@ export async function syncMirror(c: PoolClient, order: DeskOrder): Promise<void>
   await c.query(
     `INSERT INTO transfer_transitions (transfer_id, from_status, to_status, actor, reason_code, evidence, terminal)
      VALUES ($1, $2, $3, 'reconciler', $4, $5, $6)`,
-    [transferId, from, next, `DESK_${order.state}`, JSON.stringify({ deskOrderId: order.id, code: order.payload.code ?? null }), isTerminal(next)],
+    [transferId, from, next, `DESK_${order.state}`, JSON.stringify({ deskOrderId: order.id, code: order.payload.code ?? null, ...extra }), isTerminal(next)],
   );
+}
+
+/**
+ * Publishes the global proof for a finalized desk delivery.
+ *
+ * The public feed only trusts a transition carrying the same Nimiq source
+ * facts the swap path records (`nimiqSource*`), plus a proof row with the
+ * finalized Polygon receipt. Both are written here in the delivery
+ * transaction, so a proof exists only if the delivery committed.
+ */
+export async function publishDeskProof(
+  c: PoolClient,
+  order: DeskOrder,
+  payout: { blockNumber: number; blockHash: string; logIndexes: number[] },
+): Promise<Record<string, unknown>> {
+  const transferId = order.payload.transferId;
+  const source = order.payload.source;
+  const deposit = order.deposit_hash;
+  const payoutHash = order.payout_hash;
+  if (!transferId || !source || !deposit || !payoutHash) return {};
+  const evidence = {
+    source: {
+      transactionHash: deposit,
+      sender: source.sender,
+      amountLuna: source.amountLuna,
+      feeLuna: source.feeLuna,
+      totalDebitLuna: source.totalDebitLuna,
+      blockNumber: source.blockNumber,
+      confirmations: source.confirmations,
+      macroBlockNumber: source.finalizedByMacroBlock,
+      network: source.network,
+      verifiedAt: source.verifiedAt,
+      rpcHost: source.rpcHost,
+    },
+  };
+  await c.query(
+    `INSERT INTO transfer_source_evidence
+       (transfer_id, nimiq_tx_hash, verdict, evidence, verifier_version, rpc_source, finality_policy, operator_ref)
+     VALUES ($1, $2, 'VERIFIED', $3, 'desk-worker-1', $4, 'nimiq-macro-finality', $5)
+     ON CONFLICT DO NOTHING`,
+    [transferId, deposit, JSON.stringify(evidence), source.rpcHost, `desk:${order.id}`.slice(0, 128)],
+  );
+  await c.query(
+    `INSERT INTO transfer_proofs
+       (transfer_id, nimiq_tx_hash, evm_tx_hash, evidence_source, chain_id, token_contract, recipient,
+        verified_amount_atomic, block_number, block_hash, log_indexes, finality_level, verified_at)
+     VALUES ($1, $2, $3, 'evm_erc20_transfer', 137, $4, $5, $6, $7, $8, $9, 'finalized', now())
+     ON CONFLICT (transfer_id) DO NOTHING`,
+    [
+      transferId, deposit, payoutHash, POLYGON_USDC, order.payload.recipient.toLowerCase(),
+      order.amount_atomic, payout.blockNumber, payout.blockHash, JSON.stringify(payout.logIndexes),
+    ],
+  );
+  return {
+    nimiqSourceVerification: "VERIFIED",
+    nimiqSourceTxHash: deposit,
+    nimiqSourceSenderAddress: source.sender,
+    nimiqSourceAmountLuna: source.amountLuna,
+    nimiqSourceFeeLuna: source.feeLuna,
+    nimiqSourceTotalDebitLuna: source.totalDebitLuna,
+    nimiqSourceBlockNumber: source.blockNumber,
+    nimiqSourceConfirmations: source.confirmations,
+    nimiqSourceFinalizedByMacroBlock: source.finalizedByMacroBlock,
+    nimiqSourceNetwork: source.network,
+    nimiqSourceVerifiedAt: source.verifiedAt,
+    nimiqSourceRpcHost: source.rpcHost,
+  };
 }

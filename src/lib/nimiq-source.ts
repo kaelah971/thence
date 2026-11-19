@@ -139,10 +139,15 @@ export function normalizeNimiqSourceHash(value: unknown): string | null {
 }
 
 /** Treasury pilot: an ordinary, owner-authenticated NIM payment, not a Lightning HTLC. */
+export interface DeskSourceFacts {
+  sender: string; amountLuna: string; feeLuna: string; totalDebitLuna: string;
+  blockNumber: string; confirmations: string; finalizedByMacroBlock: string;
+  network: "mainnet" | "testnet"; verifiedAt: string; rpcHost: string;
+}
 export async function verifyDeskNimPayment(input: {
   txHash: string; ownerAddress: string; recipientAddress: string; amountLuna: string;
   memo: string; earliestMs: number; config: NimiqSourceRpcConfig;
-}): Promise<{ ok: true; timestampMs: number; blockNumber: number } | { ok: false; code: string }> {
+}): Promise<{ ok: true; timestampMs: number; blockNumber: number; source: DeskSourceFacts } | { ok: false; code: string }> {
   const hash = normalizeNimiqSourceHash(input.txHash);
   const owner = cleanAddress(input.ownerAddress), recipient = cleanAddress(input.recipientAddress);
   if (!hash || !owner || !recipient || !/^https:\/\//.test(input.config.url) || !/^[1-9]\d*$/.test(input.amountLuna)) return { ok: false, code: "INVALID_INPUT" };
@@ -173,7 +178,16 @@ export async function verifyDeskNimPayment(input: {
     if (blockNumber === null || confirmations === null || confirmations < input.config.minConfirmations) return { ok: false, code: "INSUFFICIENT_FINALITY" };
     const finality = await macroFinality(call, blockNumber, input.config.network);
     if (!finality.ok) return finality;
-    return { ok: true, timestampMs: timestampMs!, blockNumber };
+    // Retained so the desk can publish a source-verified public proof. These are
+    // the same facts the swap verifier records in its handoff transition.
+    return { ok: true, timestampMs: timestampMs!, blockNumber, source: {
+      sender: sender!, amountLuna: value.toString(), feeLuna: fee.toString(),
+      totalDebitLuna: (value + fee).toString(),
+      blockNumber: String(blockNumber), confirmations: String(confirmations),
+      finalizedByMacroBlock: String(finality.finalizedByMacroBlock),
+      network: input.config.network, verifiedAt: new Date(timestampMs!).toISOString(),
+      rpcHost: new URL(input.config.url).hostname,
+    } };
   } catch { return { ok: false, code: "PROVIDER_UNAVAILABLE" }; }
 }
 
