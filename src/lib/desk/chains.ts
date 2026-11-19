@@ -42,7 +42,9 @@ export function deskChainConfig(name: DeskChain): DeskChainConfig {
   if (name === "arbitrum") {
     const rpc = process.env["THENCE_DESK_ARBITRUM_RPC"] ?? "";
     if (!/^https:\/\//.test(rpc)) throw new DeskError("DESK_NOT_CONFIGURED", "The Arbitrum payout RPC is not configured.", 503);
-    return { name, label: "Arbitrum", chainId: 42161, usdc: ARBITRUM_USDC, rpc, chain: arbitrum, gasSymbol: "ETH", gasFloor: 200_000_000_000_000n, finalityLagMs: 3_600_000 };
+    // An ERC20 transfer costs ~0.00002 ETH on Arbitrum; 0.0001 allows a few
+    // payouts without letting an empty wallet queue work it cannot broadcast.
+    return { name, label: "Arbitrum", chainId: 42161, usdc: ARBITRUM_USDC, rpc, chain: arbitrum, gasSymbol: "ETH", gasFloor: 100_000_000_000_000n, finalityLagMs: 3_600_000 };
   }
   // Polygon reuses the validated desk config so there is one source of truth.
   const rpc = deskConfig().rpc;
