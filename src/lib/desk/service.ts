@@ -7,6 +7,7 @@ import { amountAtomic, deskCharge, DeskError } from "./policy";
 import { deskRate } from "./price";
 import { assertDeskSigner, deskBalances, deskEvm, deskPayoutResult, signDeskPayout, validateSignedDeskPayout } from "./evm";
 import { deskTransaction, loadDeskOrder, publicDeskOrder, transition, type DeskOrder, type DeskPayload } from "./store";
+import { mirrorQuote } from "./ledger";
 
 export async function listDeskOrders(ownerId: string, ownerAddress: string) {
   const config = assertDeskOwner(ownerAddress);
@@ -38,7 +39,10 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
     const payload: DeskPayload = { ownerAddress, recipient: getAddress(recipient), nimAddress: config.nimAddress, nimLuna: charge.totalLuna.toString(), baseLuna: charge.baseLuna.toString(), feeLuna: charge.feeLuna.toString(), memo: `THENCE:D:${id}`, rateE18: rate.rateE18.toString(), rateObservedAt: rate.observedAt, feeBps: config.feeBps };
     const inserted = await c.query<DeskOrder>("INSERT INTO desk_orders(id,owner_id,request_key,state,amount_atomic,payout_wallet,expires_at,payload) VALUES($1,$2,$3,'QUOTED',$4,$5,$6,$7) RETURNING *", [id, ownerId, requestKey, atomic.toString(), config.polygonAddress, expires, JSON.stringify(payload)]);
     await c.query("INSERT INTO desk_events(order_id,state,code) VALUES($1,'QUOTED','USDC_RESERVED')", [id]);
-    return publicDeskOrder(inserted.rows[0]!);
+    // Activity and the global proof feed read `transfers`; mirror the order there.
+    const transferId = await mirrorQuote(c, inserted.rows[0]!);
+    const linked = await c.query<DeskOrder>("UPDATE desk_orders SET payload = $2 WHERE id = $1 RETURNING *", [id, JSON.stringify({ ...payload, transferId })]);
+    return publicDeskOrder(linked.rows[0]!);
   });
 }
 export async function authorizeDesk(ownerId: string, ownerAddress: string, id: string) {

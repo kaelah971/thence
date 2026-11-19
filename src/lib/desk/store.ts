@@ -1,13 +1,14 @@
 import type { PoolClient } from "pg";
 import { getPool } from "@/lib/db";
 import { DeskError, type DeskState } from "./policy";
+import { syncMirror } from "./ledger";
 
 export interface DeskPayload {
   ownerAddress: string; recipient: `0x${string}`; nimAddress: string;
   nimLuna: string; feeLuna: string; baseLuna: string; memo: string;
   rateE18: string; rateObservedAt: string; feeBps: number;
   authorizedAt?: number; fundingDeadline?: number; code?: string;
-  refundHash?: string; reportedHash?: string;
+  refundHash?: string; reportedHash?: string; transferId?: string;
 }
 export interface DeskOrder {
   id: string; owner_id: string; state: DeskState; amount_atomic: string;
@@ -38,6 +39,7 @@ export async function loadDeskOrder(c: PoolClient, id: string, ownerId?: string)
 export async function transition(c: PoolClient, order: DeskOrder, state: DeskState, code: string): Promise<DeskOrder> {
   const { rows } = await c.query<DeskOrder>("UPDATE desk_orders SET state=$2, payload=$3, updated_at=now() WHERE id=$1 RETURNING *", [order.id, state, JSON.stringify({ ...order.payload, code })]);
   await c.query("INSERT INTO desk_events(order_id,state,code) VALUES($1,$2,$3)", [order.id, state, code]);
+  await syncMirror(c, rows[0]!);
   return rows[0]!;
 }
 export function publicDeskOrder(o: DeskOrder) {

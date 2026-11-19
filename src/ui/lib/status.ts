@@ -24,6 +24,10 @@ export const STAGE_OF: Record<TransferStatus, TransferStage> = {
   DELIVERED: "delivered",
   // R7: a verified delivery, but below the request (never the plain "Delivered" pill).
   DELIVERED_SHORT: "delivered",
+  // Treasury desk: waiting for the owner's NIM, then paying out from the treasury.
+  DESK_AWAITING_NIM: "approval",
+  DESK_PAYING_OUT: "moving",
+  DESK_REFUND_DUE: "attention",
 };
 
 export const STAGE_LABEL: Record<Exclude<TransferStage, "closed">, string> = {
