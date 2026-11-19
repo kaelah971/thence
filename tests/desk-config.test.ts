@@ -40,12 +40,15 @@ describe("treasury desk access mode", () => {
     expect(() => assertDeskOwner(stranger, true)).toThrow(/paused/i);
   });
 
-  it("keeps a fat-finger ceiling on the per-payment maximum", () => {
+  it("keeps fat-finger bounds on both ends", () => {
     stage({ THENCE_DESK_MAX_USDC_ATOMIC: "1000000000" });
+    expect(deskConfig().minAtomic).toBe(10_000n);
     expect(deskConfig().maxAtomic).toBe(1_000_000_000n);
     stage({ THENCE_DESK_MAX_USDC_ATOMIC: "1000000001" });
     expect(() => deskConfig()).toThrow(/invalid pilot limits/i);
-    stage({ THENCE_DESK_MAX_USDC_ATOMIC: "299999" });
+    stage({ THENCE_DESK_MIN_USDC_ATOMIC: "9999" });
+    expect(() => deskConfig()).toThrow(/invalid pilot limits/i);
+    stage({ THENCE_DESK_MIN_USDC_ATOMIC: "20000", THENCE_DESK_MAX_USDC_ATOMIC: "10000" });
     expect(() => deskConfig()).toThrow(/invalid pilot limits/i);
   });
 });

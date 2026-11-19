@@ -18,7 +18,7 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
   assertDeskSigner(config.polygonAddress);
   if (!isAddress(recipient) || /^0x0{40}$/i.test(recipient) || recipient.toLowerCase() === config.polygonAddress.toLowerCase() || !/^[a-zA-Z0-9_-]{8,80}$/.test(requestKey)) throw new DeskError("INVALID_INPUT", "Check the recipient and request identifier.", 400);
   const atomic = amountAtomic(amount, 6);
-  if (atomic < 300000n || atomic > config.maxAtomic) throw new DeskError("AMOUNT_LIMIT", "Pilot payments must be between 0.30 USDC and the configured maximum.", 400);
+  if (atomic < config.minAtomic || atomic > config.maxAtomic) throw new DeskError("AMOUNT_LIMIT", `Pilot payments must be between ${Number(config.minAtomic) / 1e6} USDC and the configured maximum.`, 400);
   const rate = await deskRate(), charge = deskCharge(atomic, rate.rateE18, config.feeBps);
   return deskTransaction(async c => {
     const existing = await c.query<DeskOrder>("SELECT * FROM desk_orders WHERE owner_id=$1 AND request_key=$2", [ownerId, requestKey]);

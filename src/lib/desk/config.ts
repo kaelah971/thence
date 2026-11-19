@@ -15,9 +15,11 @@ export function deskConfig() {
   if (!nim || !isAddress(polygon) || !/^https:\/\//.test(rpc) || !/^https:\/\//.test(nimRpc) || (!open && owners.length === 0)) throw new DeskError("DESK_NOT_CONFIGURED", "The Polygon payment pilot is not configured.", 503);
   const feeBps = Number(process.env["THENCE_DESK_FEE_BPS"] ?? "50");
   const maxAtomic = BigInt(process.env["THENCE_DESK_MAX_USDC_ATOMIC"] ?? "5000000");
-  // Upper ceiling is a fat-finger guard, not a liquidity policy: 1000 USDC.
-  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 1000 || maxAtomic < 300000n || maxAtomic > 1_000_000_000n) throw new DeskError("DESK_NOT_CONFIGURED", "Invalid pilot limits.", 503);
-  return { nimAddress: normalizeNimiqAddress(nim), polygonAddress: getAddress(polygon), rpc, nimRpc, owners, open, feeBps, maxAtomic, enabled: process.env["THENCE_DESK_ENABLED"] === "true" };
+  const minAtomic = BigInt(process.env["THENCE_DESK_MIN_USDC_ATOMIC"] ?? "10000");
+  // Floors are fat-finger guards, not a liquidity policy: 0.01 USDC minimum
+  // and a 1000 USDC ceiling, with min <= max.
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 1000 || minAtomic < 10000n || maxAtomic < minAtomic || maxAtomic > 1_000_000_000n) throw new DeskError("DESK_NOT_CONFIGURED", "Invalid pilot limits.", 503);
+  return { nimAddress: normalizeNimiqAddress(nim), polygonAddress: getAddress(polygon), rpc, nimRpc, owners, open, feeBps, minAtomic, maxAtomic, enabled: process.env["THENCE_DESK_ENABLED"] === "true" };
 }
 export function assertDeskOwner(owner: string, newFunding = false) {
   const config = deskConfig();
