@@ -80,7 +80,7 @@ async function main() {
     requireValue(await client.getChainId() === 137, 'WRONG_CHAIN');
     const block = await client.getBlock({ blockTag: 'finalized' });
     requireValue(Date.now() - Number(block.timestamp) * 1000 < 300000, 'STALE_FINALITY');
-    let arbitrum = null;
+    let arbitrumBalances = null;
     try {
       const arbRpc = env.THENCE_DESK_ARBITRUM_RPC;
       if (arbRpc) {
@@ -90,9 +90,9 @@ async function main() {
           arb.readContract({ address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: arbBlock.number }),
           arb.getBalance({ address: PAYOUT, blockNumber: arbBlock.number }),
         ]);
-        arbitrum = { usdcAtomic: arbUsdc.toString(), gasWei: arbGas.toString(), block: arbBlock.number };
+        arbitrumBalances = { usdcAtomic: arbUsdc.toString(), gasWei: arbGas.toString(), block: arbBlock.number };
       }
-    } catch { arbitrum = { error: 'ARBITRUM_UNAVAILABLE' }; }
+    } catch { arbitrumBalances = { error: 'ARBITRUM_UNAVAILABLE' }; }
     const [usdc, pol] = await Promise.all([
       client.readContract({ address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: block.number }),
       client.getBalance({ address: PAYOUT, blockNumber: block.number }),
@@ -114,7 +114,7 @@ async function main() {
       requireValue(result.status === 0 && result.stdout.trim() === 'success', 'WORKER_LAST_RUN_FAILED');
       writeConfig({ THENCE_DESK_ENABLED: 'true' });
     }
-    console.log(JSON.stringify({ preflight: 'passed', mode, arbitrum, signerMatches: true, nativeUsdcAtomic: usdc.toString(), polWei: pol.toString(), collectionBasic: true, historyReadable: true, open: env.THENCE_DESK_OPEN === 'true', privateOwners: (env.THENCE_DESK_OWNER_ADDRESSES || '').split(',').filter(Boolean).length }));
+    console.log(JSON.stringify({ preflight: 'passed', mode, arbitrum: arbitrumBalances, signerMatches: true, nativeUsdcAtomic: usdc.toString(), polWei: pol.toString(), collectionBasic: true, historyReadable: true, open: env.THENCE_DESK_OPEN === 'true', privateOwners: (env.THENCE_DESK_OWNER_ADDRESSES || '').split(',').filter(Boolean).length }));
   } finally { await pool.end(); }
 }
 main().catch(error => {
