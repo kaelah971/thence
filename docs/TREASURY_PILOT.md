@@ -37,7 +37,7 @@ Set server-only variables from `.env.example`:
 - `THENCE_DESK_OPEN=true` removes the invite list: every signed-in wallet may quote and pay. This is a product decision, not a safety default — the only remaining spend bound is the on-chain USDC balance, so anyone can draw the treasury down. Closed mode (the default) is the safe posture for an unfunded or unproven desk.
 - `THENCE_DESK_MIN_USDC_ATOMIC` is the per-payment floor (default `10000`, 0.01 USDC; hard floor 0.01 USDC).
 - `THENCE_DESK_MAX_USDC_ATOMIC` is the per-payment ceiling (default `5000000`, 5 USDC; hard limit 1000 USDC). It must be at least the floor.
-- `THENCE_DESK_POLYGON_RPC` and `THENCE_DESK_ARBITRUM_RPC` to trusted HTTPS mainnet RPCs supporting finalized blocks. Each chain needs its own native USDC balance and gas at the payout wallet (`POL` on Polygon, `ETH` on Arbitrum). A quote is refused with `GAS_LOW` when that chain cannot broadcast.
+- `THENCE_DESK_POLYGON_RPC`, `THENCE_DESK_ARBITRUM_RPC` and `THENCE_DESK_BASE_RPC` to trusted HTTPS mainnet RPCs supporting finalized blocks. Each chain needs its own native USDC balance and gas at the payout wallet (`POL` on Polygon, `ETH` on Arbitrum and Base). A quote is refused with `GAS_LOW` when that chain cannot broadcast.
 - `THENCE_NIMIQ_PROOF_RPC_URL` to a trusted HTTPS archive/history-capable Nimiq mainnet node.
 - `THENCE_DESK_POLYGON_PRIVATE_KEY` through secure server secret configuration only. It must derive the payout address. No NIM key is needed for this implementation; NIM returns are operator-sent.
 - `CRON_SECRET` with at least 32 random characters, securely configured.
@@ -72,7 +72,7 @@ For a `VERIFIED` deposit whose payout cannot be prepared (for example, gas estim
 
 For `REFUND_DUE`, first confirm no payout was prepared, or independently verify the saved payout's **finalized reverted** receipt. From the NIM collection wallet, send the full `payload.nimLuna` back to `payload.ownerAddress`, paying any NIM network fee separately. Attach text `THENCE:R:<order-id>`. After macro finality, the authenticated owner can report its hash using `POST /api/desk` `{ "action": "refund", "id": "<order-id>", "hash": "<NIM transaction hash>" }`. This verifies the exact full return and records `REFUNDED`; it never sends money. If a payout is unknown, the API refuses to close a refund. Refund queue monitoring and operator availability are required before activation.
 
-Polygon and Arbitrum are both treasury-desk routes: the same signer wallet pays native USDC on either chain from its own balance there. Base treasury delivery remains future work.
+Polygon, Arbitrum and Base are treasury-desk routes: the same signer wallet pays native USDC on each chain from its own balance there.
 
 ## Development verification
 

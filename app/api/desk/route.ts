@@ -8,7 +8,7 @@ import { authorizeDesk, checkDeskOrder, listDeskOrders, quoteDesk, reportDeskDep
 
 export const runtime = "nodejs";
 const command = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("quote"), recipient: z.string().max(42), amount: z.string().max(40), requestKey: z.string().max(80), network: z.enum(["polygon", "arbitrum"]).optional() }).strict(),
+  z.object({ action: z.literal("quote"), recipient: z.string().max(42), amount: z.string().max(40), requestKey: z.string().max(80), network: z.enum(["polygon", "arbitrum", "base"]).optional() }).strict(),
   z.object({ action: z.literal("authorize"), id: z.string().uuid() }).strict(),
   z.object({ action: z.literal("check"), id: z.string().uuid() }).strict(),
   z.object({ action: z.literal("request-refund"), id: z.string().uuid() }).strict(),

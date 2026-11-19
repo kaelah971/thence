@@ -24,8 +24,8 @@ export const PUBLIC_PROOF_DECIMALS = 6;
 export const PUBLIC_PROOF_NIM_DECIMALS = 5;
 export const PUBLIC_PROOF_ASSET = "USDC" as const;
 
-export type PublicProofNetwork = "Polygon" | "Arbitrum";
-export type PublicProofChainId = 137 | 42161;
+export type PublicProofNetwork = "Polygon" | "Arbitrum" | "Base";
+export type PublicProofChainId = 137 | 42161 | 8453;
 export type PublicProofSourceNetwork = "mainnet" | "testnet";
 export type PublicProofSourceEvidence = "VERIFIED";
 
@@ -345,7 +345,7 @@ function finalityPolicyFor(
 ): { mode: "finalized" | "confirmations"; confirmations: number } | null {
   // Arbitrum publication never treats a soft confirmation count as L1
   // finality, even if an operator supplied a weaker override elsewhere.
-  if (chainId === 42161) return DEFAULT_FINALITY_POLICY[42161] ?? null;
+  if (chainId === 42161 || chainId === 8453) return DEFAULT_FINALITY_POLICY[chainId] ?? null;
   const override = overrides[String(chainId)];
   if (!override) return DEFAULT_FINALITY_POLICY[chainId] ?? null;
   if (override.mode !== "finalized" && override.mode !== "confirmations") return null;
@@ -357,7 +357,7 @@ function finalityLevelFor(policy: { mode: "finalized" | "confirmations"; confirm
   return policy.mode === "finalized" ? "finalized" : `confirmations-${policy.confirmations}`;
 }
 
-function trustedTokenFor(routeId: "usdc-polygon" | "usdc-arbitrum", config: PublicProofPublicationConfig): string | null {
+function trustedTokenFor(routeId: "usdc-polygon" | "usdc-arbitrum" | "usdc-base", config: PublicProofPublicationConfig): string | null {
   const configured = config.routeTokens[routeId]?.trim().toLowerCase();
   if (!configured || !EVM_ADDRESS_RE.test(configured)) return null;
   if (routeId === "usdc-arbitrum") {
@@ -367,12 +367,15 @@ function trustedTokenFor(routeId: "usdc-polygon" | "usdc-arbitrum", config: Publ
   return configured;
 }
 
-function routeIdentityFor(row: PublicProofRow): { routeId: "usdc-polygon" | "usdc-arbitrum"; chainId: PublicProofChainId; network: PublicProofNetwork } | null {
+function routeIdentityFor(row: PublicProofRow): { routeId: "usdc-polygon" | "usdc-arbitrum" | "usdc-base"; chainId: PublicProofChainId; network: PublicProofNetwork } | null {
   if (row.transfer.routeId === "usdc-polygon" && row.transfer.targetAsset === "USDC" && row.transfer.targetNetwork === "Polygon") {
     return { routeId: "usdc-polygon", chainId: 137, network: "Polygon" };
   }
   if (row.transfer.routeId === "usdc-arbitrum" && row.transfer.targetAsset === "USDC" && row.transfer.targetNetwork === "Arbitrum") {
     return { routeId: "usdc-arbitrum", chainId: 42161, network: "Arbitrum" };
+  }
+  if (row.transfer.routeId === "usdc-base" && row.transfer.targetAsset === "USDC" && row.transfer.targetNetwork === "Base") {
+    return { routeId: "usdc-base", chainId: 8453, network: "Base" };
   }
   return null;
 }

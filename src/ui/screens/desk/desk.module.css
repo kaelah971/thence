@@ -14,7 +14,7 @@
 .consent input { margin-top: 4px; width: 20px; height: 20px; flex-shrink: 0; }
 .hash { overflow-wrap: anywhere; }
 
-.networks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; background: var(--mist-100); border: 1px solid var(--mist-200); border-radius: var(--r-full); }
+.networks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 4px; background: var(--mist-100); border: 1px solid var(--mist-200); border-radius: var(--r-full); }
 .networks button { border: 0; background: transparent; border-radius: var(--r-full); padding: 10px 12px; font: 600 .875rem var(--font-body); color: var(--text-2); cursor: pointer; }
 .networks button[aria-pressed="true"] { background: var(--ink-900); color: var(--on-ink); }
 .networks button:disabled { opacity: .6; cursor: default; }

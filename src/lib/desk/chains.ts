@@ -1,20 +1,20 @@
-import { arbitrum, polygon } from "viem/chains";
-import { DeskError, ARBITRUM_USDC, POLYGON_USDC } from "./policy";
+import { arbitrum, base, polygon } from "viem/chains";
+import { DeskError, ARBITRUM_USDC, BASE_USDC, POLYGON_USDC } from "./policy";
 import { deskConfig } from "./config";
 
 /**
  * Chains the treasury desk can pay out on. Both are paid by the same signer
  * wallet; only the RPC, native USDC contract and gas asset differ.
  */
-export type DeskChain = "polygon" | "arbitrum";
+export type DeskChain = "polygon" | "arbitrum" | "base";
 
 export interface DeskChainConfig {
   name: DeskChain;
   label: string;
-  chainId: 137 | 42161;
+  chainId: 137 | 42161 | 8453;
   usdc: `0x${string}`;
   rpc: string;
-  chain: typeof polygon | typeof arbitrum;
+  chain: typeof polygon | typeof arbitrum | typeof base;
   /** Native asset symbol, for messages only. */
   gasSymbol: "POL" | "ETH";
   /** Refuse new quotes below this gas balance; a payout must be broadcastable. */
@@ -27,13 +27,18 @@ export interface DeskChainConfig {
   finalityLagMs: number;
 }
 
-export const DESK_CHAINS: DeskChain[] = ["polygon", "arbitrum"];
+export const DESK_CHAINS: DeskChain[] = ["polygon", "arbitrum", "base"];
 
 export function isDeskChain(value: unknown): value is DeskChain {
-  return value === "polygon" || value === "arbitrum";
+  return value === "polygon" || value === "arbitrum" || value === "base";
 }
 
 export function deskChainConfig(name: DeskChain): DeskChainConfig {
+  if (name === "base") {
+    const rpc = process.env["THENCE_DESK_BASE_RPC"] ?? "";
+    if (!/^https:\/\//.test(rpc)) throw new DeskError("DESK_NOT_CONFIGURED", "The Base payout RPC is not configured.", 503);
+    return { name, label: "Base", chainId: 8453, usdc: BASE_USDC, rpc, chain: base, gasSymbol: "ETH", gasFloor: 200_000_000_000_000n, finalityLagMs: 3_600_000 };
+  }
   if (name === "arbitrum") {
     const rpc = process.env["THENCE_DESK_ARBITRUM_RPC"] ?? "";
     if (!/^https:\/\//.test(rpc)) throw new DeskError("DESK_NOT_CONFIGURED", "The Arbitrum payout RPC is not configured.", 503);
