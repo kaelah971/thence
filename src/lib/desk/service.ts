@@ -8,14 +8,16 @@ import { deskRate } from "./price";
 import { assertDeskSigner, deskBalances, deskEvm, deskPayoutEvidence, deskPayoutResult, signDeskPayout, validateSignedDeskPayout } from "./evm";
 import { deskTransaction, loadDeskOrder, publicDeskOrder, transition, type DeskOrder, type DeskPayload } from "./store";
 import { mirrorQuote, publishDeskProof } from "./ledger";
+import { deskChainConfig, isDeskChain, type DeskChain } from "./chains";
 
 export async function listDeskOrders(ownerId: string, ownerAddress: string) {
   const config = assertDeskOwner(ownerAddress);
   const result = await getPool().query<DeskOrder>("SELECT * FROM desk_orders WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 30", [ownerId]);
   return { enabled: config.enabled, collectionAddress: config.nimAddress, payoutAddress: config.polygonAddress, orders: result.rows.map(publicDeskOrder) };
 }
-export async function quoteDesk(ownerId: string, ownerAddress: string, recipient: string, amount: string, requestKey: string) {
+export async function quoteDesk(ownerId: string, ownerAddress: string, recipient: string, amount: string, requestKey: string, chain: DeskChain = "polygon") {
   const config = assertDeskOwner(ownerAddress, true);
+  if (!isDeskChain(chain)) throw new DeskError("INVALID_NETWORK", "Choose Polygon or Arbitrum.", 400);
   assertDeskSigner(config.polygonAddress);
   if (!isAddress(recipient) || /^0x0{40}$/i.test(recipient) || recipient.toLowerCase() === config.polygonAddress.toLowerCase() || !/^[a-zA-Z0-9_-]{8,80}$/.test(requestKey)) throw new DeskError("INVALID_INPUT", "Check the recipient and request identifier.", 400);
   const atomic = amountAtomic(amount, 6);
@@ -32,11 +34,11 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
     const expired = await c.query<DeskOrder>("SELECT * FROM desk_orders WHERE state='QUOTED' AND (expires_at<=now() OR owner_id=$1)", [ownerId]);
     for (const previous of expired.rows) await transition(c, previous, "EXPIRED", "QUOTE_REPLACED_OR_EXPIRED");
     // Read chain balances inside the shared lock so concurrent deliveries cannot stale the snapshot.
-    const balances = await deskBalances();
-    const reserved = await c.query<{ total: string }>("SELECT COALESCE(SUM(amount_atomic::numeric),0)::text AS total FROM desk_orders WHERE lower(payout_wallet)=lower($1) AND (state IN ('AWAITING_NIM','VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED') OR (state='QUOTED' AND expires_at>now()))", [config.polygonAddress]);
+    const balances = await deskBalances(chain, config.polygonAddress);
+    const reserved = await c.query<{ total: string }>("SELECT COALESCE(SUM(amount_atomic::numeric),0)::text AS total FROM desk_orders WHERE lower(payout_wallet)=lower($1) AND COALESCE(payload->>'chain','polygon')=$2 AND (state IN ('AWAITING_NIM','VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED') OR (state='QUOTED' AND expires_at>now()))", [config.polygonAddress, chain]);
     if (balances.usdc - BigInt(reserved.rows[0]!.total) < atomic) throw new DeskError("LIQUIDITY_LOW", "There is not enough unreserved USDC for this payment.");
     const id = randomUUID(), expires = new Date(Date.now() + 60_000);
-    const payload: DeskPayload = { ownerAddress, recipient: getAddress(recipient), nimAddress: config.nimAddress, nimLuna: charge.totalLuna.toString(), baseLuna: charge.baseLuna.toString(), feeLuna: charge.feeLuna.toString(), memo: `THENCE:D:${id}`, rateE18: rate.rateE18.toString(), rateObservedAt: rate.observedAt, feeBps: config.feeBps };
+    const payload: DeskPayload = { ownerAddress, chain, recipient: getAddress(recipient), nimAddress: config.nimAddress, nimLuna: charge.totalLuna.toString(), baseLuna: charge.baseLuna.toString(), feeLuna: charge.feeLuna.toString(), memo: `THENCE:D:${id}`, rateE18: rate.rateE18.toString(), rateObservedAt: rate.observedAt, feeBps: config.feeBps };
     const inserted = await c.query<DeskOrder>("INSERT INTO desk_orders(id,owner_id,request_key,state,amount_atomic,payout_wallet,expires_at,payload) VALUES($1,$2,$3,'QUOTED',$4,$5,$6,$7) RETURNING *", [id, ownerId, requestKey, atomic.toString(), config.polygonAddress, expires, JSON.stringify(payload)]);
     await c.query("INSERT INTO desk_events(order_id,state,code) VALUES($1,'QUOTED','USDC_RESERVED')", [id]);
     // Activity and the global proof feed read `transfers`; mirror the order there.
@@ -99,8 +101,8 @@ async function preparePayout(id: string) {
   return deskTransaction(async c => {
     let order = await loadDeskOrder(c, id);
     if (order.state !== "VERIFIED") return order;
-    const client = deskEvm();
-    if (await client.getChainId() !== 137) throw new DeskError("WRONG_CHAIN", "Invalid Polygon network.", 503);
+    const chain = deskChainConfig(order.payload.chain), client = deskEvm(order.payload.chain);
+    if (await client.getChainId() !== chain.chainId) throw new DeskError("WRONG_CHAIN", `Invalid ${chain.label} network.`, 503);
     const networkNonce = await client.getTransactionCount({ address: order.payout_wallet, blockTag: "pending" });
     const stored = await c.query<{ nonce: string | null }>("SELECT MAX(payout_nonce)::text AS nonce FROM desk_orders WHERE lower(payout_wallet)=lower($1)", [order.payout_wallet]);
     const nonce = Math.max(networkNonce, stored.rows[0]?.nonce === null ? 0 : Number(stored.rows[0]!.nonce) + 1);
@@ -118,8 +120,8 @@ export async function processDeskPayout(id: string) {
   const result = evidence.outcome;
   if (result === "pending") {
     // Identical bytes on every retry: an RPC timeout cannot create another payment.
-    const client = deskEvm();
-    if (await client.getChainId() !== 137) throw new DeskError("WRONG_CHAIN", "Invalid Polygon network.", 503);
+    const chain = deskChainConfig(order.payload.chain), client = deskEvm(order.payload.chain);
+    if (await client.getChainId() !== chain.chainId) throw new DeskError("WRONG_CHAIN", `Invalid ${chain.label} network.`, 503);
     try { await client.sendRawTransaction({ serializedTransaction: order.signed_payout! }); } catch { /* Broadcast outcome unknown; keep reservation and saved bytes. */ }
     order = await deskTransaction(async c => {
       const current = await loadDeskOrder(c, id);

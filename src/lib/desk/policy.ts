@@ -1,4 +1,5 @@
 export const POLYGON_USDC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359" as const;
+export const ARBITRUM_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as const;
 export const DESK_STATES = ["QUOTED", "AWAITING_NIM", "VERIFIED", "PAYOUT_PREPARED", "PAYOUT_SUBMITTED", "DELIVERED", "REFUND_DUE", "REFUNDED", "EXPIRED"] as const;
 export type DeskState = typeof DESK_STATES[number];
 export class DeskError extends Error {

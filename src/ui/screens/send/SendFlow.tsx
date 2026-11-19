@@ -300,7 +300,8 @@ export function SendFlow(): React.JSX.Element {
     if (mode === "send" && kindForRouteId(routeId) === "nimiq-desk" && payee?.address && evaluation.kind === "value") {
       const value = formatFixed(evaluation.value, decimals);
       if (value && value !== "0") {
-        router.push(`/app/desk?recipient=${encodeURIComponent(payee.address)}&amount=${encodeURIComponent(value)}`);
+        const network = routeId === "usdc-arbitrum" ? "arbitrum" : "polygon";
+        router.push(`/app/desk?recipient=${encodeURIComponent(payee.address)}&amount=${encodeURIComponent(value)}&network=${network}`);
         return;
       }
     }

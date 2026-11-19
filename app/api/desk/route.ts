@@ -8,7 +8,7 @@ import { authorizeDesk, checkDeskOrder, listDeskOrders, quoteDesk, reportDeskDep
 
 export const runtime = "nodejs";
 const command = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("quote"), recipient: z.string().max(42), amount: z.string().max(40), requestKey: z.string().max(80) }).strict(),
+  z.object({ action: z.literal("quote"), recipient: z.string().max(42), amount: z.string().max(40), requestKey: z.string().max(80), network: z.enum(["polygon", "arbitrum"]).optional() }).strict(),
   z.object({ action: z.literal("authorize"), id: z.string().uuid() }).strict(),
   z.object({ action: z.literal("check"), id: z.string().uuid() }).strict(),
   z.object({ action: z.literal("request-refund"), id: z.string().uuid() }).strict(),
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
     const parsed = command.safeParse(await readJsonBody(request));
     if (!parsed.success) return response({ error: "INVALID_INPUT", message: "Invalid payment request." }, 400);
     const input = parsed.data, owner = session.nimiqAddress, user = session.userId;
-    if (input.action === "quote") return response({ order: await quoteDesk(user, owner, input.recipient, input.amount, input.requestKey) });
+    if (input.action === "quote") return response({ order: await quoteDesk(user, owner, input.recipient, input.amount, input.requestKey, input.network ?? "polygon") });
     if (input.action === "authorize") return response(await authorizeDesk(user, owner, input.id));
     if (input.action === "report") return response({ order: await reportDeskDeposit(user, owner, input.id, input.hash) });
     if (input.action === "refund") return response({ order: await reportDeskRefund(user, owner, input.id, input.hash) });

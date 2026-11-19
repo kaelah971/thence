@@ -328,7 +328,7 @@ export async function listPublicRoutes(): Promise<{ routes: PublicRouteInfo[]; p
         tokenSymbol = pair?.asset ?? null;
         tokenDecimals = 6;
         tokenAddress = null;
-        chainId = "137";
+        chainId = pair?.network === "Arbitrum" ? "42161" : "137";
         limits = null;
       }
     } else if (pair && isEnabled && supported) {
