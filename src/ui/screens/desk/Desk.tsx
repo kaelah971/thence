@@ -37,6 +37,8 @@ export function Desk() {
   const [recipient, setRecipient] = useState(""), [amount, setAmount] = useState("0.30"), [hash, setHash] = useState("");
   const [consent, setConsent] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const running = useRef(false);
+  // Send hands off the exact recipient and amount after its own amount step.
+  const preset = useRef(false);
   const refresh = async () => {
     const next = await api<DeskView>();
     setView(next);
@@ -45,7 +47,20 @@ export function Desk() {
   useEffect(() => {
     let active = true;
     // Read-only hydration. Progress runs on explicit checks or the dedicated server worker.
-    void api<DeskView>().then(next => { if (active) { setView(next); setSelected(next.orders[0] ?? null); } }).catch(error => { if (active) setMessage(error.message); });
+    void api<DeskView>().then(next => {
+      if (!active) return;
+      setView(next);
+      setSelected(next.orders[0] ?? null);
+      // Send hands off recipient + amount after its own amount step.
+      const params = new URLSearchParams(window.location.search);
+      const to = params.get("recipient") ?? "", value = params.get("amount") ?? "";
+      if (preset.current || !/^0x[0-9a-fA-F]{40}$/.test(to) || !/^\d+(\.\d{1,6})?$/.test(value)) return;
+      preset.current = true;
+      setRecipient(to); setAmount(value);
+      void api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID() })
+        .then(result => { if (active) { setSelected(result.order); setConsent(false); void refresh(); } })
+        .catch(error => { if (active) setMessage(error instanceof Error ? error.message : "Could not quote this payment."); });
+    }).catch(error => { if (active) setMessage(error.message); });
     return () => { active = false; };
   }, []);
   const run = async (work: () => Promise<void>) => {
@@ -55,10 +70,11 @@ export function Desk() {
     catch (error) { setMessage(error instanceof Error ? error.message : "Could not check the payment. Do not pay again."); }
     finally { running.current = false; setBusy(false); }
   };
-  const quote = () => run(async () => {
-    const result = await api<{ order: PublicDeskOrder }>({ action: "quote", recipient, amount, requestKey: crypto.randomUUID() });
+  const quoteFor = (to: string, value: string) => run(async () => {
+    const result = await api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID() });
     setSelected(result.order); setConsent(false); await refresh();
   });
+  const quote = () => quoteFor(recipient, amount);
   const pay = () => run(async () => {
     if (!selected || selected.state !== "QUOTED" || !consent) return;
     const provider = await getHostProvider();

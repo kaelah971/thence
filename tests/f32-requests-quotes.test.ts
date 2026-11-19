@@ -30,7 +30,7 @@ import { GET as routesGET } from "../app/api/routes/public/route";
 import { GET as transfersGET } from "../app/api/transfers/route";
 import { POST as logoutPOST } from "../app/api/session/logout/route";
 
-const USDC_POLYGON = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+const USDC_ARBITRUM = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const ADDR = "0x4f2a9c1e7b3d8a0f6c5e2d1b9a8c7f6e5d4c3b21";
 const NIMIQ = "NQ07 0000 0000 0000 0000 0000 0000 0000 0000";
 
@@ -81,11 +81,11 @@ const envBefore: Record<string, string | undefined> = {};
 beforeAll(async () => {
   if (!LIVE) return;
   for (const k of ["THENCE_ENABLED_ROUTES", "THENCE_ROUTE_TOKENS_JSON"]) envBefore[k] = process.env[k];
-  process.env["THENCE_ENABLED_ROUTES"] = "usdc-polygon";
-  process.env["THENCE_ROUTE_TOKENS_JSON"] = JSON.stringify({ "usdc-polygon": USDC_POLYGON });
+  process.env["THENCE_ENABLED_ROUTES"] = "usdc-polygon,usdc-arbitrum";
+  process.env["THENCE_ROUTE_TOKENS_JSON"] = JSON.stringify({ "usdc-arbitrum": USDC_ARBITRUM });
   setSatoraFetchersForTests({
-    getTokens: async () => ({ evm_tokens: [{ token_id: USDC_POLYGON, symbol: "USDC", chain: "137", decimals: 6 }] }),
-    getSwapPairs: async () => ({ pairs: [{ source: "Lightning", target: "137", min_sats: 356, max_sats: 20_000_000 }] }),
+    getTokens: async () => ({ evm_tokens: [{ token_id: USDC_ARBITRUM, symbol: "USDC", chain: "42161", decimals: 6 }] }),
+    getSwapPairs: async () => ({ pairs: [{ source: "Lightning", target: "42161", min_sats: 356, max_sats: 20_000_000 }] }),
   });
   const client = await getSatoraClient();
   const proto = Object.getPrototypeOf(client) as object;
@@ -153,14 +153,14 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
     if (!result.ok) return;
     expect(availabilityFor("usdc-polygon", result.data).availability).toBe("available");
     expect(tokenDecimalsFor("usdc-polygon", result.data)).toBe(6);
-    expect(availabilityFor("usdc-arbitrum", result.data).availability).toBe("unavailable");
+    expect(availabilityFor("usdc-base", result.data).availability).toBe("unavailable");
   });
 
   it("quotes the exact amount the person should receive and creates nothing", async () => {
     const u = await newUser("quote");
     const atomic = toAtomic("25.5", 6) as string;
     const before = quoteCalls.length;
-    const result = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: atomic }, { fetch: u.fetch });
+    const result = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: atomic }, { fetch: u.fetch });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const { quote } = result.data;
@@ -168,7 +168,7 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
     expect(quote.fees.unit).toBe("sats");
     expect(quote.settlementProven).toBe(false);
     expect(quoteCalls.slice(before)).toEqual([25500000n]);
-    const state = resolveQuoteState(quoteKey({ routeId: "usdc-polygon", targetAmountAtomic: atomic }, ADDR), { key: quoteKey({ routeId: "usdc-polygon", targetAmountAtomic: atomic }, ADDR), result }, Date.parse(quote.observedAt) + 1000, { routeId: "usdc-polygon", targetAmountAtomic: atomic });
+    const state = resolveQuoteState(quoteKey({ routeId: "usdc-arbitrum", targetAmountAtomic: atomic }, ADDR), { key: quoteKey({ routeId: "usdc-arbitrum", targetAmountAtomic: atomic }, ADDR), result }, Date.parse(quote.observedAt) + 1000, { routeId: "usdc-arbitrum", targetAmountAtomic: atomic });
     expect(state.status).toBe("ready");
     expect(await transferRows(u.userId)).toBe(0);
     const list = await listTransfers({}, { fetch: u.fetch });
@@ -179,7 +179,7 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
   it("refuses disabled routes before contacting the provider", async () => {
     const u = await newUser("disabled");
     const before = quoteCalls.length;
-    const result = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
+    const result = await requestQuote({ routeId: "usdc-base", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
     expect(result).toMatchObject({ ok: false, code: "ROUTE_DISABLED" });
     if (!result.ok) expect(quoteProblem(result).kind).toBe("unavailable");
     expect(quoteCalls.length).toBe(before);
@@ -188,11 +188,11 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
   it("explains below-minimum and above-maximum amounts", async () => {
     const u = await newUser("bounds");
     nextSource = () => ({ netSource: 100n });
-    const low = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: "10000" }, { fetch: u.fetch });
+    const low = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "10000" }, { fetch: u.fetch });
     expect(low).toMatchObject({ ok: false, code: "BELOW_MINIMUM" });
     if (!low.ok) expect(quoteProblem(low)).toMatchObject({ kind: "below-minimum", changeAmount: true });
     nextSource = () => ({ netSource: 20_000_001n });
-    const high = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: "999999000000" }, { fetch: u.fetch });
+    const high = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "999999000000" }, { fetch: u.fetch });
     expect(high).toMatchObject({ ok: false, code: "ABOVE_MAXIMUM" });
     if (!high.ok) expect(quoteProblem(high).kind).toBe("above-maximum");
   });
@@ -200,10 +200,10 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
   it("recovers after a provider outage with a plain refresh", async () => {
     const u = await newUser("outage");
     failNext = new Error("down");
-    const failed = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
+    const failed = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
     expect(failed).toMatchObject({ ok: false, status: 503, code: "PROVIDER_UNAVAILABLE" });
     if (!failed.ok) expect(quoteProblem(failed)).toMatchObject({ kind: "provider", retryable: true });
-    const retry = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
+    const retry = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
     expect(retry.ok).toBe(true);
     expect(await transferRows(u.userId)).toBe(0);
   });
@@ -214,11 +214,11 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
     setUnauthorizedHandler(() => (signalled += 1));
     try {
       expect((await u.fetch("/api/session/logout", { method: "POST" })).status).toBe(200);
-      const result = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
+      const result = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "5000000" }, { fetch: u.fetch });
       expect(result).toMatchObject({ ok: false, kind: "unauthorized" });
       if (!result.ok) expect(quoteProblem(result).kind).toBe("session");
       expect(signalled).toBe(1);
-      expect(await createPaymentRequest({ recipientName: "X", asset: "USDC", network: "Polygon", address: ADDR, amount: "1" }, { fetch: u.fetch })).toMatchObject({ ok: false, kind: "unauthorized" });
+      expect(await createPaymentRequest({ recipientName: "X", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "1" }, { fetch: u.fetch })).toMatchObject({ ok: false, kind: "unauthorized" });
     } finally {
       setUnauthorizedHandler(() => {});
     }
@@ -228,11 +228,11 @@ describe.skipIf(!LIVE)("F3.2 live quotes through the client", () => {
 describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
   it("creates, lists and publicly resolves a request with exact terms", async () => {
     const a = await newUser("reqA");
-    const made = await createPaymentRequest({ recipientName: "Daniel Okafor", asset: "USDC", network: "Polygon", address: ADDR, amount: "12.5", memo: "Dinner" }, { fetch: a.fetch });
+    const made = await createPaymentRequest({ recipientName: "Daniel Okafor", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "12.5", memo: "Dinner" }, { fetch: a.fetch });
     expect(made.ok).toBe(true);
     if (!made.ok) return;
     const req = made.data.request;
-    expect(req).toMatchObject({ amountAtomic: "12500000", status: "active", memo: "Dinner", route: { id: "usdc-polygon", quoteable: true } });
+    expect(req).toMatchObject({ amountAtomic: "12500000", status: "active", memo: "Dinner", route: { id: "usdc-arbitrum", quoteable: true } });
     expect(req.url).toBe(`/r/${req.publicId}`);
 
     const list = await listPaymentRequests({}, { fetch: a.fetch });
@@ -253,14 +253,14 @@ describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
   it("prefills a quote from the immutable snapshot and rejects altered terms", async () => {
     const a = await newUser("prefill");
     const payer = await newUser("payer");
-    const made = await createPaymentRequest({ recipientName: "Mina", asset: "USDC", network: "Polygon", address: ADDR, amount: "40" }, { fetch: a.fetch });
+    const made = await createPaymentRequest({ recipientName: "Mina", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "40" }, { fetch: a.fetch });
     if (!made.ok) throw new Error("create failed");
     const { publicId, amountAtomic } = made.data.request;
 
-    const ok = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: amountAtomic, requestId: publicId }, { fetch: payer.fetch });
+    const ok = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: amountAtomic, requestId: publicId }, { fetch: payer.fetch });
     expect(ok.ok && ok.data.quote.netTargetAmountAtomic).toBe("40000000");
 
-    const altered = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: "1000000", requestId: publicId }, { fetch: payer.fetch });
+    const altered = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: "1000000", requestId: publicId }, { fetch: payer.fetch });
     expect(altered).toMatchObject({ ok: false, code: "SNAPSHOT_MISMATCH" });
     if (!altered.ok) expect(quoteProblem(altered).kind).toBe("request");
 
@@ -272,7 +272,7 @@ describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
   it("keeps owners isolated", async () => {
     const a = await newUser("isoA");
     const b = await newUser("isoB");
-    const made = await createPaymentRequest({ recipientName: "Ana", asset: "USDC", network: "Polygon", address: ADDR, amount: "5" }, { fetch: a.fetch });
+    const made = await createPaymentRequest({ recipientName: "Ana", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "5" }, { fetch: a.fetch });
     if (!made.ok) throw new Error("create failed");
     const bList = await listPaymentRequests({}, { fetch: b.fetch });
     expect(bList.ok && bList.data.total).toBe(0);
@@ -284,7 +284,7 @@ describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
   it("cancels idempotently and never presents a cancelled request as payable", async () => {
     const a = await newUser("cancel");
     const payer = await newUser("cancelPayer");
-    const made = await createPaymentRequest({ recipientName: "Joon", asset: "USDC", network: "Polygon", address: ADDR, amount: "9.99" }, { fetch: a.fetch });
+    const made = await createPaymentRequest({ recipientName: "Joon", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "9.99" }, { fetch: a.fetch });
     if (!made.ok) throw new Error("create failed");
     const { publicId, amountAtomic } = made.data.request;
     const first = await cancelPaymentRequest(publicId, { fetch: a.fetch });
@@ -294,7 +294,7 @@ describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
     const pub = await getPublicRequest(publicId, { fetch: clientFor(null, "anon2") });
     expect(pub.ok && pub.data.request.status).toBe("cancelled");
     if (pub.ok) expect(canPayRequest(pub.data.request)).toBe(false);
-    const quote = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: amountAtomic, requestId: publicId }, { fetch: payer.fetch });
+    const quote = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: amountAtomic, requestId: publicId }, { fetch: payer.fetch });
     expect(quote).toMatchObject({ ok: false, code: "REQUEST_CANCELLED" });
     const active = await listPaymentRequests({ status: "active" }, { fetch: a.fetch });
     expect(active.ok && active.data.total).toBe(0);
@@ -303,7 +303,7 @@ describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
   it("treats an expired request as unpayable", async () => {
     const a = await newUser("expire");
     const payer = await newUser("expirePayer");
-    const made = await createPaymentRequest({ recipientName: "Lea", asset: "USDC", network: "Polygon", address: ADDR, amount: "3" }, { fetch: a.fetch });
+    const made = await createPaymentRequest({ recipientName: "Lea", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "3" }, { fetch: a.fetch });
     if (!made.ok) throw new Error("create failed");
     const { publicId, amountAtomic } = made.data.request;
     // Fixture: move expiry into the past (a request can't be created already expired).
@@ -311,16 +311,16 @@ describe.skipIf(!LIVE)("F3.2 request money through the client", () => {
     const pub = await getPublicRequest(publicId, { fetch: clientFor(null, "anon3") });
     expect(pub.ok && pub.data.request.status).toBe("expired");
     if (pub.ok) expect(canPayRequest(pub.data.request)).toBe(false);
-    const quote = await requestQuote({ routeId: "usdc-polygon", targetAmountAtomic: amountAtomic, requestId: publicId }, { fetch: payer.fetch });
+    const quote = await requestQuote({ routeId: "usdc-arbitrum", targetAmountAtomic: amountAtomic, requestId: publicId }, { fetch: payer.fetch });
     expect(quote).toMatchObject({ ok: false, code: "REQUEST_EXPIRED" });
   });
 
   it("rejects a Nimiq address as the receiving wallet", async () => {
     const a = await newUser("nimiq");
-    const made = await createPaymentRequest({ recipientName: "Sam", asset: "USDC", network: "Polygon", address: NIMIQ, amount: "1" }, { fetch: a.fetch });
+    const made = await createPaymentRequest({ recipientName: "Sam", asset: "USDC", network: "Arbitrum", address: NIMIQ, amount: "1" }, { fetch: a.fetch });
     expect(made).toMatchObject({ ok: false, code: "INVALID_ADDRESS" });
     if (!made.ok) expect(requestFormError(made.code)?.field).toBe("address");
-    const bad = await createPaymentRequest({ recipientName: "Sam", asset: "USDC", network: "Polygon", address: ADDR, amount: "1.1234567" }, { fetch: a.fetch });
+    const bad = await createPaymentRequest({ recipientName: "Sam", asset: "USDC", network: "Arbitrum", address: ADDR, amount: "1.1234567" }, { fetch: a.fetch });
     expect(bad).toMatchObject({ ok: false, code: "BAD_AMOUNT" });
   });
 

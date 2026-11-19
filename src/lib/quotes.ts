@@ -125,6 +125,11 @@ export async function createQuote(body: unknown): Promise<QuoteResponse> {
   }
   const pair = pairForRouteId(routeId);
   if (!pair) throw new AuthError(400, "UNKNOWN_ROUTE", `Route ${routeId} is not a known Thence route.`);
+  // The NIM treasury desk is not a swap: it has no provider quote and must never
+  // reach Satora. The desk has its own authenticated API (`/api/desk`).
+  if (kindForRouteId(routeId) === "nimiq-desk") {
+    throw new AuthError(400, "ROUTE_DESK", `Route ${routeId} is paid through the NIM treasury desk.`);
+  }
   if (!isSupportedPair(pair.asset, pair.network)) {
     throw new AuthError(400, "UNSUPPORTED_ROUTE", `Route ${routeId} is not a supported asset/network pair.`);
   }
@@ -311,6 +316,21 @@ export async function listPublicRoutes(): Promise<{ routes: PublicRouteInfo[]; p
       // Nimiq-native route: approved/funded inside Nimiq Pay, never a Satora EVM quote.
       status = "host-dependent";
       reason = "Nimiq Pay native route; not a Satora EVM quote.";
+    } else if (kindForRouteId(id) === "nimiq-desk") {
+      // Treasury desk: Thence receives NIM and pays native USDC from its own
+      // wallet. There is no provider token to verify and no claim path to prove.
+      quoteable = isEnabled;
+      status = isEnabled ? "live" : "disabled";
+      reason = isEnabled
+        ? "Paid through the NIM treasury desk; USDC is sent from Thence's wallet."
+        : "Route is disabled.";
+      if (isEnabled) {
+        tokenSymbol = pair?.asset ?? null;
+        tokenDecimals = 6;
+        tokenAddress = null;
+        chainId = "137";
+        limits = null;
+      }
     } else if (pair && isEnabled && supported) {
       if (!providerOk) {
         status = "unknown";

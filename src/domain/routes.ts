@@ -21,7 +21,7 @@ export const SUPPORTED_NETWORKS = [
 ] as const;
 export type SupportedNetwork = (typeof SUPPORTED_NETWORKS)[number];
 
-export const ROUTE_KINDS = ["satora-direct", "satora-cctp", "nimiq-lightning"] as const;
+export const ROUTE_KINDS = ["satora-direct", "satora-cctp", "nimiq-lightning", "nimiq-desk"] as const;
 export type RouteKind = (typeof ROUTE_KINDS)[number];
 
 /** Canonical route identifiers. */
@@ -56,7 +56,7 @@ const ROUTE_IDENTITY: Record<RouteId, { asset: SupportedAsset; network: Supporte
   "usdt-arbitrum": { asset: "USDT", network: "Arbitrum", kind: "satora-direct", needsToken: true },
   /* B3.1: the provider lists USDC (not classic USDT) on Polygon — the
      canonical registry follows provider reality, not the PRD draft. */
-  "usdc-polygon": { asset: "USDC", network: "Polygon", kind: "satora-direct", needsToken: true },
+  "usdc-polygon": { asset: "USDC", network: "Polygon", kind: "nimiq-desk", needsToken: false },
   "usdc-arbitrum": { asset: "USDC", network: "Arbitrum", kind: "satora-direct", needsToken: true },
   "usdc-ethereum": { asset: "USDC", network: "Ethereum", kind: "satora-direct", needsToken: true },
   "usdc-base": { asset: "USDC", network: "Base", kind: "satora-cctp", needsToken: true },
