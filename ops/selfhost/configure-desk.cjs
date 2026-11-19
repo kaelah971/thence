@@ -90,7 +90,7 @@ async function main() {
           arb.readContract({ address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: arbBlock.number }),
           arb.getBalance({ address: PAYOUT, blockNumber: arbBlock.number }),
         ]);
-        arbitrumBalances = { usdcAtomic: arbUsdc.toString(), gasWei: arbGas.toString(), block: arbBlock.number };
+        arbitrumBalances = { usdcAtomic: arbUsdc.toString(), gasWei: arbGas.toString(), block: arbBlock.number.toString() };
       }
     } catch { arbitrumBalances = { error: 'ARBITRUM_UNAVAILABLE' }; }
     const [usdc, pol] = await Promise.all([
