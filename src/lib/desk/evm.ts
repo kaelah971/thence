@@ -50,24 +50,43 @@ export async function signDeskPayout(order: DeskOrder, nonce: number) {
   return { raw, hash: keccak256(raw) };
 }
 /** Receipt evidence must be finalized; success also requires the exact USDC Transfer log. */
-export async function deskPayoutResult(order: DeskOrder): Promise<"pending" | "delivered" | "reverted" | "mismatch"> {
-  if (!order.payout_hash) return "pending";
+export interface DeskPayoutEvidence {
+  outcome: "pending" | "delivered" | "reverted" | "mismatch";
+  blockNumber?: number;
+  blockHash?: string;
+  logIndexes?: number[];
+}
+/**
+ * Finality-checked payout receipt. The evidence fields exist only for a
+ * delivered payout and are what the public proof records.
+ */
+export async function deskPayoutEvidence(order: DeskOrder): Promise<DeskPayoutEvidence> {
+  if (!order.payout_hash) return { outcome: "pending" };
   const client = deskEvm();
   if (await client.getChainId() !== 137) throw new DeskError("WRONG_CHAIN", "Invalid Polygon network.", 503);
   const receipt = await client.getTransactionReceipt({ hash: order.payout_hash }).catch(() => null);
-  if (!receipt) return "pending";
+  if (!receipt) return { outcome: "pending" };
   const block = await client.getBlock({ blockTag: "finalized" });
   if (Date.now() - Number(block.timestamp) * 1000 > 300000) throw new DeskError("STALE_CHAIN", "Polygon finality is unavailable.", 503);
-  if (receipt.blockNumber > block.number) return "pending";
+  if (receipt.blockNumber > block.number) return { outcome: "pending" };
   const canonical = await client.getBlock({ blockNumber: receipt.blockNumber });
-  if (canonical.hash !== receipt.blockHash) return "pending";
-  if (receipt.status === "reverted") return "reverted";
-  const matched = receipt.logs.some(log => {
+  if (canonical.hash !== receipt.blockHash) return { outcome: "pending" };
+  if (receipt.status === "reverted") return { outcome: "reverted" };
+  const matched = receipt.logs.filter(log => {
     if (log.address.toLowerCase() !== POLYGON_USDC.toLowerCase()) return false;
     try {
       const event = decodeEventLog({ abi: erc20Abi, data: log.data, topics: log.topics });
       return event.eventName === "Transfer" && event.args.from.toLowerCase() === order.payout_wallet.toLowerCase() && event.args.to.toLowerCase() === order.payload.recipient.toLowerCase() && event.args.value === BigInt(order.amount_atomic);
     } catch { return false; }
   });
-  return matched ? "delivered" : "mismatch";
+  if (matched.length === 0) return { outcome: "mismatch" };
+  return {
+    outcome: "delivered",
+    blockNumber: Number(receipt.blockNumber),
+    blockHash: receipt.blockHash,
+    logIndexes: matched.map(log => log.logIndex ?? 0),
+  };
+}
+export async function deskPayoutResult(order: DeskOrder): Promise<"pending" | "delivered" | "reverted" | "mismatch"> {
+  return (await deskPayoutEvidence(order)).outcome;
 }

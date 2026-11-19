@@ -5,9 +5,9 @@ import { findDeskDepositHashes, verifyDeskNimPayment, normalizeNimiqSourceHash }
 import { assertDeskOwner, deskConfig } from "./config";
 import { amountAtomic, deskCharge, DeskError } from "./policy";
 import { deskRate } from "./price";
-import { assertDeskSigner, deskBalances, deskEvm, deskPayoutResult, signDeskPayout, validateSignedDeskPayout } from "./evm";
+import { assertDeskSigner, deskBalances, deskEvm, deskPayoutEvidence, deskPayoutResult, signDeskPayout, validateSignedDeskPayout } from "./evm";
 import { deskTransaction, loadDeskOrder, publicDeskOrder, transition, type DeskOrder, type DeskPayload } from "./store";
-import { mirrorQuote } from "./ledger";
+import { mirrorQuote, publishDeskProof } from "./ledger";
 
 export async function listDeskOrders(ownerId: string, ownerAddress: string) {
   const config = assertDeskOwner(ownerAddress);
@@ -87,7 +87,11 @@ export async function reportDeskDeposit(ownerId: string, ownerAddress: string, i
     if (current.state !== "AWAITING_NIM") throw new DeskError("PAYMENT_STATE", "Payment requires operator recovery.");
     await c.query("UPDATE desk_orders SET deposit_hash=$2 WHERE id=$1", [id, normalized]);
     const late = proof.timestampMs > current.payload.fundingDeadline!;
-    return publicDeskOrder(await transition(c, current, late ? "REFUND_DUE" : "VERIFIED", late ? "LATE_DEPOSIT" : "NIM_MACRO_FINAL"));
+    // Keep the source facts: the public proof is only publishable if the
+    // delivery transition carries them alongside the Nimiq transaction hash.
+    const withSource = { ...current, payload: { ...current.payload, source: proof.source } };
+    await c.query("UPDATE desk_orders SET payload=$2 WHERE id=$1", [id, JSON.stringify(withSource.payload)]);
+    return publicDeskOrder(await transition(c, withSource, late ? "REFUND_DUE" : "VERIFIED", late ? "LATE_DEPOSIT" : "NIM_MACRO_FINAL"));
   });
 }
 /** Preparing the signed transaction and recording it is one atomic DB operation; never broadcasts. */
@@ -110,7 +114,8 @@ export async function processDeskPayout(id: string) {
   let order = await preparePayout(id);
   if (!["PAYOUT_PREPARED", "PAYOUT_SUBMITTED"].includes(order.state)) return publicDeskOrder(order);
   await validateSignedDeskPayout(order, order.signed_payout!);
-  const result = await deskPayoutResult(order);
+  const evidence = await deskPayoutEvidence(order);
+  const result = evidence.outcome;
   if (result === "pending") {
     // Identical bytes on every retry: an RPC timeout cannot create another payment.
     const client = deskEvm();
@@ -124,7 +129,11 @@ export async function processDeskPayout(id: string) {
     order = await deskTransaction(async c => {
       const current = await loadDeskOrder(c, id);
       if (!["PAYOUT_PREPARED", "PAYOUT_SUBMITTED"].includes(current.state)) return current;
-      return transition(c, current, result === "delivered" ? "DELIVERED" : "REFUND_DUE", result === "delivered" ? "POLYGON_TRANSFER_FINAL" : "PAYOUT_REVERTED_FINAL");
+      if (result === "delivered" && evidence.blockNumber !== undefined && evidence.blockHash) {
+        const marker = await publishDeskProof(c, current, { blockNumber: evidence.blockNumber, blockHash: evidence.blockHash, logIndexes: evidence.logIndexes ?? [] });
+        return transition(c, current, "DELIVERED", "POLYGON_TRANSFER_FINAL", marker);
+      }
+      return transition(c, current, "REFUND_DUE", "PAYOUT_REVERTED_FINAL");
     });
   }
   return publicDeskOrder(order);
