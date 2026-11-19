@@ -19,6 +19,12 @@ export interface DeskChainConfig {
   gasSymbol: "POL" | "ETH";
   /** Refuse new quotes below this gas balance; a payout must be broadcastable. */
   gasFloor: bigint;
+  /**
+   * How old a `finalized` block may be. Polygon finalizes in seconds; Arbitrum's
+   * finalized tag follows Ethereum's checkpoint and routinely lags 15-20 min, so
+   * a 5-minute rule would reject a perfectly healthy node.
+   */
+  finalityLagMs: number;
 }
 
 export const DESK_CHAINS: DeskChain[] = ["polygon", "arbitrum"];
@@ -31,10 +37,10 @@ export function deskChainConfig(name: DeskChain): DeskChainConfig {
   if (name === "arbitrum") {
     const rpc = process.env["THENCE_DESK_ARBITRUM_RPC"] ?? "";
     if (!/^https:\/\//.test(rpc)) throw new DeskError("DESK_NOT_CONFIGURED", "The Arbitrum payout RPC is not configured.", 503);
-    return { name, label: "Arbitrum", chainId: 42161, usdc: ARBITRUM_USDC, rpc, chain: arbitrum, gasSymbol: "ETH", gasFloor: 200_000_000_000_000n };
+    return { name, label: "Arbitrum", chainId: 42161, usdc: ARBITRUM_USDC, rpc, chain: arbitrum, gasSymbol: "ETH", gasFloor: 200_000_000_000_000n, finalityLagMs: 3_600_000 };
   }
   // Polygon reuses the validated desk config so there is one source of truth.
   const rpc = deskConfig().rpc;
   if (!/^https:\/\//.test(rpc)) throw new DeskError("DESK_NOT_CONFIGURED", "The Polygon payout RPC is not configured.", 503);
-  return { name, label: "Polygon", chainId: 137, usdc: POLYGON_USDC, rpc, chain: polygon, gasSymbol: "POL", gasFloor: 50_000_000_000_000_000n };
+  return { name, label: "Polygon", chainId: 137, usdc: POLYGON_USDC, rpc, chain: polygon, gasSymbol: "POL", gasFloor: 50_000_000_000_000_000n, finalityLagMs: 300_000 };
 }

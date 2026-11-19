@@ -69,7 +69,12 @@ export function Desk() {
       setRecipient(to); setAmount(value);
       void api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID(), network: chain })
         .then(result => { if (active) { setSelected(result.order); setConsent(false); void refresh(); } })
-        .catch(error => { if (active) setMessage(error instanceof Error ? error.message : "Could not quote this payment."); });
+        .catch(error => {
+          if (!active) return;
+          // Never leave an unrelated quote on screen when this one failed.
+          setSelected(null);
+          setMessage(error instanceof Error ? error.message : "Could not quote this payment.");
+        });
     }).catch(error => { if (active) setMessage(error.message); });
     return () => { active = false; };
   }, []);
