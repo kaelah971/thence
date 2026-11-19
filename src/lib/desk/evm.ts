@@ -20,7 +20,7 @@ export async function deskBalances(chain: DeskChain, wallet: string) {
   const config = deskChainConfig(chain), client = deskEvm(chain);
   if (await client.getChainId() !== config.chainId) throw new DeskError("WRONG_CHAIN", `${config.label} RPC returned a different chain.`, 503);
   const block = await client.getBlock({ blockTag: "finalized" });
-  if (Date.now() - Number(block.timestamp) * 1000 > 300_000) throw new DeskError("STALE_CHAIN", `${config.label} finality is unavailable.`, 503);
+  if (Date.now() - Number(block.timestamp) * 1000 > config.finalityLagMs) throw new DeskError("STALE_CHAIN", `${config.label} finality is unavailable.`, 503);
   const [usdc, gas] = await Promise.all([
     client.readContract({ address: config.usdc, abi: erc20Abi, functionName: "balanceOf", args: [wallet as `0x${string}`], blockNumber: block.number }),
     client.getBalance({ address: wallet as `0x${string}`, blockNumber: block.number }),
@@ -67,7 +67,7 @@ export async function deskPayoutEvidence(order: DeskOrder): Promise<DeskPayoutEv
   const receipt = await client.getTransactionReceipt({ hash: order.payout_hash }).catch(() => null);
   if (!receipt) return { outcome: "pending" };
   const block = await client.getBlock({ blockTag: "finalized" });
-  if (Date.now() - Number(block.timestamp) * 1000 > 300000) throw new DeskError("STALE_CHAIN", `${chain.label} finality is unavailable.`, 503);
+  if (Date.now() - Number(block.timestamp) * 1000 > chain.finalityLagMs) throw new DeskError("STALE_CHAIN", `${chain.label} finality is unavailable.`, 503);
   if (receipt.blockNumber > block.number) return { outcome: "pending" };
   const canonical = await client.getBlock({ blockNumber: receipt.blockNumber });
   if (canonical.hash !== receipt.blockHash) return { outcome: "pending" };
