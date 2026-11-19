@@ -35,7 +35,7 @@ const descriptions: Record<PublicDeskOrder["state"], string> = {
 export function Desk() {
   const [view, setView] = useState<DeskView | null>(null), [selected, setSelected] = useState<PublicDeskOrder | null>(null);
   const [recipient, setRecipient] = useState(""), [amount, setAmount] = useState("0.30"), [hash, setHash] = useState("");
-  const [network, setNetwork] = useState<"polygon" | "arbitrum">("polygon");
+  const [network, setNetwork] = useState<"polygon" | "arbitrum" | "base">("polygon");
   const [consent, setConsent] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const running = useRef(false);
   // Send hands off the exact recipient and amount after its own amount step.
@@ -62,7 +62,8 @@ export function Desk() {
       // Send hands off recipient + amount after its own amount step.
       const params = new URLSearchParams(window.location.search);
       const to = params.get("recipient") ?? "", value = params.get("amount") ?? "";
-      const chain = params.get("network") === "arbitrum" ? "arbitrum" : "polygon";
+      const raw = params.get("network");
+      const chain = raw === "arbitrum" ? "arbitrum" : raw === "base" ? "base" : "polygon";
       if (preset.current || !/^0x[0-9a-fA-F]{40}$/.test(to) || !/^\d+(\.\d{1,6})?$/.test(value)) return;
       preset.current = true;
       setNetwork(chain);
@@ -131,8 +132,9 @@ export function Desk() {
       <div className={styles.networks} role="group" aria-label="Network">
         <button type="button" aria-pressed={network === "polygon"} disabled={busy} onClick={() => { setNetwork("polygon"); setSelected(null); }}>Polygon</button>
         <button type="button" aria-pressed={network === "arbitrum"} disabled={busy} onClick={() => { setNetwork("arbitrum"); setSelected(null); }}>Arbitrum</button>
+        <button type="button" aria-pressed={network === "base"} disabled={busy} onClick={() => { setNetwork("base"); setSelected(null); }}>Base</button>
       </div>
-      <label htmlFor="desk-recipient">Recipient’s {network === "arbitrum" ? "Arbitrum" : "Polygon"} address</label><input id="desk-recipient" value={recipient} onChange={e => setRecipient(e.target.value)} autoComplete="off" spellCheck={false} disabled={busy} required />
+      <label htmlFor="desk-recipient">Recipient’s {network === "arbitrum" ? "Arbitrum" : network === "base" ? "Base" : "Polygon"} address</label><input id="desk-recipient" value={recipient} onChange={e => setRecipient(e.target.value)} autoComplete="off" spellCheck={false} disabled={busy} required />
       <label htmlFor="desk-amount">USDC they receive</label><input id="desk-amount" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" disabled={busy} required />
       <Button type="submit" disabled={busy} block>Get exact amount</Button>
       <p className={styles.hint}>We’ll show the exact NIM to send before anything leaves your wallet.</p>
@@ -140,7 +142,7 @@ export function Desk() {
     {selected && <section className={styles.card} aria-label="Payment details">
       <h2>{selected.state === "QUOTED" ? "Review payment" : "Payment status"}</h2><p role="status">{descriptions[selected.state]}</p>
       {selected.code === "MULTIPLE_DEPOSITS" && <Notice>More than one deposit matches this payment. Thence must review it. Do not pay again.</Notice>}
-      <dl><dt>Recipient receives</dt><dd>{usdc(selected.amountAtomic)} USDC on {selected.network === "arbitrum" ? "Arbitrum" : "Polygon"}</dd><dt>You send</dt><dd>{formatLuna(BigInt(selected.nimLuna)).text} NIM, plus any wallet network fee</dd><dt>Thence fee (included)</dt><dd>{formatLuna(BigInt(selected.feeLuna)).text} NIM ({selected.feeBps / 100}%)</dd><dt>Recipient</dt><dd>{selected.recipient}</dd><dt>NIM collection wallet</dt><dd>{selected.nimAddress}</dd><dt>Payment reference</dt><dd>{selected.id}</dd></dl>
+      <dl><dt>Recipient receives</dt><dd>{usdc(selected.amountAtomic)} USDC on {selected.network === "arbitrum" ? "Arbitrum" : selected.network === "base" ? "Base" : "Polygon"}</dd><dt>You send</dt><dd>{formatLuna(BigInt(selected.nimLuna)).text} NIM, plus any wallet network fee</dd><dt>Thence fee (included)</dt><dd>{formatLuna(BigInt(selected.feeLuna)).text} NIM ({selected.feeBps / 100}%)</dd><dt>Recipient</dt><dd>{selected.recipient}</dd><dt>NIM collection wallet</dt><dd>{selected.nimAddress}</dd><dt>Payment reference</dt><dd>{selected.id}</dd></dl>
       {selected.state === "QUOTED" && <>
         <p>Quote expires {new Date(selected.expiresAt).toLocaleTimeString()}. After continuing, approve within five minutes. Late deposits require a refund.</p>
         <label className={styles.consent}><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} disabled={busy} /><span>I understand Thence will hold my NIM while delivering USDC. Refunds require Thence to send NIM back.</span></label>
@@ -148,7 +150,7 @@ export function Desk() {
       </>}
       {selected.state === "AWAITING_NIM" && <><label htmlFor="desk-hash">NIM transaction hash (if available)</label><input id="desk-hash" value={hash} onChange={e => setHash(e.target.value)} spellCheck={false} autoComplete="off" disabled={busy} /></>}
       {selected.state === "VERIFIED" && <Button variant="soft" disabled={busy} onClick={() => void run(async () => { await api({ action: "request-refund", id: selected.id }); await refresh(); })}>Request NIM return instead</Button>}
-      {selected.payoutHash && <a href={`https://${selected.network === "arbitrum" ? "arbiscan.io" : "polygonscan.com"}/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
+      {selected.payoutHash && <a href={`https://${selected.network === "arbitrum" ? "arbiscan.io" : selected.network === "base" ? "basescan.org" : "polygonscan.com"}/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
       {selected.refundHash && <p className={styles.hash}>Verified NIM return: {selected.refundHash}</p>}
       {canCheck && <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>}
     </section>}

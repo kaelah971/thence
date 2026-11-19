@@ -21,7 +21,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { createPublicClient, http, keccak256 } from "viem";
-import { arbitrum, mainnet, polygon } from "viem/chains";
+import { arbitrum, base, mainnet, polygon } from "viem/chains";
 import type { Hex, PublicClient } from "viem";
 import { getDb } from "@/lib/db";
 import { AuthError } from "@/lib/auth";
@@ -52,6 +52,7 @@ export const SETTLEMENT_CHAINS = {
   1: { name: "Ethereum", chain: mainnet, explorer: "https://etherscan.io" },
   137: { name: "Polygon", chain: polygon, explorer: "https://polygonscan.com" },
   42161: { name: "Arbitrum", chain: arbitrum, explorer: "https://arbiscan.io" },
+  8453: { name: "Base", chain: base, explorer: "https://basescan.org" },
 } as const;
 
 export type SettlementChainId = keyof typeof SETTLEMENT_CHAINS;
@@ -67,6 +68,8 @@ export const DEFAULT_FINALITY_POLICY: Record<number, { mode: "finalized" | "conf
   // THENCE_SETTLEMENT_FINALITY_JSON={"137":{"mode":"finalized","confirmations":1}}
   // and roll back by removing the key. Fail-closed either way.
   137: { mode: "confirmations", confirmations: 256 },
+  // Base: like Arbitrum, finality follows Ethereum's checkpoint.
+  8453: { mode: "finalized", confirmations: 1 },
   // Arbitrum Nitro honours the `finalized` tag as L1-finalized batches:
   // sequencer confirmations alone are soft and never sufficient here.
   42161: { mode: "finalized", confirmations: 1 },

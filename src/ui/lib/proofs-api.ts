@@ -178,7 +178,7 @@ export interface ProofDisplay {
   outcomeLabel: string;
   /** Exact shortfall, e.g. "0.000444"; null for a full delivery. */
   usdcShortfall: string | null;
-  network: "Polygon" | "Arbitrum";
+  network: "Polygon" | "Arbitrum" | "Base";
   /** Exact NIM locked in the verified HTLC, e.g. "2.50". */
   nimSent: string;
   nimFee: string;

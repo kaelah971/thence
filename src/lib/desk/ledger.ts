@@ -34,8 +34,8 @@ const DESK_STATUS: Record<DeskState, TransferStatus> = {
  * quote can never create a second history row.
  */
 export async function mirrorQuote(c: PoolClient, order: DeskOrder): Promise<string> {
-  const route = order.payload.chain === "arbitrum" ? "usdc-arbitrum" : "usdc-polygon";
-  const network = order.payload.chain === "arbitrum" ? "Arbitrum" : "Polygon";
+  const identity = { polygon: ["usdc-polygon", "Polygon"], arbitrum: ["usdc-arbitrum", "Arbitrum"], base: ["usdc-base", "Base"] }[order.payload.chain] ?? ["usdc-polygon", "Polygon"];
+  const [route, network] = identity;
   const { rows } = await c.query<{ id: string }>(
     `INSERT INTO transfers (
        owner_user_id, route_id, target_asset, target_network, destination,

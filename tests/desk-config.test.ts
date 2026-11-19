@@ -54,9 +54,10 @@ describe("treasury desk access mode", () => {
   });
 
   it("maps each desk chain to its own USDC, gas symbol and finality RPC", () => {
-    stage({ THENCE_DESK_ARBITRUM_RPC: "https://arbitrum.test" });
+    stage({ THENCE_DESK_ARBITRUM_RPC: "https://arbitrum.test", THENCE_DESK_BASE_RPC: "https://base.test" });
     expect(deskChainConfig("polygon")).toMatchObject({ chainId: 137, usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", gasSymbol: "POL" });
     expect(deskChainConfig("arbitrum")).toMatchObject({ chainId: 42161, usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", gasSymbol: "ETH" });
+    expect(deskChainConfig("base")).toMatchObject({ chainId: 8453, usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", gasSymbol: "ETH" });
     vi.stubEnv("THENCE_DESK_ARBITRUM_RPC", "");
     expect(() => deskChainConfig("arbitrum")).toThrow(/not configured/i);
   });

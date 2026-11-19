@@ -11,7 +11,7 @@ const load = createRequire(release + '/package.json');
 const { Pool } = load('pg');
 const { privateKeyToAccount } = load('viem/accounts');
 const { createPublicClient, http, erc20Abi } = load('viem');
-const { polygon, arbitrum } = load('viem/chains');
+const { polygon, arbitrum, base } = load('viem/chains');
 const PAYOUT = '0x21e5fc03e4305cc8cfb874253c6d66a8bdb0bcda';
 const COLLECTION = 'NQ47 VGR3 VVK0 R49X 98YG CNDY NST3 6CR5 BCKQ';
 function requireValue(condition, code) { if (!condition) throw new Error(code); }
@@ -62,9 +62,9 @@ async function main() {
       requireValue(/^0x[0-9a-fA-F]{64}$/.test(key), 'INVALID_SIGNER');
       requireValue(privateKeyToAccount(key).address.toLowerCase() === PAYOUT, 'SIGNER_MISMATCH');
       const rpcs = JSON.parse(env.THENCE_EVM_RPCS_JSON || '{}');
-      requireValue(/^https:\/\//.test(rpcs['137'] || '') && /^https:\/\//.test(rpcs['42161'] || '') && /^https:\/\//.test(env.THENCE_NIMIQ_PROOF_RPC_URL || ''), 'RPC_NOT_CONFIGURED');
+      requireValue(/^https:\/\//.test(rpcs['137'] || '') && /^https:\/\//.test(rpcs['42161'] || '') && /^https:\/\//.test(rpcs['8453'] || 'https://mainnet.base.org') && /^https:\/\//.test(env.THENCE_NIMIQ_PROOF_RPC_URL || ''), 'RPC_NOT_CONFIGURED');
       requireValue((env.CRON_SECRET || '').length >= 32, 'CRON_NOT_CONFIGURED');
-      writeConfig({ THENCE_DESK_ENABLED: 'false', THENCE_DESK_NIM_ADDRESS: COLLECTION, THENCE_DESK_POLYGON_ADDRESS: PAYOUT, THENCE_DESK_OWNER_ADDRESSES: input.ownerAddresses.join(','), THENCE_DESK_OPEN: open ? 'true' : 'false', THENCE_DESK_POLYGON_RPC: rpcs['137'], THENCE_DESK_ARBITRUM_RPC: rpcs['42161'], THENCE_DESK_POLYGON_PRIVATE_KEY: key, THENCE_DESK_MIN_USDC_ATOMIC: minAtomic, THENCE_DESK_MAX_USDC_ATOMIC: maxAtomic, THENCE_DESK_FEE_BPS: '50' });
+      writeConfig({ THENCE_DESK_ENABLED: 'false', THENCE_DESK_NIM_ADDRESS: COLLECTION, THENCE_DESK_POLYGON_ADDRESS: PAYOUT, THENCE_DESK_OWNER_ADDRESSES: input.ownerAddresses.join(','), THENCE_DESK_OPEN: open ? 'true' : 'false', THENCE_DESK_POLYGON_RPC: rpcs['137'], THENCE_DESK_ARBITRUM_RPC: rpcs['42161'], THENCE_DESK_BASE_RPC: rpcs['8453'] || 'https://mainnet.base.org', THENCE_DESK_POLYGON_PRIVATE_KEY: key, THENCE_DESK_MIN_USDC_ATOMIC: minAtomic, THENCE_DESK_MAX_USDC_ATOMIC: maxAtomic, THENCE_DESK_FEE_BPS: '50' });
       fs.writeFileSync('/etc/thence-web-prod/desk-cron-secret', env.CRON_SECRET, { mode: 0o600 });
       fs.chmodSync('/etc/thence-web-prod/desk-cron-secret', 0o600);
       console.log('Desk configuration staged with new payments paused.');
@@ -93,6 +93,19 @@ async function main() {
         arbitrumBalances = { usdcAtomic: arbUsdc.toString(), gasWei: arbGas.toString(), block: arbBlock.number.toString() };
       }
     } catch { arbitrumBalances = { error: 'ARBITRUM_UNAVAILABLE' }; }
+    let baseBalances = null;
+    try {
+      const baseRpc = env.THENCE_DESK_BASE_RPC;
+      if (baseRpc) {
+        const b = createPublicClient({ chain: base, transport: http(baseRpc, { timeout: 8000, retryCount: 0 }) });
+        const baseBlock = await b.getBlock({ blockTag: 'finalized' });
+        const [baseUsdc, baseGas] = await Promise.all([
+          b.readContract({ address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: baseBlock.number }),
+          b.getBalance({ address: PAYOUT, blockNumber: baseBlock.number }),
+        ]);
+        baseBalances = { usdcAtomic: baseUsdc.toString(), gasWei: baseGas.toString(), block: baseBlock.number.toString() };
+      }
+    } catch { baseBalances = { error: 'BASE_UNAVAILABLE' }; }
     const [usdc, pol] = await Promise.all([
       client.readContract({ address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: block.number }),
       client.getBalance({ address: PAYOUT, blockNumber: block.number }),
@@ -114,7 +127,7 @@ async function main() {
       requireValue(result.status === 0 && result.stdout.trim() === 'success', 'WORKER_LAST_RUN_FAILED');
       writeConfig({ THENCE_DESK_ENABLED: 'true' });
     }
-    console.log(JSON.stringify({ preflight: 'passed', mode, arbitrum: arbitrumBalances, signerMatches: true, nativeUsdcAtomic: usdc.toString(), polWei: pol.toString(), collectionBasic: true, historyReadable: true, open: env.THENCE_DESK_OPEN === 'true', privateOwners: (env.THENCE_DESK_OWNER_ADDRESSES || '').split(',').filter(Boolean).length }));
+    console.log(JSON.stringify({ preflight: 'passed', mode, arbitrum: arbitrumBalances, base: baseBalances, signerMatches: true, nativeUsdcAtomic: usdc.toString(), polWei: pol.toString(), collectionBasic: true, historyReadable: true, open: env.THENCE_DESK_OPEN === 'true', privateOwners: (env.THENCE_DESK_OWNER_ADDRESSES || '').split(',').filter(Boolean).length }));
   } finally { await pool.end(); }
 }
 main().catch(error => {
