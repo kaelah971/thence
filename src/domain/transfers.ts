@@ -39,6 +39,12 @@ export const TRANSFER_STATUSES = [
   // never counted as an exact delivery.
   "DELIVERED_SHORT",
   "FAILED",
+  // Treasury desk (NIM in, native USDC out from Thence's own wallet). These
+  // are deliberately separate from the swap states so no desk payment ever
+  // reads "Converting" or "Finish delivery".
+  "DESK_AWAITING_NIM",
+  "DESK_PAYING_OUT",
+  "DESK_REFUND_DUE",
   // P4: authorized payment whose provider swap expired with independently
   // verified evidence that nothing was funded on the provider/EVM side.
   // Says NOTHING about the NIM side (Nimiq Pay refunds its own HTLC).
@@ -73,7 +79,7 @@ export const TRANSITIONS: Readonly<Record<TransferStatus, ReadonlyArray<Transfer
   // B4.3: quoted-but-unbound transfers may be cancelled pre-handoff
   // (nothing could have moved); bound-but-unauthorized likewise with
   // verified no funding. No other new edges were added.
-  QUOTED: ["SWAP_CREATED", "QUOTE_EXPIRED", "DRAFT", "USER_CANCELLED"],
+  QUOTED: ["SWAP_CREATED", "QUOTE_EXPIRED", "DRAFT", "USER_CANCELLED", "DESK_AWAITING_NIM", "DESK_REFUND_DUE"],
   QUOTE_EXPIRED: [],
   // B4.3: bound-but-unauthorized transfers may be cancelled pre-handoff
   // (verified no funding first). No other new edges were added.
@@ -95,6 +101,11 @@ export const TRANSITIONS: Readonly<Record<TransferStatus, ReadonlyArray<Transfer
   DELIVERED_SHORT: [],
   FAILED: [],
   EXPIRED_UNFUNDED: [],
+  // Desk path. DELIVERED is reached only from DESK_PAYING_OUT, and the desk
+  // writes it after a finalized receipt; REFUNDED only after a verified return.
+  DESK_AWAITING_NIM: ["DESK_PAYING_OUT", "DESK_REFUND_DUE", "QUOTE_EXPIRED"],
+  DESK_PAYING_OUT: ["DELIVERED", "DESK_REFUND_DUE"],
+  DESK_REFUND_DUE: ["REFUNDED"],
 };
 
 export function isTerminal(status: TransferStatus): boolean {
@@ -200,4 +211,7 @@ export const USER_FACING_LABEL: Record<TransferStatus, string> = {
   DELIVERED_SHORT: "Delivered — less than requested",
   FAILED: "Needs attention",
   EXPIRED_UNFUNDED: "Expired — not delivered",
+  DESK_AWAITING_NIM: "Waiting for your NIM",
+  DESK_PAYING_OUT: "Paying out USDC",
+  DESK_REFUND_DUE: "Refund due — waiting on Thence",
 };

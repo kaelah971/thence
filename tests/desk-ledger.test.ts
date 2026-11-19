@@ -45,6 +45,28 @@ describe.skipIf(!LIVE)("treasury ledger concurrency and recovery (isolated TEST 
     await getPool().query("UPDATE desk_orders SET expires_at=now()-interval '1 minute' WHERE id=$1", [win.value.id]);
     await expect(authorizeDesk(ids[attempts.indexOf(win)]!, wallets[attempts.indexOf(win)]!.address, win.value.id)).rejects.toMatchObject({ code: "QUOTE_EXPIRED" });
   });
+  it("mirrors a desk order into the transfer ledger with desk-specific statuses", async () => {
+    const id = randomUUID(), address = fixtureWallet().address;
+    await getPool().query("INSERT INTO users(id,nimiq_address) VALUES($1,$2)", [id, address]);
+    vi.stubEnv("THENCE_DESK_OPEN", "true");
+    try {
+      const quote = await quoteDesk(id, address, recipient, "0.30", randomUUID());
+      const read = async () => (await getPool().query<{ id: string; status: string }>(
+        "SELECT id, status FROM transfers WHERE owner_user_id=$1 AND idempotency_key=$2", [id, `desk:${quote.id}`])).rows[0];
+      expect((await read())?.status).toBe("QUOTED");
+      await authorizeDesk(id, address, quote.id);
+      const mirrored = await read();
+      expect(mirrored?.status).toBe("DESK_AWAITING_NIM");
+      const transitions = await getPool().query("SELECT from_status, to_status FROM transfer_transitions WHERE transfer_id=$1 ORDER BY created_at", [mirrored!.id]);
+      expect(transitions.rows).toEqual([{ from_status: "QUOTED", to_status: "DESK_AWAITING_NIM" }]);
+    } finally {
+      vi.stubEnv("THENCE_DESK_OPEN", "false");
+      await getPool().query("DELETE FROM desk_events WHERE order_id IN (SELECT id FROM desk_orders WHERE owner_id=$1)", [id]);
+      await getPool().query("DELETE FROM desk_orders WHERE owner_id=$1", [id]);
+      await getPool().query("DELETE FROM transfers WHERE owner_user_id=$1", [id]);
+      await getPool().query("DELETE FROM users WHERE id=$1", [id]);
+    }
+  });
   it("authorizes one prompt, preserves signed bytes across unknown broadcasts, and proves delivery", async () => {
     const user = ids[2]!, owner = wallets[2]!.address;
     const quote = await quoteDesk(user, owner, recipient, "0.30", randomUUID());
