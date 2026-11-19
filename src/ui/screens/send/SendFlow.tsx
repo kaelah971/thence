@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ROUTE_IDS, type RouteId } from "@/domain/routes";
+import { ROUTE_IDS, kindForRouteId, type RouteId } from "@/domain/routes";
 import { TRANSFER_STATUSES, isTerminal, type TransferStatus } from "@/domain/transfers";
 import { AddressDisplay } from "@/ui/components/AddressDisplay";
 import { AmountDisplay, Keypad } from "@/ui/components/AmountEntry";
@@ -295,8 +295,17 @@ export function SendFlow(): React.JSX.Element {
       return;
     }
     dispatch({ type: "commit", decimals });
+    // Polygon is paid through the NIM treasury desk, not the swap provider.
+    // Hand the exact recipient and amount to /app/desk and let it quote there.
+    if (mode === "send" && kindForRouteId(routeId) === "nimiq-desk" && payee?.address && evaluation.kind === "value") {
+      const value = formatFixed(evaluation.value, decimals);
+      if (value && value !== "0") {
+        router.push(`/app/desk?recipient=${encodeURIComponent(payee.address)}&amount=${encodeURIComponent(value)}`);
+        return;
+      }
+    }
     setStep(mode === "send" ? "review" : "request-details");
-  }, [amountOk, issue, mode, dispatch, decimals]);
+  }, [amountOk, issue, mode, dispatch, decimals, routeId, payee, evaluation, router]);
 
   useEffect(() => {
     if (step !== "amount") return;
