@@ -25,7 +25,7 @@ The collection address passed the repository's Nimiq checksum validation. A read
 
 Quotes expire after 60 seconds before authorization. Authorization grants five minutes to have the deposit included on Nimiq; inclusion after that queues a refund. Once authorized, reservations do not expire automatically—even if the user closes the app or the deadline passes. Time passing never proves non-payment or a refund. Unknown/incorrect/duplicate deposits require operator investigation. Only exact quoted deposits can be processed automatically; underpayments/overpayments and wrong references require manual recovery. Collection history discovery reads the most recent 500 transactions, uses positive matches only, and cannot prove absence of an older payment. A known hash can be reported later.
 
-Default pilot limits are 0.30 USDC minimum, a configurable per-payment maximum (5 USDC by default, 1000 USDC maximum) and a 0.5% included desk fee. There is no per-owner or daily budget: the treasury balance is the only aggregate bound, and a single payment may consume all of it. Rate quotes use fresh NIM and USDC USD observations from a separate CoinGecko adapter (five-minute maximum age and USDC peg guard). The operator bears market movement and liquidity risk. Legacy sats quotes and display-only prices are unchanged.
+Default pilot limits are a configurable minimum (0.01 USDC by default, 0.01 floor), a configurable per-payment maximum (5 USDC by default, 1000 USDC hard maximum) and a 0.5% included desk fee. There is no per-owner or daily budget: the treasury balance is the only aggregate bound, and a single payment may consume all of it. Rate quotes use fresh NIM and USDC USD observations from a separate CoinGecko adapter (five-minute maximum age and USDC peg guard). The operator bears market movement and liquidity risk. Legacy sats quotes and display-only prices are unchanged.
 
 ## Configuration and activation
 
@@ -35,7 +35,8 @@ Set server-only variables from `.env.example`:
 - `THENCE_DESK_NIM_ADDRESS`, `THENCE_DESK_POLYGON_ADDRESS` to the public addresses above.
 - `THENCE_DESK_OWNER_ADDRESSES` to the public **signed-in** Nimiq wallet(s) allowed to test, comma separated. Ignored when open mode is on. Keep authorized owners listed until their pending payments are resolved. Collection address and signed-in address can differ.
 - `THENCE_DESK_OPEN=true` removes the invite list: every signed-in wallet may quote and pay. This is a product decision, not a safety default — the only remaining spend bound is the on-chain USDC balance, so anyone can draw the treasury down. Closed mode (the default) is the safe posture for an unfunded or unproven desk.
-- `THENCE_DESK_MAX_USDC_ATOMIC` is the per-payment ceiling (default `5000000`, 5 USDC; hard limit 1000 USDC). The minimum is always 0.30 USDC.
+- `THENCE_DESK_MIN_USDC_ATOMIC` is the per-payment floor (default `10000`, 0.01 USDC; hard floor 0.01 USDC).
+- `THENCE_DESK_MAX_USDC_ATOMIC` is the per-payment ceiling (default `5000000`, 5 USDC; hard limit 1000 USDC). It must be at least the floor.
 - `THENCE_DESK_POLYGON_RPC` to a trusted HTTPS Polygon mainnet RPC supporting finalized blocks.
 - `THENCE_NIMIQ_PROOF_RPC_URL` to a trusted HTTPS archive/history-capable Nimiq mainnet node.
 - `THENCE_DESK_POLYGON_PRIVATE_KEY` through secure server secret configuration only. It must derive the payout address. No NIM key is needed for this implementation; NIM returns are operator-sent.

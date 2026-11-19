@@ -56,14 +56,15 @@ async function main() {
       const open = input.open === true;
       requireValue(Array.isArray(input.ownerAddresses) && (open || input.ownerAddresses.length > 0) && input.ownerAddresses.every(address => /^NQ\d{2}( [A-Z0-9]{4}){8}$/.test(address)), 'INVALID_OWNERS');
       const maxAtomic = String(input.maxAtomic ?? '5000000');
-      requireValue(/^[1-9][0-9]{5,9}$/.test(maxAtomic) && BigInt(maxAtomic) >= 300000n && BigInt(maxAtomic) <= 1000000000n, 'INVALID_LIMIT');
+      const minAtomic = String(input.minAtomic ?? '10000');
+      requireValue(/^[1-9][0-9]{4,9}$/.test(maxAtomic) && /^[1-9][0-9]{4,8}$/.test(minAtomic) && BigInt(minAtomic) >= 10000n && BigInt(maxAtomic) >= BigInt(minAtomic) && BigInt(maxAtomic) <= 1000000000n, 'INVALID_LIMIT');
       const key = String(input.privateKey).trim();
       requireValue(/^0x[0-9a-fA-F]{64}$/.test(key), 'INVALID_SIGNER');
       requireValue(privateKeyToAccount(key).address.toLowerCase() === PAYOUT, 'SIGNER_MISMATCH');
       const rpcs = JSON.parse(env.THENCE_EVM_RPCS_JSON || '{}');
       requireValue(/^https:\/\//.test(rpcs['137'] || '') && /^https:\/\//.test(env.THENCE_NIMIQ_PROOF_RPC_URL || ''), 'RPC_NOT_CONFIGURED');
       requireValue((env.CRON_SECRET || '').length >= 32, 'CRON_NOT_CONFIGURED');
-      writeConfig({ THENCE_DESK_ENABLED: 'false', THENCE_DESK_NIM_ADDRESS: COLLECTION, THENCE_DESK_POLYGON_ADDRESS: PAYOUT, THENCE_DESK_OWNER_ADDRESSES: input.ownerAddresses.join(','), THENCE_DESK_OPEN: open ? 'true' : 'false', THENCE_DESK_POLYGON_RPC: rpcs['137'], THENCE_DESK_POLYGON_PRIVATE_KEY: key, THENCE_DESK_MAX_USDC_ATOMIC: maxAtomic, THENCE_DESK_FEE_BPS: '50' });
+      writeConfig({ THENCE_DESK_ENABLED: 'false', THENCE_DESK_NIM_ADDRESS: COLLECTION, THENCE_DESK_POLYGON_ADDRESS: PAYOUT, THENCE_DESK_OWNER_ADDRESSES: input.ownerAddresses.join(','), THENCE_DESK_OPEN: open ? 'true' : 'false', THENCE_DESK_POLYGON_RPC: rpcs['137'], THENCE_DESK_POLYGON_PRIVATE_KEY: key, THENCE_DESK_MIN_USDC_ATOMIC: minAtomic, THENCE_DESK_MAX_USDC_ATOMIC: maxAtomic, THENCE_DESK_FEE_BPS: '50' });
       fs.writeFileSync('/etc/thence-web-prod/desk-cron-secret', env.CRON_SECRET, { mode: 0o600 });
       fs.chmodSync('/etc/thence-web-prod/desk-cron-secret', 0o600);
       console.log('Desk configuration staged with new payments paused.');

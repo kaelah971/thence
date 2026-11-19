@@ -88,7 +88,7 @@ export function Desk() {
   const canQuote = view?.enabled && (!selected || ["QUOTED", "DELIVERED", "REFUNDED", "EXPIRED"].includes(selected.state));
   return <main className={styles.screen}>
     <ButtonLink href="/app/home" variant="ghost" size="sm">Back to home</ButtonLink>
-    <header><p className={styles.eyebrow}>Private pilot · Polygon</p><h1>Pay NIM. Deliver USDC.</h1><p>Thence receives your NIM and pays the recipient from its own USDC wallet.</p></header>
+    <header><p className={styles.eyebrow}>Open pilot · Polygon</p><h1>Pay NIM. Deliver USDC.</h1><p>Thence receives your NIM and pays the recipient from its own USDC wallet.</p></header>
     {message && <Notice live title="Payment update">{message}</Notice>}
     {!view && !message && <p role="status">Loading your payments…</p>}
     {view && !view.enabled && <Notice>New payments are paused. Existing payments can still be checked.</Notice>}
