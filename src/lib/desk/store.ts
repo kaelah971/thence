@@ -4,8 +4,9 @@ import type { DeskSourceFacts } from "@/lib/nimiq-source";
 import { DeskError, type DeskState } from "./policy";
 import { syncMirror } from "./ledger";
 
+import type { DeskChain } from "./chains";
 export interface DeskPayload {
-  ownerAddress: string; recipient: `0x${string}`; nimAddress: string;
+  ownerAddress: string; chain: DeskChain; recipient: `0x${string}`; nimAddress: string;
   nimLuna: string; feeLuna: string; baseLuna: string; memo: string;
   rateE18: string; rateObservedAt: string; feeBps: number;
   authorizedAt?: number; fundingDeadline?: number; code?: string;
@@ -44,7 +45,7 @@ export async function transition(c: PoolClient, order: DeskOrder, state: DeskSta
   return rows[0]!;
 }
 export function publicDeskOrder(o: DeskOrder) {
-  return { id: o.id, state: o.state, amountAtomic: o.amount_atomic, recipient: o.payload.recipient,
+  return { id: o.id, state: o.state, network: o.payload.chain ?? "polygon", amountAtomic: o.amount_atomic, recipient: o.payload.recipient,
     nimAddress: o.payload.nimAddress, nimLuna: o.payload.nimLuna, feeLuna: o.payload.feeLuna,
     baseLuna: o.payload.baseLuna, feeBps: o.payload.feeBps, memo: o.payload.memo,
     expiresAt: o.expires_at.toISOString(), fundingDeadline: o.payload.fundingDeadline ?? null,

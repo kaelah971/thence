@@ -57,7 +57,7 @@ const ROUTE_IDENTITY: Record<RouteId, { asset: SupportedAsset; network: Supporte
   /* B3.1: the provider lists USDC (not classic USDT) on Polygon — the
      canonical registry follows provider reality, not the PRD draft. */
   "usdc-polygon": { asset: "USDC", network: "Polygon", kind: "nimiq-desk", needsToken: false },
-  "usdc-arbitrum": { asset: "USDC", network: "Arbitrum", kind: "satora-direct", needsToken: true },
+  "usdc-arbitrum": { asset: "USDC", network: "Arbitrum", kind: "nimiq-desk", needsToken: false },
   "usdc-ethereum": { asset: "USDC", network: "Ethereum", kind: "satora-direct", needsToken: true },
   "usdc-base": { asset: "USDC", network: "Base", kind: "satora-cctp", needsToken: true },
   "btc-lightning": { asset: "BTC", network: "Lightning", kind: "nimiq-lightning", needsToken: false },

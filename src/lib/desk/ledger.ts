@@ -14,7 +14,7 @@ import type { PoolClient } from "pg";
 import { isTerminal, type TransferStatus } from "@/domain/transfers";
 import type { DeskState } from "./policy";
 import type { DeskOrder } from "./store";
-import { POLYGON_USDC } from "./policy";
+import { deskChainConfig } from "./chains";
 
 const DESK_STATUS: Record<DeskState, TransferStatus> = {
   QUOTED: "QUOTED",
@@ -34,12 +34,14 @@ const DESK_STATUS: Record<DeskState, TransferStatus> = {
  * quote can never create a second history row.
  */
 export async function mirrorQuote(c: PoolClient, order: DeskOrder): Promise<string> {
+  const route = order.payload.chain === "arbitrum" ? "usdc-arbitrum" : "usdc-polygon";
+  const network = order.payload.chain === "arbitrum" ? "Arbitrum" : "Polygon";
   const { rows } = await c.query<{ id: string }>(
     `INSERT INTO transfers (
        owner_user_id, route_id, target_asset, target_network, destination,
        target_amount_atomic, quote_provider, quote_revision, quoted_at,
        quoted_net_target_atomic, quoted_fees_json, quote_expires_at, status, idempotency_key
-     ) VALUES ($1, 'usdc-polygon', 'USDC', 'Polygon', $2, $3, 'desk', 1, now(), $3, $4, $5, $6, $7)
+     ) VALUES ($1, $8, 'USDC', $9, $2, $3, 'desk', 1, now(), $3, $4, $5, $6, $7)
      ON CONFLICT (owner_user_id, idempotency_key) DO UPDATE SET updated_at = now()
      RETURNING id`,
     [
@@ -57,6 +59,8 @@ export async function mirrorQuote(c: PoolClient, order: DeskOrder): Promise<stri
       order.expires_at,
       DESK_STATUS.QUOTED,
       `desk:${order.id}`,
+      route,
+      network,
     ],
   );
   return rows[0]!.id;
@@ -99,6 +103,7 @@ export async function publishDeskProof(
   const deposit = order.deposit_hash;
   const payoutHash = order.payout_hash;
   if (!transferId || !source || !deposit || !payoutHash) return {};
+  const chain = deskChainConfig(order.payload.chain);
   const evidence = {
     source: {
       transactionHash: deposit,
@@ -125,11 +130,11 @@ export async function publishDeskProof(
     `INSERT INTO transfer_proofs
        (transfer_id, nimiq_tx_hash, evm_tx_hash, evidence_source, chain_id, token_contract, recipient,
         verified_amount_atomic, block_number, block_hash, log_indexes, finality_level, verified_at)
-     VALUES ($1, $2, $3, 'evm_erc20_transfer', 137, $4, $5, $6, $7, $8, $9, 'finalized', now())
+     VALUES ($1, $2, $3, 'evm_erc20_transfer', $10, $4, $5, $6, $7, $8, $9, 'finalized', now())
      ON CONFLICT (transfer_id) DO NOTHING`,
     [
-      transferId, deposit, payoutHash, POLYGON_USDC, order.payload.recipient.toLowerCase(),
-      order.amount_atomic, payout.blockNumber, payout.blockHash, JSON.stringify(payout.logIndexes),
+      transferId, deposit, payoutHash, chain.usdc, order.payload.recipient.toLowerCase(),
+      order.amount_atomic, payout.blockNumber, payout.blockHash, JSON.stringify(payout.logIndexes), chain.chainId,
     ],
   );
   return {

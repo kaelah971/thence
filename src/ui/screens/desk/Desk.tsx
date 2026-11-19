@@ -35,6 +35,7 @@ const descriptions: Record<PublicDeskOrder["state"], string> = {
 export function Desk() {
   const [view, setView] = useState<DeskView | null>(null), [selected, setSelected] = useState<PublicDeskOrder | null>(null);
   const [recipient, setRecipient] = useState(""), [amount, setAmount] = useState("0.30"), [hash, setHash] = useState("");
+  const [network, setNetwork] = useState<"polygon" | "arbitrum">("polygon");
   const [consent, setConsent] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const running = useRef(false);
   // Send hands off the exact recipient and amount after its own amount step.
@@ -54,10 +55,12 @@ export function Desk() {
       // Send hands off recipient + amount after its own amount step.
       const params = new URLSearchParams(window.location.search);
       const to = params.get("recipient") ?? "", value = params.get("amount") ?? "";
+      const chain = params.get("network") === "arbitrum" ? "arbitrum" : "polygon";
       if (preset.current || !/^0x[0-9a-fA-F]{40}$/.test(to) || !/^\d+(\.\d{1,6})?$/.test(value)) return;
       preset.current = true;
+      setNetwork(chain);
       setRecipient(to); setAmount(value);
-      void api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID() })
+      void api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID(), network: chain })
         .then(result => { if (active) { setSelected(result.order); setConsent(false); void refresh(); } })
         .catch(error => { if (active) setMessage(error instanceof Error ? error.message : "Could not quote this payment."); });
     }).catch(error => { if (active) setMessage(error.message); });
@@ -70,8 +73,8 @@ export function Desk() {
     catch (error) { setMessage(error instanceof Error ? error.message : "Could not check the payment. Do not pay again."); }
     finally { running.current = false; setBusy(false); }
   };
-  const quoteFor = (to: string, value: string) => run(async () => {
-    const result = await api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID() });
+  const quoteFor = (to: string, value: string, chain = network) => run(async () => {
+    const result = await api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID(), network: chain });
     setSelected(result.order); setConsent(false); await refresh();
   });
   const quote = () => quoteFor(recipient, amount);
@@ -109,14 +112,19 @@ export function Desk() {
     {!view && !message && <p role="status">Loading your payments…</p>}
     {view && !view.enabled && <Notice>New payments are paused. Existing payments can still be checked.</Notice>}
     {canQuote && <form className={styles.card} onSubmit={event => { event.preventDefault(); void quote(); }}>
-      <label htmlFor="desk-recipient">Recipient’s Polygon address</label><input id="desk-recipient" value={recipient} onChange={e => setRecipient(e.target.value)} autoComplete="off" spellCheck={false} disabled={busy} required />
+      <label htmlFor="desk-network">Network</label>
+      <select id="desk-network" value={network} onChange={e => setNetwork(e.target.value === "arbitrum" ? "arbitrum" : "polygon")} disabled={busy}>
+        <option value="polygon">Polygon</option>
+        <option value="arbitrum">Arbitrum</option>
+      </select>
+      <label htmlFor="desk-recipient">Recipient’s {network === "arbitrum" ? "Arbitrum" : "Polygon"} address</label><input id="desk-recipient" value={recipient} onChange={e => setRecipient(e.target.value)} autoComplete="off" spellCheck={false} disabled={busy} required />
       <label htmlFor="desk-amount">USDC they receive</label><input id="desk-amount" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" disabled={busy} required />
       <Button type="submit" disabled={busy} block>Get a quote</Button>
     </form>}
     {selected && <section className={styles.card} aria-label="Payment details">
       <h2>{selected.state === "QUOTED" ? "Review payment" : "Payment status"}</h2><p role="status">{descriptions[selected.state]}</p>
       {selected.code === "MULTIPLE_DEPOSITS" && <Notice>More than one deposit matches this payment. Thence must review it. Do not pay again.</Notice>}
-      <dl><dt>Recipient receives</dt><dd>{usdc(selected.amountAtomic)} USDC on Polygon</dd><dt>You send</dt><dd>{formatLuna(BigInt(selected.nimLuna)).text} NIM, plus any wallet network fee</dd><dt>Thence fee (included)</dt><dd>{formatLuna(BigInt(selected.feeLuna)).text} NIM ({selected.feeBps / 100}%)</dd><dt>Recipient</dt><dd>{selected.recipient}</dd><dt>NIM collection wallet</dt><dd>{selected.nimAddress}</dd><dt>Payment reference</dt><dd>{selected.id}</dd></dl>
+      <dl><dt>Recipient receives</dt><dd>{usdc(selected.amountAtomic)} USDC on {selected.network === "arbitrum" ? "Arbitrum" : "Polygon"}</dd><dt>You send</dt><dd>{formatLuna(BigInt(selected.nimLuna)).text} NIM, plus any wallet network fee</dd><dt>Thence fee (included)</dt><dd>{formatLuna(BigInt(selected.feeLuna)).text} NIM ({selected.feeBps / 100}%)</dd><dt>Recipient</dt><dd>{selected.recipient}</dd><dt>NIM collection wallet</dt><dd>{selected.nimAddress}</dd><dt>Payment reference</dt><dd>{selected.id}</dd></dl>
       {selected.state === "QUOTED" && <>
         <p>Quote expires {new Date(selected.expiresAt).toLocaleTimeString()}. After continuing, approve within five minutes. Late deposits require a refund.</p>
         <label className={styles.consent}><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} disabled={busy} /><span>I understand Thence will hold my NIM while delivering USDC. Refunds require Thence to send NIM back.</span></label>
@@ -124,10 +132,10 @@ export function Desk() {
       </>}
       {selected.state === "AWAITING_NIM" && <><label htmlFor="desk-hash">NIM transaction hash (if available)</label><input id="desk-hash" value={hash} onChange={e => setHash(e.target.value)} spellCheck={false} autoComplete="off" disabled={busy} /></>}
       {selected.state === "VERIFIED" && <Button variant="soft" disabled={busy} onClick={() => void run(async () => { await api({ action: "request-refund", id: selected.id }); await refresh(); })}>Request NIM return instead</Button>}
-      {selected.payoutHash && <a href={`https://polygonscan.com/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
+      {selected.payoutHash && <a href={`https://${selected.network === "arbitrum" ? "arbiscan.io" : "polygonscan.com"}/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
       {selected.refundHash && <p className={styles.hash}>Verified NIM return: {selected.refundHash}</p>}
       <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>
     </section>}
-    {view && view.orders.length > 1 && <section className={styles.card}><h2>Your pilot payments</h2>{view.orders.map(o => <Button key={o.id} variant="soft" size="sm" onClick={() => { setSelected(o); setHash(""); setConsent(false); }} disabled={busy}>{usdc(o.amountAtomic)} USDC · {o.state.replaceAll("_", " ")} · {o.id.slice(0, 8)}</Button>)}</section>}
+    {view && view.orders.length > 1 && <section className={styles.card}><h2>Your pilot payments</h2>{view.orders.map(o => <Button key={o.id} variant="soft" size="sm" onClick={() => { setSelected(o); setHash(""); setConsent(false); }} disabled={busy}>{usdc(o.amountAtomic)} USDC · {o.network === "arbitrum" ? "Arbitrum" : "Polygon"} · {o.state.replaceAll("_", " ")} · {o.id.slice(0, 8)}</Button>)}</section>}
   </main>;
 }

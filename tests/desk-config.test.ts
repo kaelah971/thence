@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertDeskOwner, deskConfig } from "@/lib/desk/config";
+import { deskChainConfig } from "@/lib/desk/chains";
 import { fixtureWallet } from "./helpers";
 
 const listed = fixtureWallet().address;
@@ -50,5 +51,13 @@ describe("treasury desk access mode", () => {
     expect(() => deskConfig()).toThrow(/invalid pilot limits/i);
     stage({ THENCE_DESK_MIN_USDC_ATOMIC: "20000", THENCE_DESK_MAX_USDC_ATOMIC: "10000" });
     expect(() => deskConfig()).toThrow(/invalid pilot limits/i);
+  });
+
+  it("maps each desk chain to its own USDC, gas symbol and finality RPC", () => {
+    stage({ THENCE_DESK_ARBITRUM_RPC: "https://arbitrum.test" });
+    expect(deskChainConfig("polygon")).toMatchObject({ chainId: 137, usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", gasSymbol: "POL" });
+    expect(deskChainConfig("arbitrum")).toMatchObject({ chainId: 42161, usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", gasSymbol: "ETH" });
+    vi.stubEnv("THENCE_DESK_ARBITRUM_RPC", "");
+    expect(() => deskChainConfig("arbitrum")).toThrow(/not configured/i);
   });
 });

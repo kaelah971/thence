@@ -11,7 +11,7 @@ const load = createRequire(release + '/package.json');
 const { Pool } = load('pg');
 const { privateKeyToAccount } = load('viem/accounts');
 const { createPublicClient, http, erc20Abi } = load('viem');
-const { polygon } = load('viem/chains');
+const { polygon, arbitrum } = load('viem/chains');
 const PAYOUT = '0x21e5fc03e4305cc8cfb874253c6d66a8bdb0bcda';
 const COLLECTION = 'NQ47 VGR3 VVK0 R49X 98YG CNDY NST3 6CR5 BCKQ';
 function requireValue(condition, code) { if (!condition) throw new Error(code); }
@@ -62,9 +62,9 @@ async function main() {
       requireValue(/^0x[0-9a-fA-F]{64}$/.test(key), 'INVALID_SIGNER');
       requireValue(privateKeyToAccount(key).address.toLowerCase() === PAYOUT, 'SIGNER_MISMATCH');
       const rpcs = JSON.parse(env.THENCE_EVM_RPCS_JSON || '{}');
-      requireValue(/^https:\/\//.test(rpcs['137'] || '') && /^https:\/\//.test(env.THENCE_NIMIQ_PROOF_RPC_URL || ''), 'RPC_NOT_CONFIGURED');
+      requireValue(/^https:\/\//.test(rpcs['137'] || '') && /^https:\/\//.test(rpcs['42161'] || '') && /^https:\/\//.test(env.THENCE_NIMIQ_PROOF_RPC_URL || ''), 'RPC_NOT_CONFIGURED');
       requireValue((env.CRON_SECRET || '').length >= 32, 'CRON_NOT_CONFIGURED');
-      writeConfig({ THENCE_DESK_ENABLED: 'false', THENCE_DESK_NIM_ADDRESS: COLLECTION, THENCE_DESK_POLYGON_ADDRESS: PAYOUT, THENCE_DESK_OWNER_ADDRESSES: input.ownerAddresses.join(','), THENCE_DESK_OPEN: open ? 'true' : 'false', THENCE_DESK_POLYGON_RPC: rpcs['137'], THENCE_DESK_POLYGON_PRIVATE_KEY: key, THENCE_DESK_MIN_USDC_ATOMIC: minAtomic, THENCE_DESK_MAX_USDC_ATOMIC: maxAtomic, THENCE_DESK_FEE_BPS: '50' });
+      writeConfig({ THENCE_DESK_ENABLED: 'false', THENCE_DESK_NIM_ADDRESS: COLLECTION, THENCE_DESK_POLYGON_ADDRESS: PAYOUT, THENCE_DESK_OWNER_ADDRESSES: input.ownerAddresses.join(','), THENCE_DESK_OPEN: open ? 'true' : 'false', THENCE_DESK_POLYGON_RPC: rpcs['137'], THENCE_DESK_ARBITRUM_RPC: rpcs['42161'], THENCE_DESK_POLYGON_PRIVATE_KEY: key, THENCE_DESK_MIN_USDC_ATOMIC: minAtomic, THENCE_DESK_MAX_USDC_ATOMIC: maxAtomic, THENCE_DESK_FEE_BPS: '50' });
       fs.writeFileSync('/etc/thence-web-prod/desk-cron-secret', env.CRON_SECRET, { mode: 0o600 });
       fs.chmodSync('/etc/thence-web-prod/desk-cron-secret', 0o600);
       console.log('Desk configuration staged with new payments paused.');
@@ -80,6 +80,19 @@ async function main() {
     requireValue(await client.getChainId() === 137, 'WRONG_CHAIN');
     const block = await client.getBlock({ blockTag: 'finalized' });
     requireValue(Date.now() - Number(block.timestamp) * 1000 < 300000, 'STALE_FINALITY');
+    let arbitrum = null;
+    try {
+      const arbRpc = env.THENCE_DESK_ARBITRUM_RPC;
+      if (arbRpc) {
+        const arb = createPublicClient({ chain: arbitrum, transport: http(arbRpc, { timeout: 8000, retryCount: 0 }) });
+        const arbBlock = await arb.getBlock({ blockTag: 'finalized' });
+        const [arbUsdc, arbGas] = await Promise.all([
+          arb.readContract({ address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: arbBlock.number }),
+          arb.getBalance({ address: PAYOUT, blockNumber: arbBlock.number }),
+        ]);
+        arbitrum = { usdcAtomic: arbUsdc.toString(), gasWei: arbGas.toString(), block: arbBlock.number };
+      }
+    } catch { arbitrum = { error: 'ARBITRUM_UNAVAILABLE' }; }
     const [usdc, pol] = await Promise.all([
       client.readContract({ address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', abi: erc20Abi, functionName: 'balanceOf', args: [PAYOUT], blockNumber: block.number }),
       client.getBalance({ address: PAYOUT, blockNumber: block.number }),
@@ -101,7 +114,7 @@ async function main() {
       requireValue(result.status === 0 && result.stdout.trim() === 'success', 'WORKER_LAST_RUN_FAILED');
       writeConfig({ THENCE_DESK_ENABLED: 'true' });
     }
-    console.log(JSON.stringify({ preflight: 'passed', mode, signerMatches: true, nativeUsdcAtomic: usdc.toString(), polWei: pol.toString(), collectionBasic: true, historyReadable: true, open: env.THENCE_DESK_OPEN === 'true', privateOwners: (env.THENCE_DESK_OWNER_ADDRESSES || '').split(',').filter(Boolean).length }));
+    console.log(JSON.stringify({ preflight: 'passed', mode, arbitrum, signerMatches: true, nativeUsdcAtomic: usdc.toString(), polWei: pol.toString(), collectionBasic: true, historyReadable: true, open: env.THENCE_DESK_OPEN === 'true', privateOwners: (env.THENCE_DESK_OWNER_ADDRESSES || '').split(',').filter(Boolean).length }));
   } finally { await pool.end(); }
 }
 main().catch(error => {
