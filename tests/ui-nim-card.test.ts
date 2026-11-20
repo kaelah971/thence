@@ -1,9 +1,9 @@
 /**
  * F8.7 — NIM card copy regression tests (pure, no DOM).
  *
- * The Home NIM card uses clean consumer language: the wallet total with no
- * technical vault explanation, "Wallet balance" instead of "Available", and
- * "Connected through Nimiq Pay" in the foot. The full breakdown
+ * The Home NIM card shows the SPENDABLE balance ("Available balance") so it
+ * agrees with Nimiq Pay, and names vaulted NIM in one plain line. Contract
+ * mechanics stay in the wallet details sheet. The full breakdown
  * (basic / contract-held / verified total / coverage warnings) lives in the
  * wallet details sheet, not on the card. Contract-held NIM is never phrased
  * as proven spendable, and "no NIM yet" never appears while vault coverage
@@ -25,7 +25,7 @@ const loaded = (over: Partial<Extract<BalanceState, { status: "loaded" }>> & { l
 
 describe("NIM card copy (F8.7)", () => {
   it("uses consumer-friendly card chrome", () => {
-    expect(NIM_CARD_LABEL).toBe("Wallet balance");
+    expect(NIM_CARD_LABEL).toBe("Available balance");
     expect(NIM_CARD_FOOT).toBe("Connected through Nimiq Pay");
   });
 
