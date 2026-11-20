@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import { apiRequest } from "./api";
 import { parseLuna } from "./luna";
@@ -286,11 +286,13 @@ const liveDeps: BalanceDeps = { getProvider: getHostProvider, readChain: readCha
 export function useNimBalance(address: string | null): { state: BalanceState; retry: () => void } {
   const [result, setResult] = useState<{ key: string; state: BalanceState } | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const lastRead = useRef(0);
   const key = address ? `${address}#${attempt}` : null;
 
   useEffect(() => {
     if (!address || !key) return;
     let cancelled = false;
+    lastRead.current = Date.now();
     void readNimBalance(liveDeps, address).then((state) => {
       if (!cancelled) setResult({ key, state });
     });
@@ -298,6 +300,31 @@ export function useNimBalance(address: string | null): { state: BalanceState; re
       cancelled = true;
     };
   }, [address, key]);
+
+  /**
+   * A mini-app stays mounted while Nimiq Pay is in the background, so a balance
+   * read once at launch can be hours out of date when the user comes back.
+   * Re-read on return and once a minute while visible. The key change puts the
+   * card back into "loading", so an old number is never shown as current.
+   */
+  useEffect(() => {
+    if (!address) return;
+    const refresh = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastRead.current < 10_000) return;
+      setAttempt((n) => n + 1);
+    };
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("pageshow", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
+    };
+  }, [address]);
 
   const state: BalanceState = !address
     ? { status: "disconnected" }
