@@ -85,14 +85,14 @@ export function nimUsdcPreview(balance: BalanceState, price: PriceState = { stat
     default:
       return { status: "no-balance", message: "Your NIM balance isn't available right now, so no USDC value is shown." };
   }
-  const nim = formatLuna(balance.luna);
+  const nim = formatLuna(balance.basicLuna);
   if (price.status === "loading") return { status: "loading" };
   const rateE18 = price.status === "ok" ? decimalToE18(price.rate) : null;
   // The client re-checks freshness too: a long-open page never shows a stale rate.
   if (price.status !== "ok" || rateE18 === null || rateE18 <= 0n || nowMs - new Date(price.observedAt).getTime() > NIM_PRICE_MAX_AGE_MS) {
     return { status: "rate-unavailable", nim, message: RATE_UNAVAILABLE_MESSAGE };
   }
-  const usdcMicro = estimateUsdcMicro(balance.luna, rateE18);
+  const usdcMicro = estimateUsdcMicro(balance.basicLuna, rateE18);
   return {
     status: "estimate",
     nim,

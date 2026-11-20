@@ -23,12 +23,12 @@ const NETWORK_LABEL: Record<string, string> = { mainnet: "Mainnet", testnet: "Te
 
 /**
  * F8.7 NIM card copy: clean consumer language on the card, full detail in
- * the account sheet. "Wallet balance" names the total without claiming
+ * the account sheet. "Available balance" names the spendable amount without claiming
  * instant spendability (contract-held vault funds are not proven liquid).
  * The technical vault breakdown lives in the wallet details sheet, never
  * on the card.
  */
-export const NIM_CARD_LABEL = "Wallet balance";
+export const NIM_CARD_LABEL = "Available balance";
 export const NIM_CARD_FOOT = "Connected through Nimiq Pay";
 
 /** Pure card note: coverage warnings and honest empty/error states only. */
@@ -39,6 +39,7 @@ export function nimCardNote(balance: BalanceState): string | null {
       if (balance.vaultUnknown === true) {
         parts.push("Vault balance couldn't be fully confirmed — the total may be higher.");
       }
+      // "No NIM yet" must consider vaults too: funds in a vault are not zero.
       if (formatLuna(balance.luna).isZero && balance.vaultUnknown !== true) {
         parts.push("This wallet has no NIM yet.");
       }
@@ -167,7 +168,9 @@ function NimFace({ wallet, balance, price, isFront, onRetry, onOpenAccount }: Ni
   }
 
   const loaded = balance.status === "loaded" ? balance : null;
-  const formatted = loaded ? formatLuna(loaded.luna) : null;
+  // Spendable only: vaulted NIM cannot be sent, and Nimiq Pay shows the same
+  // number. Vault totals are reported on their own line below.
+  const formatted = loaded ? formatLuna(loaded.basicLuna) : null;
   const chars = formatted ? formatted.text.length + 3 : 8;
   // F8.7: card copy comes from the shared helper (tested, no technical vault text on the card).
   const note = nimCardNote(balance);
@@ -213,6 +216,11 @@ function NimFace({ wallet, balance, price, isFront, onRetry, onOpenAccount }: Ni
             <span aria-hidden="true">—</span>
             <span className={styles.amountUnit}>NIM</span>
             <span className="sr-only">Balance unavailable</span>
+          </p>
+        )}
+        {loaded?.vaultLuna !== null && loaded?.vaultLuna !== undefined && loaded.vaultLuna > 0n && (
+          <p className={styles.note} data-vaults>
+            {formatLuna(loaded.vaultLuna).text} NIM in Nimiq Pay vaults — not spendable until withdrawn there.
           </p>
         )}
         {note && (
