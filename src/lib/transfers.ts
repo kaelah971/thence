@@ -125,6 +125,8 @@ export interface TransferView {
   id: string;
   status: TransferStatus;
   statusLabel: string;
+  /** 'desk' for treasury-desk payments mirrored into this ledger, else the swap provider. */
+  quoteProvider: string | null;
   routeId: string;
   recipientName: string | null;
   asset: string;
@@ -179,6 +181,7 @@ async function toView(db: Db, row: TransferRow): Promise<TransferView> {
     id: row.id,
     status: displayStatus,
     statusLabel: USER_FACING_LABEL[displayStatus] ?? displayStatus,
+    quoteProvider: row.quoteProvider ?? null,
     routeId: row.routeId,
     recipientName: row.recipientName,
     asset: row.targetAsset,

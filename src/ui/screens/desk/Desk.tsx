@@ -37,6 +37,7 @@ export function Desk() {
   const [recipient, setRecipient] = useState(""), [amount, setAmount] = useState("0.30"), [hash, setHash] = useState("");
   const [network, setNetwork] = useState<"polygon" | "arbitrum" | "base">("polygon");
   const [consent, setConsent] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
+  const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const running = useRef(false);
   // Send hands off the exact recipient and amount after its own amount step.
   const preset = useRef(false);
@@ -116,6 +117,8 @@ export function Desk() {
     if (selected.state === "AWAITING_NIM" && candidate) await api({ action: "report", id: selected.id, hash: candidate });
     await api({ action: "check", id: selected.id });
     await refresh();
+    // Something must visibly happen even when the state is unchanged.
+    setCheckedAt(Date.now());
   });
   const canQuote = view?.enabled && (!selected || ["QUOTED", "DELIVERED", "REFUNDED", "EXPIRED"].includes(selected.state));
   // One action at a time: while an order needs attention the form is hidden,
@@ -153,6 +156,7 @@ export function Desk() {
       {selected.payoutHash && <a href={`https://${selected.network === "arbitrum" ? "arbiscan.io" : selected.network === "base" ? "basescan.org" : "polygonscan.com"}/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
       {selected.refundHash && <p className={styles.hash}>Verified NIM return: {selected.refundHash}</p>}
       {canCheck && <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>}
+      {checkedAt !== null && <p className={styles.hint} role="status">Checked {new Date(checkedAt).toLocaleTimeString()} — nothing has moved yet if the step above is unchanged.</p>}
     </section>}
 
   </main>;
