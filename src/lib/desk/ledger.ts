@@ -74,9 +74,18 @@ export async function syncMirror(c: PoolClient, order: DeskOrder, extra?: Record
   const transferId = order.payload.transferId;
   if (!transferId) return;
   const next = DESK_STATUS[order.state];
-  const { rows } = await c.query<{ status: TransferStatus }>("SELECT status FROM transfers WHERE id = $1", [transferId]);
+  // A terminal transition is written once. Legacy paths (host cancel, expiry)
+  // can close a mirrored transfer before the desk does, and the mirror must
+  // never fight them: re-inserting a terminal row aborts the whole desk
+  // transaction and poisoned every later quote.
+  const { rows } = await c.query<{ status: TransferStatus; closed: boolean }>(
+    `SELECT t.status, EXISTS (SELECT 1 FROM transfer_transitions h WHERE h.transfer_id = t.id AND h.terminal) AS closed
+       FROM transfers t WHERE t.id = $1`,
+    [transferId],
+  );
   const from = rows[0]?.status;
   if (!from || from === next) return;
+  if (rows[0]?.closed) return;
   await c.query("UPDATE transfers SET status = $2, updated_at = clock_timestamp() WHERE id = $1", [transferId, next]);
   await c.query(
     `INSERT INTO transfer_transitions (transfer_id, from_status, to_status, actor, reason_code, evidence, terminal)
