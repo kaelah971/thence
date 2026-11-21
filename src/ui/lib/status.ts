@@ -77,6 +77,9 @@ export function pillLabel(status: TransferStatus): string {
   if (status === "CLIENT_FUNDED") return "Preparing delivery";
   if (status === "LIGHTNING_HANDOFF") return "Confirming approval";
   if (status === "DELIVERED_SHORT") return USER_FACING_LABEL.DELIVERED_SHORT;
+  // Desk states describe exactly what is happening; the generic stage words
+  // ("Waiting for approval") would be wrong once the NIM is already sent.
+  if (status === "DESK_AWAITING_NIM" || status === "DESK_PAYING_OUT" || status === "DESK_REFUND_DUE") return USER_FACING_LABEL[status];
   const stage = STAGE_OF[status];
   return stage === "closed" ? USER_FACING_LABEL[status] : STAGE_LABEL[stage];
 }
@@ -127,6 +130,8 @@ export interface TimelineContext {
   received?: boolean;
   /** The NIM source transaction is independently verified on-chain (copy only). */
   sourceVerified?: boolean;
+  /** Treasury desk payment: four desk steps, never the swap claim timeline. */
+  desk?: boolean;
   /** Settlement network for copy only (defaults to Polygon). */
   network?: SettlementNetwork;
 }
@@ -158,6 +163,7 @@ function progressIndex(status: TransferStatus, ctx: TimelineContext): number {
  * owner's own step, never as something that happens on its own.
  */
 export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): TimelineStep[] {
+  if (ctx.desk) return deskTimeline(status);
   const stage = STAGE_OF[status];
   const index = progressIndex(status, ctx);
   const network = ctx.network ?? "Polygon";
@@ -205,4 +211,28 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
     if (i === 0 && index === 0 && (stage === "closed" || stage === "checking" || stage === "attention")) state = "paused";
     return { key, ...copy[key], state };
   });
+}
+
+/**
+ * Treasury desk: NIM in, USDC out from Thence's own wallet. No swap, no claim,
+ * so "Finish delivery" never belongs on this timeline.
+ */
+function deskTimeline(status: TransferStatus): TimelineStep[] {
+  const index = status === "DESK_AWAITING_NIM" ? 1 : status === "DESK_PAYING_OUT" ? 2 : status === "DELIVERED" ? 3 : 0;
+  const copy: Record<TimelineStep["key"], { label: string; detail: string }> = {
+    approve: {
+      label: index > 0 ? "Approved in Nimiq Pay" : "Approve in Nimiq Pay",
+      detail: "Nimiq Pay shows the exact NIM amount first.",
+    },
+    finish: {
+      label: index > 1 ? "NIM received" : "Send your NIM",
+      detail: index > 1 ? "Deposit verified and final." : "Send the exact amount with the reference shown.",
+    },
+    verify: {
+      label: "Paying out USDC",
+      detail: "Sent from Thence's treasury wallet.",
+    },
+    delivered: { label: "Delivered", detail: "Confirmed on their network." },
+  };
+  return STEP_ORDER.map((key, i) => ({ key, ...copy[key], state: i < index ? "done" : i === index ? "current" : "upcoming" }));
 }

@@ -699,7 +699,7 @@ function TransferDetail({
           <p className={styles.timelineTitle}>Progress</p>
           {item.statusLabel && !LIVE_PROGRESS_DETAIL.has(item.status) && <p className={styles.latest}>Latest: {item.statusLabel}</p>}
         </div>
-        <Timeline steps={timelineFor(item.status, { network: settlementNetworkFor(item.routeId) })} />
+        <Timeline steps={timelineFor(item.status, { network: settlementNetworkFor(item.routeId), desk: item.quoteProvider === "desk" || item.status.startsWith("DESK_") })} />
       </div>
 
       {item.destination && (

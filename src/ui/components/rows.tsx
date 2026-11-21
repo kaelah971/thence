@@ -17,6 +17,8 @@ export interface ActivityItem {
   status: TransferStatus;
   /** Backend `statusLabel`, shown verbatim in details when present. */
   statusLabel?: string;
+  /** 'desk' for treasury-desk payments mirrored into the ledger. */
+  quoteProvider?: string | null;
   dayLabel: string;
   timeLabel: string;
   destination?: string;

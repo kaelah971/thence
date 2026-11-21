@@ -14,6 +14,8 @@ export interface ApiTransfer {
   id: string;
   status: string;
   statusLabel: string;
+  /** 'desk' for treasury-desk payments mirrored into the ledger. */
+  quoteProvider?: string | null;
   routeId: string;
   recipientName: string | null;
   asset: string;
@@ -145,6 +147,7 @@ export function toActivityItem(t: ApiTransfer, now: Date = new Date()): Activity
     amount,
     status: t.status,
     statusLabel: t.statusLabel,
+    quoteProvider: t.quoteProvider ?? null,
     dayLabel: dayLabelFor(t.createdAt, now),
     timeLabel: timeLabelFor(t.createdAt),
     destination: t.destination,
