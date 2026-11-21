@@ -1384,6 +1384,12 @@ export async function reportHandoffOutcome(
     if (current !== "AWAITING_NIM_APPROVAL" && current !== "SWAP_CREATED" && current !== "QUOTED") {
       throw new AuthError(409, "NOT_CANCELLABLE", "Only a pre-handoff transfer can be reported cancelled.");
     }
+    // A desk order is mirrored into `transfers` for Activity, but its lifecycle
+    // belongs to the desk. A Nimiq Pay cancel must not close the mirror while
+    // the desk order is still live.
+    if (transfer.quoteProvider === "desk") {
+      throw new AuthError(409, "NOT_CANCELLABLE", "Treasury desk payments are managed on the desk screen.");
+    }
     const bound = await tx.select().from(swapAttachments).where(eq(swapAttachments.transferId, transfer.id)).limit(1);
     const attachment = bound[0];
     if (!attachment) {
