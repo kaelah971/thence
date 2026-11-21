@@ -80,6 +80,38 @@ export function Desk() {
     }).catch(error => { if (active) setMessage(error.message); });
     return () => { active = false; };
   }, []);
+  /**
+   * Live progress: while an order is in flight, re-read the desk every few
+   * seconds so the step advances on its own (what the worker just learned),
+   * without the user tapping. Stopped when the sheet is hidden or the order
+   * reaches a terminal state.
+   */
+  const activeId = selected && ["AWAITING_NIM", "VERIFIED", "PAYOUT_PREPARED", "PAYOUT_SUBMITTED", "REFUND_DUE"].includes(selected.state) ? selected.id : null;
+  useEffect(() => {
+    if (!activeId) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (document.visibilityState === "hidden" || running.current) return;
+      try {
+        const next = await api<DeskView>();
+        if (cancelled) return;
+        setView(next);
+        setSelected(current => next.orders.find(o => o.id === current?.id) ?? newestActive(next.orders));
+      } catch {
+        // A failed poll is silent: the manual check is what reports problems.
+      }
+    };
+    const timer = window.setInterval(() => void tick(), 5_000);
+    const onVisible = () => { if (document.visibilityState === "visible") void tick(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // Only the active order should restart polling; newestActive is stable here.
+  }, [activeId]);
+
   const run = async (work: () => Promise<void>) => {
     if (running.current) return;
     running.current = true; setBusy(true); setMessage("");
