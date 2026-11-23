@@ -218,7 +218,8 @@ export function timelineFor(status: TransferStatus, ctx: TimelineContext = {}): 
  * so "Finish delivery" never belongs on this timeline.
  */
 function deskTimeline(status: TransferStatus): TimelineStep[] {
-  const index = status === "DESK_AWAITING_NIM" ? 1 : status === "DESK_PAYING_OUT" ? 2 : status === "DELIVERED" ? 3 : 0;
+  // 4 means "past the last step", so a delivered payment shows four ticks.
+  const index = status === "DESK_AWAITING_NIM" ? 1 : status === "DESK_PAYING_OUT" ? 2 : status === "DELIVERED" ? 4 : 0;
   const copy: Record<TimelineStep["key"], { label: string; detail: string }> = {
     approve: {
       label: index > 0 ? "Approved in Nimiq Pay" : "Approve in Nimiq Pay",

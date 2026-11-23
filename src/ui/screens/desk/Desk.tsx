@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import type { PublicDeskOrder } from "@/lib/desk/store";
 import { Button, ButtonLink } from "@/ui/components/Button";
@@ -53,6 +54,10 @@ export function Desk() {
   const [network, setNetwork] = useState<"polygon" | "arbitrum" | "base">("polygon");
   const [consent, setConsent] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
+  // After a delivery the user should read the receipt, not be handed the
+  // amount form again. The form returns only when they ask for it.
+  const [startNew, setStartNew] = useState(false);
+  const router = useRouter();
   const running = useRef(false);
   // Send hands off the exact recipient and amount after its own amount step.
   const preset = useRef(false);
@@ -136,7 +141,7 @@ export function Desk() {
   };
   const quoteFor = (to: string, value: string, chain = network) => run(async () => {
     const result = await api<{ order: PublicDeskOrder }>({ action: "quote", recipient: to, amount: value, requestKey: crypto.randomUUID(), network: chain });
-    setSelected(result.order); setConsent(false); await refresh();
+    setSelected(result.order); setConsent(false); setStartNew(false); await refresh();
   });
   const quote = () => quoteFor(recipient, amount);
   const pay = () => run(async () => {
@@ -178,7 +183,7 @@ export function Desk() {
     {message && <Notice live title="Payment update">{message}</Notice>}
     {!view && !message && <p role="status">Loading your payments…</p>}
     {view && !view.enabled && <Notice>New payments are paused. Existing payments can still be checked.</Notice>}
-    {canQuote && !active && <form className={styles.card} onSubmit={event => { event.preventDefault(); void quote(); }}>
+    {canQuote && !active && (!selected || startNew) && <form className={styles.card} onSubmit={event => { event.preventDefault(); void quote(); }}>
       <div className={styles.networks} role="group" aria-label="Network">
         <button type="button" aria-pressed={network === "polygon"} disabled={busy} onClick={() => { setNetwork("polygon"); setSelected(null); }}>Polygon</button>
         <button type="button" aria-pressed={network === "arbitrum"} disabled={busy} onClick={() => { setNetwork("arbitrum"); setSelected(null); }}>Arbitrum</button>
@@ -201,7 +206,9 @@ export function Desk() {
       </>}
       {selected.state === "AWAITING_NIM" && <><label htmlFor="desk-hash">NIM transaction hash (if available)</label><input id="desk-hash" value={hash} onChange={e => setHash(e.target.value)} spellCheck={false} autoComplete="off" disabled={busy} /></>}
       {selected.state === "VERIFIED" && <Button variant="soft" disabled={busy} onClick={() => void run(async () => { await api({ action: "request-refund", id: selected.id }); await refresh(); })}>Request NIM return instead</Button>}
-      {selected.payoutHash && <a href={`https://${selected.network === "arbitrum" ? "arbiscan.io" : selected.network === "base" ? "basescan.org" : "polygonscan.com"}/tx/${selected.payoutHash}`} target="_blank" rel="noopener noreferrer">View USDC transaction</a>}
+      {selected.payoutHash && <p className={styles.hash}>Transaction {selected.payoutHash.slice(0, 10)}…{selected.payoutHash.slice(-6)}</p>}
+      {selected.state === "DELIVERED" && <><Button block onClick={() => router.push("/app/activity")}>View receipt in Activity</Button>
+        <Button variant="soft" block onClick={() => { setSelected(null); setStartNew(true); setCheckedAt(null); }}>Start another payment</Button></>}
       {selected.refundHash && <p className={styles.hash}>Verified NIM return: {selected.refundHash}</p>}
       {canCheck && <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>}
       {checkedAt !== null && <p className={styles.hint} role="status">Checked {new Date(checkedAt).toLocaleTimeString()} — nothing has moved yet if the step above is unchanged.</p>}
