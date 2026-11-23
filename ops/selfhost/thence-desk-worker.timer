@@ -1,11 +1,11 @@
 [Unit]
 Description=Check verified Thence treasury payments after startup and each completed run
 
-# 10 min, not 5: a serverless Postgres only suspends after 5 minutes
-# idle, so a 5-minute poll would keep it awake forever.
+# 30s: the database is local (see docs/TREASURY_PILOT.md), so reading it is
+# free. This was 10 min only while a serverless Postgres billed compute.
 [Timer]
 OnBootSec=45s
-OnUnitInactiveSec=10min
+OnUnitInactiveSec=30s
 AccuracySec=1s
 Unit=thence-desk-worker.service
 

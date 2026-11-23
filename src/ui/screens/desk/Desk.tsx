@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import type { PublicDeskOrder } from "@/lib/desk/store";
 import { Button, ButtonLink } from "@/ui/components/Button";
+import { Timeline } from "@/ui/components/Timeline";
+import { timelineFor } from "@/ui/lib/status";
+import type { TransferStatus } from "@/domain/transfers";
 import { Notice } from "@/ui/components/primitives";
 import { getHostProvider } from "@/ui/lib/nimiq-provider";
 import { handoffDeskPayment } from "@/ui/lib/desk-handoff";
@@ -21,6 +24,18 @@ function usdc(atomic: string) {
   const n = BigInt(atomic);
   return `${n / 1000000n}.${(n % 1000000n).toString().padStart(6, "0").replace(/0+$/, "").padEnd(2, "0")}`;
 }
+/** Desk state → the mirrored transfer status, so the same timeline renders both screens. */
+const MIRROR_STATUS: Record<PublicDeskOrder["state"], TransferStatus> = {
+  QUOTED: "QUOTED",
+  AWAITING_NIM: "DESK_AWAITING_NIM",
+  VERIFIED: "DESK_PAYING_OUT",
+  PAYOUT_PREPARED: "DESK_PAYING_OUT",
+  PAYOUT_SUBMITTED: "DESK_PAYING_OUT",
+  DELIVERED: "DELIVERED",
+  REFUND_DUE: "DESK_REFUND_DUE",
+  REFUNDED: "REFUNDED",
+  EXPIRED: "QUOTE_EXPIRED",
+};
 const descriptions: Record<PublicDeskOrder["state"], string> = {
   QUOTED: "Review the exact amounts below before continuing.",
   AWAITING_NIM: "Checking for your NIM payment. If you approved it, do not pay again. You can leave and reopen this page.",
@@ -177,6 +192,7 @@ export function Desk() {
     {selected && <section className={styles.card} aria-label="Payment details">
       <h2>{selected.state === "QUOTED" ? "Review payment" : "Payment status"}</h2><p role="status">{descriptions[selected.state]}</p>
       {selected.code === "MULTIPLE_DEPOSITS" && <Notice>More than one deposit matches this payment. Thence must review it. Do not pay again.</Notice>}
+      <Timeline steps={timelineFor(MIRROR_STATUS[selected.state], { desk: true })} />
       <dl><dt>Recipient receives</dt><dd>{usdc(selected.amountAtomic)} USDC on {selected.network === "arbitrum" ? "Arbitrum" : selected.network === "base" ? "Base" : "Polygon"}</dd><dt>You send</dt><dd>{formatLuna(BigInt(selected.nimLuna)).text} NIM, plus any wallet network fee</dd><dt>Thence fee (included)</dt><dd>{formatLuna(BigInt(selected.feeLuna)).text} NIM ({selected.feeBps / 100}%)</dd><dt>Recipient</dt><dd>{selected.recipient}</dd><dt>NIM collection wallet</dt><dd>{selected.nimAddress}</dd><dt>Payment reference</dt><dd>{selected.id}</dd></dl>
       {selected.state === "QUOTED" && <>
         <p>Quote expires {new Date(selected.expiresAt).toLocaleTimeString()}. After continuing, approve within five minutes. Late deposits require a refund.</p>
