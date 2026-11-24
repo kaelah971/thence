@@ -98,6 +98,9 @@ export function Home(): React.JSX.Element {
               <HelloText name={name} />
             </span>
           )}
+          <button type="button" className={styles.infoButton} onClick={() => setInfoOpen(true)} aria-haspopup="dialog" aria-label="Thence links and support">
+            <Icon name="info" size={20} />
+          </button>
         </header>
 
         <div className={styles.stack}>
