@@ -137,7 +137,7 @@ export async function processDeskPayout(id: string) {
       if (!["PAYOUT_PREPARED", "PAYOUT_SUBMITTED"].includes(current.state)) return current;
       if (result === "delivered" && evidence.blockNumber !== undefined && evidence.blockHash) {
         const marker = await publishDeskProof(c, current, { blockNumber: evidence.blockNumber, blockHash: evidence.blockHash, logIndexes: evidence.logIndexes ?? [] });
-        return transition(c, current, "DELIVERED", "POLYGON_TRANSFER_FINAL", marker);
+        return transition(c, current, "DELIVERED", `${chain.label.toUpperCase()}_TRANSFER_FINAL`, marker);
       }
       return transition(c, current, "REFUND_DUE", "PAYOUT_REVERTED_FINAL");
     });
