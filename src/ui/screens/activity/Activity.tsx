@@ -102,8 +102,7 @@ export function Activity(): React.JSX.Element {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [selected, setSelected] = useState<ActivityItem | null>(null);
   const [archiveVersion, setArchiveVersion] = useState(0);
-  const [stats, setStats] = useState<{ people: number; payers: number; payments: number } | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
+  const [stats, setStats] = useState<{ people: number; payers: number; payments: number; nimLuna?: string } | null>(null);
   const archivedIds = useMemo(() => {
     void archiveVersion;
     return loadActivityArchive(ownerUserId);
@@ -133,18 +132,13 @@ export function Activity(): React.JSX.Element {
     return () => { live = false; };
   }, []);
 
-  const flash = (key: string) => { setCopied(key); window.setTimeout(() => setCopied(null), 2_000); };
-  const copyText = async (key: string, value: string) => {
-    try { await navigator.clipboard.writeText(value); flash(key); } catch { /* clipboard blocked */ }
-  };
-  const shareThence = async () => {
-    const url = "https://paywiththence.cv";
-    try {
-      if (navigator.share) { await navigator.share({ title: "Thence", text: "Send NIM, receive USDC.", url }); return; }
-    } catch { /* user dismissed or unsupported */ }
-    await copyText("share", url);
-  };
-
+  const nimTotal = (() => {
+    const luna = Number(stats?.nimLuna ?? "0") / 1e5;
+    if (!Number.isFinite(luna) || luna <= 0) return "—";
+    if (luna >= 1_000_000) return `${(luna / 1_000_000).toFixed(1)}M`;
+    if (luna >= 1_000) return `${(luna / 1_000).toFixed(1)}k`;
+    return luna.toFixed(0);
+  })();
   return (
     <main className={shell.screen}>
       <section className={shell.darkTop}>
@@ -175,7 +169,7 @@ export function Activity(): React.JSX.Element {
           <div className={styles.numbersGrid}>
             <div><p className={styles.numbersValue}>{stats ? stats.people : "—"}</p><p className={styles.numbersLabel}>People</p></div>
             <div><p className={styles.numbersValue}>{stats ? stats.payers : "—"}</p><p className={styles.numbersLabel}>Wallets paying</p></div>
-            <div><p className={styles.numbersValue}>{stats ? stats.payments : "—"}</p><p className={styles.numbersLabel}>NIM payments</p></div>
+            <div><p className={styles.numbersValue}>{nimTotal}</p><p className={styles.numbersLabel}>NIM received</p></div>
           </div>
         </section>
         <ViewToggle value={view} onChange={setView} />
@@ -253,31 +247,6 @@ export function Activity(): React.JSX.Element {
               ))}
           </>
         )}
-      </section>
-
-      <section className={styles.community} aria-label="Thence community and support">
-        <h2 className={styles.communityTitle}>Community</h2>
-        <button type="button" className={styles.communityRow} onClick={() => void shareThence()}>
-          <Icon name="users" size={20} />
-          <span className={styles.communityText}>
-            <span className={styles.communityName}>Share Thence</span>
-            <span className={styles.communityHint}>{copied === "share" ? "Link copied" : "Invite a friend to send NIM and receive USDC"}</span>
-          </span>
-        </button>
-        <button type="button" className={styles.communityRow} onClick={() => void copyText("x", "https://x.com/usethence")}>
-          <Icon name="external" size={20} />
-          <span className={styles.communityText}>
-            <span className={styles.communityName}>Follow Thence on X</span>
-            <span className={styles.communityHint}>{copied === "x" ? "Link copied" : "@usethence · tap to copy the link"}</span>
-          </span>
-        </button>
-        <button type="button" className={styles.communityRow} onClick={() => void copyText("mail", "kaelah679@gmail.com")}>
-          <Icon name="info" size={20} />
-          <span className={styles.communityText}>
-            <span className={styles.communityName}>Contact us</span>
-            <span className={styles.communityHint}>{copied === "mail" ? "Email copied" : "kaelah679@gmail.com · tap to copy"}</span>
-          </span>
-        </button>
       </section>
 
       <Sheet open={selected !== null} onClose={() => setSelected(null)} title="Payment details">
