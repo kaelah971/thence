@@ -35,10 +35,10 @@ export const NIM_CARD_FOOT = "Connected through Nimiq Pay";
 export function nimCardNote(balance: BalanceState): string | null {
   switch (balance.status) {
     case "loaded": {
+      // The card carries the number only. Coverage warnings and the vault
+      // breakdown stay in the wallet details sheet, where they can be read
+      // with the figures they qualify.
       const parts: string[] = [];
-      if (balance.vaultUnknown === true) {
-        parts.push("Vault balance couldn't be fully confirmed — the total may be higher.");
-      }
       // "No NIM yet" must consider vaults too: funds in a vault are not zero.
       if (formatLuna(balance.luna).isZero && balance.vaultUnknown !== true) {
         parts.push("This wallet has no NIM yet.");
