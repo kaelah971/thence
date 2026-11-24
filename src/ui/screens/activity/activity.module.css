@@ -316,3 +316,24 @@
     transition: none;
   }
 }
+
+/* Thence in numbers — public counters, same surface as the summary tiles. */
+.numbers { display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: var(--r-lg);
+  background: rgba(255,255,255,.06); border: 1px solid var(--line-ink); }
+.numbersHead { display: flex; align-items: center; justify-content: space-between; }
+.numbersTitle { font: 700 1rem/1.2 var(--font-display); color: var(--on-ink); margin: 0; }
+.numbersLive { display: inline-flex; align-items: center; gap: 6px; font-size: .75rem; color: var(--mint-300); }
+.numbersDot { width: 7px; height: 7px; border-radius: 99px; background: var(--mint-300); box-shadow: 0 0 8px var(--mint-300); }
+.numbersGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.numbersValue { font: 700 1.375rem/1.1 var(--font-display); color: var(--on-ink); margin: 0; }
+.numbersLabel { font-size: .75rem; color: var(--on-ink-2); margin: 2px 0 0; }
+
+/* Community + support rows at the end of Activity. */
+.community { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.communityTitle { font: 700 1.0625rem/1.2 var(--font-display); margin: 6px 0 0; }
+.communityRow { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; text-align: left;
+  border: 1px solid var(--mist-200); border-radius: var(--r-md); background: var(--paper); color: inherit; font: inherit; cursor: pointer; }
+.communityRow:active { background: var(--mist-100); }
+.communityText { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.communityName { font-weight: 700; font-size: .9375rem; }
+.communityHint { font-size: .8125rem; color: var(--text-2); overflow-wrap: anywhere; }
