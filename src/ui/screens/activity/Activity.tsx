@@ -102,6 +102,8 @@ export function Activity(): React.JSX.Element {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [selected, setSelected] = useState<ActivityItem | null>(null);
   const [archiveVersion, setArchiveVersion] = useState(0);
+  const [stats, setStats] = useState<{ people: number; payers: number; payments: number } | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
   const archivedIds = useMemo(() => {
     void archiveVersion;
     return loadActivityArchive(ownerUserId);
@@ -121,6 +123,27 @@ export function Activity(): React.JSX.Element {
   const inProgress = data.status === "ready" ? data.items.filter((i) => matchesFilter(i.status, "progress")).length : 0;
   const noPaymentsAtAll = data.status === "ready" && data.items.length === 0;
   const preview = data.status === "ready" && data.preview;
+
+  useEffect(() => {
+    let live = true;
+    void fetch("/api/stats", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (live && body && typeof body.people === "number") setStats(body); })
+      .catch(() => { /* counters are decorative; never block the screen */ });
+    return () => { live = false; };
+  }, []);
+
+  const flash = (key: string) => { setCopied(key); window.setTimeout(() => setCopied(null), 2_000); };
+  const copyText = async (key: string, value: string) => {
+    try { await navigator.clipboard.writeText(value); flash(key); } catch { /* clipboard blocked */ }
+  };
+  const shareThence = async () => {
+    const url = "https://paywiththence.cv";
+    try {
+      if (navigator.share) { await navigator.share({ title: "Thence", text: "Send NIM, receive USDC.", url }); return; }
+    } catch { /* user dismissed or unsupported */ }
+    await copyText("share", url);
+  };
 
   return (
     <main className={shell.screen}>
@@ -144,6 +167,17 @@ export function Activity(): React.JSX.Element {
             <p className={styles.summaryText}>Delivered only appears once it&apos;s confirmed on their network.</p>
           </div>
         </div>
+        <section className={styles.numbers} aria-label="Thence in numbers">
+          <div className={styles.numbersHead}>
+            <h2 className={styles.numbersTitle}>Thence in numbers</h2>
+            <span className={styles.numbersLive}><span className={styles.numbersDot} aria-hidden="true" />Live</span>
+          </div>
+          <div className={styles.numbersGrid}>
+            <div><p className={styles.numbersValue}>{stats ? stats.people : "—"}</p><p className={styles.numbersLabel}>People</p></div>
+            <div><p className={styles.numbersValue}>{stats ? stats.payers : "—"}</p><p className={styles.numbersLabel}>Wallets paying</p></div>
+            <div><p className={styles.numbersValue}>{stats ? stats.payments : "—"}</p><p className={styles.numbersLabel}>NIM payments</p></div>
+          </div>
+        </section>
         <ViewToggle value={view} onChange={setView} />
       </section>
 
@@ -219,6 +253,31 @@ export function Activity(): React.JSX.Element {
               ))}
           </>
         )}
+      </section>
+
+      <section className={styles.community} aria-label="Thence community and support">
+        <h2 className={styles.communityTitle}>Community</h2>
+        <button type="button" className={styles.communityRow} onClick={() => void shareThence()}>
+          <Icon name="users" size={20} />
+          <span className={styles.communityText}>
+            <span className={styles.communityName}>Share Thence</span>
+            <span className={styles.communityHint}>{copied === "share" ? "Link copied" : "Invite a friend to send NIM and receive USDC"}</span>
+          </span>
+        </button>
+        <button type="button" className={styles.communityRow} onClick={() => void copyText("x", "https://x.com/usethence")}>
+          <Icon name="external" size={20} />
+          <span className={styles.communityText}>
+            <span className={styles.communityName}>Follow Thence on X</span>
+            <span className={styles.communityHint}>{copied === "x" ? "Link copied" : "@usethence · tap to copy the link"}</span>
+          </span>
+        </button>
+        <button type="button" className={styles.communityRow} onClick={() => void copyText("mail", "kaelah679@gmail.com")}>
+          <Icon name="info" size={20} />
+          <span className={styles.communityText}>
+            <span className={styles.communityName}>Contact us</span>
+            <span className={styles.communityHint}>{copied === "mail" ? "Email copied" : "kaelah679@gmail.com · tap to copy"}</span>
+          </span>
+        </button>
       </section>
 
       <Sheet open={selected !== null} onClose={() => setSelected(null)} title="Payment details">
