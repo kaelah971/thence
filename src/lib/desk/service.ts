@@ -104,7 +104,11 @@ async function preparePayout(id: string) {
     const chain = deskChainConfig(order.payload.chain), client = deskEvm(order.payload.chain);
     if (await client.getChainId() !== chain.chainId) throw new DeskError("WRONG_CHAIN", `Invalid ${chain.label} network.`, 503);
     const networkNonce = await client.getTransactionCount({ address: order.payout_wallet, blockTag: "pending" });
-    const stored = await c.query<{ nonce: string | null }>("SELECT MAX(payout_nonce)::text AS nonce FROM desk_orders WHERE lower(payout_wallet)=lower($1)", [order.payout_wallet]);
+    // Per chain: a nonce borrowed from another chain can never be mined here.
+    const stored = await c.query<{ nonce: string | null }>(
+      "SELECT MAX(payout_nonce)::text AS nonce FROM desk_orders WHERE lower(payout_wallet)=lower($1) AND COALESCE(payload->>'chain','polygon')=$2",
+      [order.payout_wallet, order.payload.chain],
+    );
     const nonce = Math.max(networkNonce, stored.rows[0]?.nonce === null ? 0 : Number(stored.rows[0]!.nonce) + 1);
     const signed = await signDeskPayout(order, nonce);
     await c.query("UPDATE desk_orders SET payout_hash=$2,payout_nonce=$3,signed_payout=$4 WHERE id=$1", [id, signed.hash, nonce, signed.raw]);

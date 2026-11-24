@@ -141,6 +141,13 @@
       "when": 1795031242325,
       "tag": "0019_polygon_treasury_pilot",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795600000000,
+      "tag": "0020_desk_nonce_per_chain",
+      "breakpoints": true
     }
   ]
 }

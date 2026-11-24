@@ -696,7 +696,9 @@ export const deskOrders = pgTable("desk_orders", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("desk_owner_request_idx").on(t.ownerId, t.requestKey),
-  uniqueIndex("desk_wallet_nonce_idx").on(t.payoutWallet, t.payoutNonce),
+  // Nonces are per chain: the same wallet signs on Polygon, Arbitrum and Base,
+  // and a shared counter produced nonces no chain could mine.
+  uniqueIndex("desk_wallet_chain_nonce_idx").on(t.payoutWallet, sql`COALESCE(payload->>'chain', 'polygon')`, t.payoutNonce),
   index("desk_pending_idx").on(t.state),
   check("desk_amount_atomic_check", sql`${t.amountAtomic} ~ '^[1-9][0-9]*$'`),
   check("desk_state_check", sql`${t.state} IN ('QUOTED','AWAITING_NIM','VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED','DELIVERED','REFUND_DUE','REFUNDED','EXPIRED')`),
