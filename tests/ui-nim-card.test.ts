@@ -55,13 +55,10 @@ describe("NIM card copy (F8.7)", () => {
     );
   });
 
-  it("suppresses no-NIM-yet while vault coverage is incomplete", () => {
-    expect(nimCardNote(loaded({ luna: 0n, basicLuna: 0n, vaultLuna: null, vaultUnknown: true }))).toBe(
-      "Vault balance couldn't be fully confirmed — the total may be higher.",
-    );
-    expect(nimCardNote(loaded({ luna: 5n, basicLuna: 5n, vaultLuna: null, vaultUnknown: true }))).toBe(
-      "Vault balance couldn't be fully confirmed — the total may be higher.",
-    );
+  it("stays silent while vault coverage is incomplete, including at zero", () => {
+    // Coverage warnings live in the wallet details sheet, never under the number.
+    expect(nimCardNote(loaded({ luna: 0n, basicLuna: 0n, vaultLuna: null, vaultUnknown: true }))).toBeNull();
+    expect(nimCardNote(loaded({ luna: 5n, basicLuna: 5n, vaultLuna: null, vaultUnknown: true }))).toBeNull();
   });
 
   it("explains unavailable and error states without technical detail", () => {
