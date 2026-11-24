@@ -135,6 +135,7 @@ export async function processDeskPayout(id: string) {
     order = await deskTransaction(async c => {
       const current = await loadDeskOrder(c, id);
       if (!["PAYOUT_PREPARED", "PAYOUT_SUBMITTED"].includes(current.state)) return current;
+      const chain = deskChainConfig(current.payload.chain);
       if (result === "delivered" && evidence.blockNumber !== undefined && evidence.blockHash) {
         const marker = await publishDeskProof(c, current, { blockNumber: evidence.blockNumber, blockHash: evidence.blockHash, logIndexes: evidence.logIndexes ?? [] });
         return transition(c, current, "DELIVERED", `${chain.label.toUpperCase()}_TRANSFER_FINAL`, marker);
