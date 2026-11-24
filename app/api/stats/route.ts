@@ -18,15 +18,20 @@ interface StatsBody {
   people: number;
   payers: number;
   payments: number;
+  /** Total NIM received into the treasury (atomic luna, string-safe). */
+  nimLuna: string;
 }
 
 async function read(): Promise<StatsBody> {
-  const { rows } = await getPool().query<{ people: number; payers: number; payments: number }>(
+  const { rows } = await getPool().query<{ people: number; payers: number; payments: number; nim: string }>(
     `SELECT (SELECT count(*)::int FROM users) AS people,
             (SELECT count(DISTINCT owner_user_id)::int FROM transfers) AS payers,
-            (SELECT count(*)::int FROM transfers) AS payments`,
+            (SELECT count(*)::int FROM transfers) AS payments,
+            (SELECT COALESCE(SUM((payload->>'nimLuna')::numeric), 0)::text FROM desk_orders
+               WHERE state IN ('VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED','DELIVERED')) AS nim`,
   );
-  return rows[0]!;
+  const row = rows[0]!;
+  return { people: row.people, payers: row.payers, payments: row.payments, nimLuna: row.nim };
 }
 
 export async function GET(): Promise<NextResponse> {

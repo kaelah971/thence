@@ -193,3 +193,15 @@ button.hello:active {
     font-size: 0.8125rem;
   }
 }
+
+/* Community sheet: a quiet info button in the header. */
+.infoButton { width: 40px; height: 40px; border-radius: 99px; display: grid; place-items: center;
+  border: 1px solid var(--line-ink); background: rgba(255,255,255,.06); color: var(--on-ink); cursor: pointer; }
+.infoButton:active { background: rgba(255,255,255,.12); }
+.infoSheet { display: flex; flex-direction: column; gap: 10px; }
+.infoRow { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; text-align: left;
+  border: 1px solid var(--mist-200); border-radius: var(--r-md); background: var(--paper); color: inherit; font: inherit; cursor: pointer; }
+.infoRow:active { background: var(--mist-100); }
+.infoText { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.infoName { font-weight: 700; font-size: .9375rem; }
+.infoHint { font-size: .8125rem; color: var(--text-2); overflow-wrap: anywhere; }

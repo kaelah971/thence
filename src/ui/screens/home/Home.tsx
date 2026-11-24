@@ -45,6 +45,8 @@ export function Home(): React.JSX.Element {
   const [routeId, setRouteId] = useState<RouteId>(DEFAULT_DESTINATION);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const activity = useActivityData();
   const destination = destinationFor(routeId);
@@ -61,6 +63,23 @@ export function Home(): React.JSX.Element {
     await signOutEverywhere();
     setAccountOpen(false);
     router.replace("/app");
+  };
+
+  const flash = (key: string) => { setCopied(key); window.setTimeout(() => setCopied(null), 2_000); };
+  const shareThence = async () => {
+    const url = "https://paywiththence.cv";
+    try {
+      if (navigator.share) { await navigator.share({ title: "Thence", text: "Send NIM, receive USDC.", url }); return; }
+    } catch { /* dismissed or unsupported */ }
+    try { await navigator.clipboard.writeText(url); flash("share"); } catch { /* clipboard blocked */ }
+  };
+  const openX = () => {
+    const url = "https://x.com/usethence";
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
+    if (!opened) window.location.href = url;
+  };
+  const copyEmail = async () => {
+    try { await navigator.clipboard.writeText("kaelah679@gmail.com"); flash("mail"); } catch { /* clipboard blocked */ }
   };
 
   return (
@@ -178,6 +197,32 @@ export function Home(): React.JSX.Element {
           </div>
         )}
       </section>
+
+      <Sheet open={infoOpen} onClose={() => setInfoOpen(false)} title="Thence">
+        <div className={styles.infoSheet}>
+          <button type="button" className={styles.infoRow} onClick={() => void shareThence()}>
+            <Icon name="users" size={20} />
+            <span className={styles.infoText}>
+              <span className={styles.infoName}>Share Thence</span>
+              <span className={styles.infoHint}>{copied === "share" ? "Link copied" : "Invite a friend to send NIM and receive USDC"}</span>
+            </span>
+          </button>
+          <button type="button" className={styles.infoRow} onClick={openX}>
+            <Icon name="external" size={20} />
+            <span className={styles.infoText}>
+              <span className={styles.infoName}>Follow Thence on X</span>
+              <span className={styles.infoHint}>@usethence · opens in your browser</span>
+            </span>
+          </button>
+          <button type="button" className={styles.infoRow} onClick={() => void copyEmail()}>
+            <Icon name="info" size={20} />
+            <span className={styles.infoText}>
+              <span className={styles.infoName}>Contact us</span>
+              <span className={styles.infoHint}>{copied === "mail" ? "Email copied" : "kaelah679@gmail.com · tap to copy"}</span>
+            </span>
+          </button>
+        </div>
+      </Sheet>
 
       <Sheet open={pickerOpen} onClose={() => setPickerOpen(false)} title="Send NIM as">
         <DestinationPicker
