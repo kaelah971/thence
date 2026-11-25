@@ -37,7 +37,9 @@ export function deskChainConfig(name: DeskChain): DeskChainConfig {
   if (name === "base") {
     const rpc = process.env["THENCE_DESK_BASE_RPC"] ?? "";
     if (!/^https:\/\//.test(rpc)) throw new DeskError("DESK_NOT_CONFIGURED", "The Base payout RPC is not configured.", 503);
-    return { name, label: "Base", chainId: 8453, usdc: BASE_USDC, rpc, chain: base, gasSymbol: "ETH", gasFloor: 200_000_000_000_000n, finalityLagMs: 3_600_000 };
+    // Base is an L2: a transfer costs ~0.000005 ETH, so 0.00005 allows several
+    // payouts without refusing a wallet that can clearly pay.
+    return { name, label: "Base", chainId: 8453, usdc: BASE_USDC, rpc, chain: base, gasSymbol: "ETH", gasFloor: 50_000_000_000_000n, finalityLagMs: 3_600_000 };
   }
   if (name === "arbitrum") {
     const rpc = process.env["THENCE_DESK_ARBITRUM_RPC"] ?? "";
