@@ -21,12 +21,15 @@ export async function deskBalances(chain: DeskChain, wallet: string) {
   if (await client.getChainId() !== config.chainId) throw new DeskError("WRONG_CHAIN", `${config.label} RPC returned a different chain.`, 503);
   const block = await client.getBlock({ blockTag: "finalized" });
   if (Date.now() - Number(block.timestamp) * 1000 > config.finalityLagMs) throw new DeskError("STALE_CHAIN", `${config.label} finality is unavailable.`, 503);
-  const [usdc, gas] = await Promise.all([
+  const [usdc, gas, usdcLive] = await Promise.all([
     client.readContract({ address: config.usdc, abi: erc20Abi, functionName: "balanceOf", args: [wallet as `0x${string}`], blockNumber: block.number }),
     client.getBalance({ address: wallet as `0x${string}`, blockNumber: block.number }),
+    // Latest (unfinalized) balance: a deposit that arrived minutes ago is
+    // real but not yet spendable, and the error must say so.
+    client.readContract({ address: config.usdc, abi: erc20Abi, functionName: "balanceOf", args: [wallet as `0x${string}`] }).catch(() => 0n),
   ]);
   if (gas < config.gasFloor) throw new DeskError("GAS_LOW", `The treasury needs ${config.gasSymbol} on ${config.label} before it can pay out.`, 503);
-  return { usdc, gas, blockNumber: block.number };
+  return { usdc, gas, usdcLive: usdcLive > usdc ? usdcLive : usdc, blockNumber: block.number };
 }
 export async function validateSignedDeskPayout(order: DeskOrder, raw: Hex) {
   const tx = parseTransaction(raw), decoded = decodeFunctionData({ abi: erc20Abi, data: tx.data ?? "0x" });

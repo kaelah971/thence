@@ -36,7 +36,17 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
     // Read chain balances inside the shared lock so concurrent deliveries cannot stale the snapshot.
     const balances = await deskBalances(chain, config.polygonAddress);
     const reserved = await c.query<{ total: string }>("SELECT COALESCE(SUM(amount_atomic::numeric),0)::text AS total FROM desk_orders WHERE lower(payout_wallet)=lower($1) AND COALESCE(payload->>'chain','polygon')=$2 AND (state IN ('AWAITING_NIM','VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED') OR (state='QUOTED' AND expires_at>now()))", [config.polygonAddress, chain]);
-    if (balances.usdc - BigInt(reserved.rows[0]!.total) < atomic) throw new DeskError("LIQUIDITY_LOW", "There is not enough unreserved USDC for this payment.");
+    if (balances.usdc - BigInt(reserved.rows[0]!.total) < atomic) {
+      const spendable = balances.usdc - BigInt(reserved.rows[0]!.total);
+      const live = balances.usdcLive - BigInt(reserved.rows[0]!.total);
+      // Distinguish "not funded" from "funded but not final yet" — the second
+      // resolves on its own and the user should be told to wait, not to top up.
+      if (live >= atomic) {
+        const waiting = (live - spendable);
+        throw new DeskError("LIQUIDITY_FINALIZING", `${(Number(waiting) / 1e6).toFixed(2)} USDC arrived recently and is still finalizing; ${(Number(spendable) / 1e6).toFixed(2)} is spendable now. Try again in about 10 minutes.`, 409);
+      }
+      throw new DeskError("LIQUIDITY_LOW", "There is not enough unreserved USDC for this payment.");
+    }
     const id = randomUUID(), expires = new Date(Date.now() + 60_000);
     const payload: DeskPayload = { ownerAddress, chain, recipient: getAddress(recipient), nimAddress: config.nimAddress, nimLuna: charge.totalLuna.toString(), baseLuna: charge.baseLuna.toString(), feeLuna: charge.feeLuna.toString(), memo: `THENCE:D:${id}`, rateE18: rate.rateE18.toString(), rateObservedAt: rate.observedAt, feeBps: config.feeBps };
     const inserted = await c.query<DeskOrder>("INSERT INTO desk_orders(id,owner_id,request_key,state,amount_atomic,payout_wallet,expires_at,payload) VALUES($1,$2,$3,'QUOTED',$4,$5,$6,$7) RETURNING *", [id, ownerId, requestKey, atomic.toString(), config.polygonAddress, expires, JSON.stringify(payload)]);
