@@ -73,6 +73,17 @@ export function Home(): React.JSX.Element {
     } catch { /* dismissed or unsupported */ }
     try { await navigator.clipboard.writeText(url); flash("share"); } catch { /* clipboard blocked */ }
   };
+  /**
+   * The mini-app sandbox blocks external navigation (no SDK API exists for it),
+   * so the native share sheet — which can hand the link to the X app — is the
+   * only path out. Clipboard is the fallback.
+   */
+  const shareOrCopy = async (key: string, url: string, title: string) => {
+    try {
+      if (navigator.share) { await navigator.share({ title, url }); return; }
+    } catch { /* dismissed or unsupported */ }
+    try { await navigator.clipboard.writeText(url); flash(key); } catch { /* clipboard blocked */ }
+  };
   const copyEmail = async () => {
     try { await navigator.clipboard.writeText("kaelah679@gmail.com"); flash("mail"); } catch { /* clipboard blocked */ }
   };
@@ -205,13 +216,13 @@ export function Home(): React.JSX.Element {
               <span className={styles.infoHint}>{copied === "share" ? "Link copied" : "Invite a friend to send NIM and receive USDC"}</span>
             </span>
           </button>
-          <a className={styles.infoRow} href="https://x.com/usethence" rel="noopener noreferrer" target="_top">
+          <button type="button" className={styles.infoRow} onClick={() => void shareOrCopy("x", "https://x.com/usethence", "Follow Thence on X")}>
             <Icon name="external" size={20} />
             <span className={styles.infoText}>
               <span className={styles.infoName}>Follow Thence on X</span>
-              <span className={styles.infoHint}>@usethence · x.com/usethence</span>
+              <span className={styles.infoHint}>{copied === "x" ? "Link copied — x.com/usethence" : "@usethence · share sheet or copy, the webview can't open links"}</span>
             </span>
-          </a>
+          </button>
           <button type="button" className={styles.infoRow} onClick={() => void copyEmail()}>
             <Icon name="info" size={20} />
             <span className={styles.infoText}>
