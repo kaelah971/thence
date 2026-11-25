@@ -74,9 +74,9 @@ export function Home(): React.JSX.Element {
     try { await navigator.clipboard.writeText(url); flash("share"); } catch { /* clipboard blocked */ }
   };
   const openX = () => {
-    const url = "https://x.com/usethence";
-    const opened = window.open(url, "_blank", "noopener,noreferrer");
-    if (!opened) window.location.href = url;
+    // The mini-app webview blocks window.open and target=_blank, so navigate
+    // the webview directly. The host's back control returns to Thence.
+    window.location.href = "https://x.com/usethence";
   };
   const copyEmail = async () => {
     try { await navigator.clipboard.writeText("kaelah679@gmail.com"); flash("mail"); } catch { /* clipboard blocked */ }
