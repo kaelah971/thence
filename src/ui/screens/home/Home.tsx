@@ -73,11 +73,6 @@ export function Home(): React.JSX.Element {
     } catch { /* dismissed or unsupported */ }
     try { await navigator.clipboard.writeText(url); flash("share"); } catch { /* clipboard blocked */ }
   };
-  const openX = () => {
-    // The mini-app webview blocks window.open and target=_blank, so navigate
-    // the webview directly. The host's back control returns to Thence.
-    window.location.href = "https://x.com/usethence";
-  };
   const copyEmail = async () => {
     try { await navigator.clipboard.writeText("kaelah679@gmail.com"); flash("mail"); } catch { /* clipboard blocked */ }
   };
@@ -210,13 +205,13 @@ export function Home(): React.JSX.Element {
               <span className={styles.infoHint}>{copied === "share" ? "Link copied" : "Invite a friend to send NIM and receive USDC"}</span>
             </span>
           </button>
-          <button type="button" className={styles.infoRow} onClick={openX}>
+          <a className={styles.infoRow} href="https://x.com/usethence" rel="noopener noreferrer" target="_top">
             <Icon name="external" size={20} />
             <span className={styles.infoText}>
               <span className={styles.infoName}>Follow Thence on X</span>
-              <span className={styles.infoHint}>@usethence · opens in your browser</span>
+              <span className={styles.infoHint}>@usethence · x.com/usethence</span>
             </span>
-          </button>
+          </a>
           <button type="button" className={styles.infoRow} onClick={() => void copyEmail()}>
             <Icon name="info" size={20} />
             <span className={styles.infoText}>
