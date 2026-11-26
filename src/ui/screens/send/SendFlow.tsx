@@ -543,6 +543,34 @@ export function SendFlow(): React.JSX.Element {
     await preparation.resumeWithInput(input, transferId);
   };
 
+  // One-tap repeat from Activity: same recipient, same route, same amount.
+  // Nothing is sent here — the quote and the wallet approval still happen.
+  const repeat = navigation.kind === "repeat" ? navigation : null;
+  const repeatRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!repeat || session.status !== "valid" || !catalogue) return;
+    const key = `${repeat.routeId}|${repeat.address}|${repeat.amount ?? ""}`;
+    if (repeatRef.current === key) return;
+    repeatRef.current = key;
+    const routeId = (ROUTE_IDS as readonly string[]).includes(repeat.routeId) ? (repeat.routeId as RouteId) : DEFAULT_DESTINATION;
+    choosePayee({
+      id: null,
+      name: repeat.name || "They",
+      tone: "sand",
+      routeId,
+      address: repeat.address,
+      walletVerified: false,
+      isNew: true,
+      destinationId: null,
+      walletCount: 1,
+    });
+    if (repeat.amount) dispatch({ type: "seed", value: repeat.amount });
+    setStep("amount");
+    router.replace("/app/send", { scroll: false });
+    // Runs once per deep link; re-running would fight the user's edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repeat?.routeId, repeat?.address, repeat?.amount, session.status, catalogue]);
+
   // Deep link from Activity ("Resume payment"): continue the SAME transfer.
   // Server-validated (unknown/foreign ids are a silent no-op); never creates.
   // A mobile New payment navigation explicitly wins over any stale query.
