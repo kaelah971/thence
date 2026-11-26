@@ -41,7 +41,8 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
     const reserved = await c.query<{ total: string }>("SELECT COALESCE(SUM(amount_atomic::numeric),0)::text AS total FROM desk_orders WHERE lower(payout_wallet)=lower($1) AND COALESCE(payload->>'chain','polygon')=$2 AND (state IN ('AWAITING_NIM','VERIFIED','PAYOUT_PREPARED','PAYOUT_SUBMITTED') OR (state='QUOTED' AND expires_at>now()))", [config.polygonAddress, chain]);
     if (balances.usdc - BigInt(reserved.rows[0]!.total) < atomic) {
       const spendable = balances.usdc - BigInt(reserved.rows[0]!.total);
-      const live = balances.usdcLive - BigInt(reserved.rows[0]!.total);
+      const liveUsdc = balances.usdcLive ?? balances.usdc;
+      const live = liveUsdc - BigInt(reserved.rows[0]!.total);
       // Distinguish "not funded" from "funded but not final yet" — the second
       // resolves on its own and the user should be told to wait, not to top up.
       if (live >= atomic) {
