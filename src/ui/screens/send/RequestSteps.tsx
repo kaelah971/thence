@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { RouteId } from "@/domain/routes";
 import { Button, ButtonLink, IconButton } from "@/ui/components/Button";
 import { Icon } from "@/ui/components/Icon";
+import QRCode from "qrcode";
 import { AssetMark } from "@/ui/components/PaymentCard";
 import picker from "@/ui/components/picker.module.css";
 import { Notice, TextField } from "@/ui/components/primitives";
@@ -152,6 +153,16 @@ export function RequestDetailsStep({
 export function RequestSharedStep({ request, onDone }: { request: ApiOwnerRequest; onDone: () => void }): React.JSX.Element {
   const expires = formatRequestDate(request.expiresAt);
   const decimals = Math.max(2, (request.amount.split(".")[1] ?? "").length);
+  // A scannable code is how a request gets paid in person; the link alone
+  // means typing a URL into the payer's phone.
+  const [qr, setQr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void QRCode.toDataURL(request.url, { margin: 1, width: 512, errorCorrectionLevel: "M" })
+      .then((url) => { if (live) setQr(url); })
+      .catch(() => { /* the link and ShareLink still work */ });
+    return () => { live = false; };
+  }, [request.url]);
   return (
     <div className={styles.handoffStep} key="request-shared">
       <div className={styles.handoffScroll}>
@@ -166,6 +177,13 @@ export function RequestSharedStep({ request, onDone }: { request: ApiOwnerReques
         </div>
 
         <div className={styles.sharedBody}>
+          {qr && (
+            <figure className={styles.qrFigure}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qr} alt={`QR code for ${request.url}`} width={196} height={196} className={styles.qrImage} />
+              <figcaption className={styles.qrCaption}>Scan to pay this request</figcaption>
+            </figure>
+          )}
           <ShareLink url={request.url} title={`Payment request from ${request.recipientName}`} />
   
           <dl className={styles.details}>
@@ -200,6 +218,9 @@ export function RequestSharedStep({ request, onDone }: { request: ApiOwnerReques
       </div>
 
       <div className={styles.handoffActions}>
+        <ButtonLink href={`/r/${request.publicId}`} variant="soft">
+          See what they see
+        </ButtonLink>
         <ButtonLink href="/app/requests" variant="soft">
           Your requests
         </ButtonLink>
