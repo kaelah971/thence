@@ -737,3 +737,12 @@ export const paymentSchedules = pgTable(
   },
   (t) => [index("payment_schedules_owner_idx").on(t.ownerUserId, t.nextDueAt)],
 );
+
+/* ------------------------------------------------------------------ */
+/* inbox_state — how far the owner has read their notification inbox   */
+/* ------------------------------------------------------------------ */
+
+export const inboxState = pgTable("inbox_state", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
+});
