@@ -16,6 +16,7 @@ import { useApiResource } from "@/ui/lib/resource";
 import { useSession } from "@/ui/lib/session";
 import { canShowCancelUnpaid, matchesFilter, resumeLabelFor, timelineFor, type ActivityFilter } from "@/ui/lib/status";
 import { canHaveReceipt, getReceipt, getTransfer, humanAmount, shortReceiptAmounts, toActivityItem } from "@/ui/lib/transfers-api";
+import { repeatHref } from "@/ui/lib/send-navigation";
 import {
   getProviderEvidence,
   needsOwnerClaim,
@@ -264,6 +265,16 @@ export function Activity(): React.JSX.Element {
             }}
           />
         ))}
+        {selected && selected.destination && (
+          <div style={{ marginTop: 14 }}>
+            <ButtonLink href={repeatHref({ routeId: selected.routeId, address: selected.destination, name: selected.name, amount: selected.amount })} variant="ink" size="md" block icon="send">
+              Send again
+            </ButtonLink>
+            <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--text-2)", textAlign: "center" }}>
+              Opens the same recipient and amount. You still review and approve in Nimiq Pay.
+            </p>
+          </div>
+        )}
       </Sheet>
     </main>
   );
