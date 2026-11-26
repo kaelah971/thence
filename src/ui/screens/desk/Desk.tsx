@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { getHostNetwork } from "@nimiq/mini-app-sdk";
 import type { PublicDeskOrder } from "@/lib/desk/store";
 import { Button, ButtonLink } from "@/ui/components/Button";
@@ -57,7 +56,6 @@ export function Desk() {
   // After a delivery the user should read the receipt, not be handed the
   // amount form again. The form returns only when they ask for it.
   const [startNew, setStartNew] = useState(false);
-  const router = useRouter();
   const running = useRef(false);
   // Send hands off the exact recipient and amount after its own amount step.
   const preset = useRef(false);
@@ -207,7 +205,7 @@ export function Desk() {
       {selected.state === "AWAITING_NIM" && <><label htmlFor="desk-hash">NIM transaction hash (if available)</label><input id="desk-hash" value={hash} onChange={e => setHash(e.target.value)} spellCheck={false} autoComplete="off" disabled={busy} /></>}
       {selected.state === "VERIFIED" && <Button variant="soft" disabled={busy} onClick={() => void run(async () => { await api({ action: "request-refund", id: selected.id }); await refresh(); })}>Request NIM return instead</Button>}
       {selected.payoutHash && <p className={styles.hash}>Transaction {selected.payoutHash.slice(0, 10)}…{selected.payoutHash.slice(-6)}</p>}
-      {selected.state === "DELIVERED" && <><Button block onClick={() => router.push("/app/activity")}>View receipt in Activity</Button>
+      {selected.state === "DELIVERED" && <><ButtonLink href="/app/activity" variant="ink" block>View receipt in Activity</ButtonLink>
         <Button variant="soft" block onClick={() => { setSelected(null); setStartNew(true); setCheckedAt(null); }}>Start another payment</Button></>}
       {selected.refundHash && <p className={styles.hash}>Verified NIM return: {selected.refundHash}</p>}
       {canCheck && <Button variant="soft" block onClick={() => void check()} disabled={busy}>{busy ? "Checking…" : "Check this payment"}</Button>}
