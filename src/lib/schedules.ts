@@ -86,6 +86,21 @@ export async function createSchedule(userId: string, body: unknown): Promise<Sch
   if (!/^usdc-(polygon|arbitrum|base)$/.test(routeId)) throw new AuthError(400, "UNKNOWN_ROUTE", "This route cannot be scheduled.");
   if (!isAtomicAmount(amountAtomic) || BigInt(amountAtomic) <= 0n) throw new AuthError(400, "BAD_BODY", "Enter an amount to send.");
   if (destination.trim().length === 0) throw new AuthError(400, "BAD_BODY", "Enter a destination.");
+  // A cap keeps one account from filling the table (and their Home card)
+  // through a scripted loop; twenty is far beyond any real use.
+  const existing = await getDb().select({ id: paymentSchedules.id })
+    .from(paymentSchedules).where(eq(paymentSchedules.ownerUserId, userId)).limit(21);
+  if (existing.length >= 20) throw new AuthError(409, "TOO_MANY_SCHEDULES", "You already have 20 scheduled payments. Delete one first.");
+  // Duplicates are a mis-tap, not a feature: same recipient and amount is one schedule.
+  if (existing.length > 0) {
+    const same = await getDb().select({ id: paymentSchedules.id }).from(paymentSchedules).where(and(
+      eq(paymentSchedules.ownerUserId, userId),
+      eq(paymentSchedules.routeId, routeId),
+      eq(paymentSchedules.destination, destination.trim()),
+      eq(paymentSchedules.amountAtomic, amountAtomic),
+    )).limit(1);
+    if (same[0]) throw new AuthError(409, "DUPLICATE_SCHEDULE", "You already have this payment scheduled.");
+  }
   const now = new Date();
   const first = startAt ? new Date(startAt) : nextDue(now, cadence);
   if (Number.isNaN(first.getTime())) throw new AuthError(400, "BAD_BODY", "Invalid start date.");
