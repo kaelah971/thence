@@ -1,0 +1,15 @@
+.card { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.title { margin: 0; font: 700 1rem/1.2 var(--font-display); color: var(--on-ink); }
+.hint { font-size: .75rem; color: var(--on-ink-2); }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 12px 14px; border-radius: var(--r-md); background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px var(--line-ink); }
+.who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; color: var(--on-ink-2); }
+.name { font-weight: 700; font-size: .875rem; color: var(--on-ink); }
+.meta { font-size: .75rem; color: var(--on-ink-2); }
+.state { display: flex; align-items: center; gap: 8px; }
+.when { font-size: .75rem; color: var(--on-ink-2); }
+.due { font-size: .75rem; font-weight: 700; color: var(--mint-300); }
+.remove { border: 0; background: transparent; color: var(--on-ink-3); cursor: pointer; padding: 4px; }
+.foot { margin: 0; font-size: .6875rem; color: var(--on-ink-3); }

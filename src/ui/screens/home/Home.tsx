@@ -14,6 +14,7 @@ import { AssetMark } from "@/ui/components/PaymentCard";
 import { Avatar, EmptyState, Notice, PreviewTag } from "@/ui/components/primitives";
 import { ActivityRow, RowSkeletons } from "@/ui/components/rows";
 import { Sheet } from "@/ui/components/Sheet";
+import { ScheduledCard } from "@/ui/components/ScheduledCard";
 import { WalletCards } from "@/ui/components/WalletCards";
 import shell from "@/ui/components/shell.module.css";
 import { DEFAULT_DESTINATION, destinationFor } from "@/ui/lib/assets";
@@ -112,6 +113,8 @@ export function Home(): React.JSX.Element {
         <div className={styles.stack}>
           <WalletCards wallet={wallet} balance={balance.state} price={price} onRetryBalance={balance.retry} onOpenAccount={() => setAccountOpen(true)} />
         </div>
+
+        <ScheduledCard enabled={Boolean(address)} />
 
         <nav className={styles.actions} aria-label="Quick actions">
           <ButtonLink href={NEW_PAYMENT_HREF} variant="light" size="md" icon="arrow-up-right">

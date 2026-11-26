@@ -104,6 +104,7 @@ export function Activity(): React.JSX.Element {
   const [selected, setSelected] = useState<ActivityItem | null>(null);
   const [archiveVersion, setArchiveVersion] = useState(0);
   const [stats, setStats] = useState<{ people: number; payers: number; payments: number; nimLuna?: string } | null>(null);
+  const [scheduled, setScheduled] = useState<string | null>(null);
   const archivedIds = useMemo(() => {
     void archiveVersion;
     return loadActivityArchive(ownerUserId);
@@ -273,6 +274,24 @@ export function Activity(): React.JSX.Element {
             <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--text-2)", textAlign: "center" }}>
               Opens the same recipient and amount. You still review and approve in Nimiq Pay.
             </p>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              {(["weekly", "monthly"] as const).map((cadence) => (
+                <Button key={cadence} variant="soft" size="sm" block
+                  disabled={scheduled === cadence}
+                  onClick={() => {
+                    const [whole, fraction = ""] = selected.amount.split(".");
+                    const atomic = `${whole}${fraction.padEnd(6, "0").slice(0, 6)}`.replace(/^0+(?=\d)/, "");
+                    void fetch("/api/schedules", {
+                      method: "POST",
+                      credentials: "same-origin",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "create", routeId: selected.routeId, destination: selected.destination, recipientName: selected.name, amountAtomic: atomic, cadence }),
+                    }).then((r) => { if (r.ok) setScheduled(cadence); });
+                  }}>
+                  {scheduled === cadence ? "Scheduled" : `Repeat ${cadence}`}
+                </Button>
+              ))}
+            </div>
           </div>
         )}
       </Sheet>

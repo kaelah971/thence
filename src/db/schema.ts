@@ -713,3 +713,27 @@ export const deskEvents = pgTable("desk_events", {
 export type NewUser = typeof users.$inferInsert;
 export type Transfer = typeof transfers.$inferSelect;
 export type NewTransfer = typeof transfers.$inferInsert;
+
+/* ------------------------------------------------------------------ */
+/* payment_schedules — recurring intents (never autonomous payments)   */
+/* ------------------------------------------------------------------ */
+
+export const paymentSchedules = pgTable(
+  "payment_schedules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerUserId: uuid("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    routeId: varchar("route_id", { length: 32 }).notNull(),
+    destination: text("destination").notNull(),
+    recipientName: varchar("recipient_name", { length: 120 }),
+    amountAtomic: text("amount_atomic").notNull(),
+    /** weekly | monthly — the cadence only decides when it comes due. */
+    cadence: varchar("cadence", { length: 16 }).notNull(),
+    nextDueAt: timestamp("next_due_at", { withTimezone: true }).notNull(),
+    lastPaidAt: timestamp("last_paid_at", { withTimezone: true }),
+    paused: boolean("paused").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("payment_schedules_owner_idx").on(t.ownerUserId, t.nextDueAt)],
+);

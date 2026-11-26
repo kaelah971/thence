@@ -8,6 +8,7 @@ import { deskRate } from "./price";
 import { assertDeskSigner, deskBalances, deskEvm, deskPayoutEvidence, deskPayoutResult, signDeskPayout, validateSignedDeskPayout } from "./evm";
 import { deskTransaction, loadDeskOrder, publicDeskOrder, transition, type DeskOrder, type DeskPayload } from "./store";
 import { mirrorQuote, publishDeskProof } from "./ledger";
+import { markSchedulesPaid } from "@/lib/schedules";
 import { deskChainConfig, isDeskChain, type DeskChain } from "./chains";
 
 export async function listDeskOrders(ownerId: string, ownerAddress: string) {
@@ -15,6 +16,8 @@ export async function listDeskOrders(ownerId: string, ownerAddress: string) {
   const result = await getPool().query<DeskOrder>("SELECT * FROM desk_orders WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 30", [ownerId]);
   return { enabled: config.enabled, collectionAddress: config.nimAddress, payoutAddress: config.polygonAddress, orders: result.rows.map(publicDeskOrder) };
 }
+const DESK_ROUTE: Record<DeskChain, string> = { polygon: "usdc-polygon", arbitrum: "usdc-arbitrum", base: "usdc-base" };
+
 export async function quoteDesk(ownerId: string, ownerAddress: string, recipient: string, amount: string, requestKey: string, chain: DeskChain = "polygon") {
   const config = assertDeskOwner(ownerAddress, true);
   if (!isDeskChain(chain)) throw new DeskError("INVALID_NETWORK", "Choose Polygon or Arbitrum.", 400);
@@ -23,7 +26,7 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
   const atomic = amountAtomic(amount, 6);
   if (atomic < config.minAtomic || atomic > config.maxAtomic) throw new DeskError("AMOUNT_LIMIT", `Pilot payments must be between ${Number(config.minAtomic) / 1e6} USDC and the configured maximum.`, 400);
   const rate = await deskRate(), charge = deskCharge(atomic, rate.rateE18, config.feeBps);
-  return deskTransaction(async c => {
+  const quoted = await deskTransaction(async c => {
     const existing = await c.query<DeskOrder>("SELECT * FROM desk_orders WHERE owner_id=$1 AND request_key=$2", [ownerId, requestKey]);
     if (existing.rows[0]) {
       if (existing.rows[0].payload.recipient.toLowerCase() !== recipient.toLowerCase() || existing.rows[0].amount_atomic !== atomic.toString()) throw new DeskError("REQUEST_CONFLICT", "This request identifier was already used for different payment terms.");
@@ -56,6 +59,10 @@ export async function quoteDesk(ownerId: string, ownerAddress: string, recipient
     const linked = await c.query<DeskOrder>("UPDATE desk_orders SET payload = $2 WHERE id = $1 RETURNING *", [id, JSON.stringify({ ...payload, transferId })]);
     return publicDeskOrder(linked.rows[0]!);
   });
+  // A real payment for a due schedule spends its turn. Outside the transaction
+  // so a schedule update can never roll back a quoted payment.
+  void markSchedulesPaid(ownerId, DESK_ROUTE[chain], getAddress(recipient), atomic.toString()).catch(() => {});
+  return quoted;
 }
 export async function authorizeDesk(ownerId: string, ownerAddress: string, id: string) {
   return deskTransaction(async c => {
