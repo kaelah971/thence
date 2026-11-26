@@ -15,6 +15,7 @@ import { Avatar, EmptyState, Notice, PreviewTag } from "@/ui/components/primitiv
 import { ActivityRow, RowSkeletons } from "@/ui/components/rows";
 import { Sheet } from "@/ui/components/Sheet";
 import { ScheduledCard } from "@/ui/components/ScheduledCard";
+import { InboxButton } from "@/ui/components/InboxButton";
 import { WalletCards } from "@/ui/components/WalletCards";
 import shell from "@/ui/components/shell.module.css";
 import { DEFAULT_DESTINATION, destinationFor } from "@/ui/lib/assets";
@@ -105,6 +106,7 @@ export function Home(): React.JSX.Element {
               <HelloText name={name} />
             </span>
           )}
+          <InboxButton enabled={Boolean(address)} />
           <button type="button" className={styles.infoButton} onClick={() => setInfoOpen(true)} aria-haspopup="dialog" aria-label="Thence links and support">
             <Icon name="info" size={20} />
           </button>
