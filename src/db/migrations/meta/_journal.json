@@ -148,6 +148,13 @@
       "when": 1795600000000,
       "tag": "0020_desk_nonce_per_chain",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795700000000,
+      "tag": "0021_scheduled_payments",
+      "breakpoints": true
     }
   ]
 }
