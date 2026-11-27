@@ -1,0 +1,152 @@
+/* "Thence in numbers" glass folder: a back panel with a tab, three cards
+   standing in it, and a frosted front pocket covering their lower half. */
+
+.folder {
+  position: relative;
+  margin-top: 22px;
+  padding-top: 76px;
+}
+
+/* Back of the folder, behind the cards. The tab sits on its top-left. */
+.back {
+  position: absolute;
+  inset: 26px 0 0 0;
+  border-radius: 22px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.back::before {
+  content: "";
+  position: absolute;
+  top: -12px;
+  left: -1px;
+  width: 38%;
+  height: 14px;
+  border-radius: 12px 12px 0 0;
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 0;
+}
+
+.deck {
+  position: absolute;
+  top: 6px;
+  left: 14px;
+  right: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  z-index: 1;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  height: 100px;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 16px;
+  text-align: left;
+  color: var(--ink-900);
+  background: linear-gradient(180deg, #ffffff, #eef4f1);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transform-origin: 50% 100%;
+  transition: transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 320ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.card[data-card="people"] { transform: rotate(-5deg) translateY(8px); }
+.card[data-card="payers"] {
+  transform: translateY(2px);
+  background: linear-gradient(180deg, #d9f9ec, #bdf0da);
+}
+.card[data-card="nim"] {
+  transform: rotate(5deg) translateY(8px);
+  background: linear-gradient(180deg, #fff6dc, #fbe9b8);
+}
+
+.card[aria-pressed="true"] {
+  transform: translateY(-24px) rotate(0deg) scale(1.04);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+  z-index: 3;
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--mint-300);
+  outline-offset: 3px;
+}
+
+.cardValue {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.cardLabel {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: rgba(16, 20, 19, 0.62);
+  white-space: nowrap;
+}
+
+/* Frosted front pocket. */
+.pocket {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px 15px;
+  border-radius: 22px;
+  /* Dark-tinted glass: the cards' colour glows through, white text stays readable. */
+  background: linear-gradient(135deg, rgba(36, 46, 42, 0.62), rgba(16, 21, 19, 0.78));
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 12px 28px rgba(0, 0, 0, 0.32);
+}
+
+.pocketHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.title {
+  margin: 0;
+  font: 700 1rem/1.2 var(--font-display);
+  color: var(--on-ink);
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--mint-300);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--mint-300);
+  box-shadow: 0 0 8px var(--mint-300);
+}
+
+.hint {
+  margin: 0;
+  min-height: 2.7em;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: var(--on-ink-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+}

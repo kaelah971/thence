@@ -37,6 +37,7 @@ import { NEW_PAYMENT_HREF } from "@/ui/lib/send-navigation";
 import { usePaymentProgress } from "@/ui/screens/send/SettlementProgress";
 import styles from "./activity.module.css";
 import { ProofFeed } from "./ProofFeed";
+import { NumbersFolder } from "./NumbersFolder";
 import { settlementNetworkFor } from "@/ui/lib/network-copy";
 
 const FILTERS: ReadonlyArray<{ value: ActivityFilter; label: string }> = [
@@ -153,27 +154,17 @@ export function Activity(): React.JSX.Element {
           </ButtonLink>
         </div>
         <div className={styles.summary}>
-          <div className={styles.summaryTile}>
-            <Icon name="clock" size={18} />
-            <p className={styles.summaryValue}>{data.status === "ready" ? inProgress : "—"}</p>
-            <p className={styles.summaryLabel}>In progress</p>
-          </div>
-          <div className={styles.summaryTile}>
-            <Icon name="shield" size={18} />
-            <p className={styles.summaryText}>Delivered only appears once it&apos;s confirmed on their network.</p>
-          </div>
+          <p className={styles.summaryChip}>
+            <Icon name="clock" size={15} />
+            <span className={styles.summaryValue}>{data.status === "ready" ? inProgress : "—"}</span>
+            <span className={styles.summaryLabel}>In progress</span>
+          </p>
+          <p className={`${styles.summaryChip} ${styles.summaryNote}`}>
+            <Icon name="shield" size={15} />
+            <span className={styles.summaryText}>Delivered only once confirmed on their network</span>
+          </p>
         </div>
-        <section className={styles.numbers} aria-label="Thence in numbers">
-          <div className={styles.numbersHead}>
-            <h2 className={styles.numbersTitle}>Thence in numbers</h2>
-            <span className={styles.numbersLive}><span className={styles.numbersDot} aria-hidden="true" />Live</span>
-          </div>
-          <div className={styles.numbersGrid}>
-            <div><p className={styles.numbersValue}>{stats ? stats.people : "—"}</p><p className={styles.numbersLabel}>People</p></div>
-            <div><p className={styles.numbersValue}>{stats ? stats.payers : "—"}</p><p className={styles.numbersLabel}>Wallets paying</p></div>
-            <div><p className={styles.numbersValue}>{nimTotal}</p><p className={styles.numbersLabel}>NIM received</p></div>
-          </div>
-        </section>
+        <NumbersFolder stats={stats} nimTotal={nimTotal} />
         <ViewToggle value={view} onChange={setView} />
       </section>
 
